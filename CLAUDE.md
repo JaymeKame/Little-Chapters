@@ -65,8 +65,10 @@ in `docs/DECODING_GRADER.md`).
   `AuthenticationFailure`** — the canceled handler drops the token cache on
   any error for that reason.
 - Kid-tuned SDK timeouts: 15 s initial silence, 2.2 s segmentation pause
-  (children think mid-sentence). The `/read` flow auto-stops ~1.8 s after the
-  last recognized segment.
+  (children think mid-sentence). The `/read` flow auto-stops after ~3 s of
+  true silence — the timer is re-armed by every PARTIAL transcript, not just
+  finalized segments, so a child who pauses and resumes is never cut off
+  (and the grace must stay above the 2.2 s segmentation pause).
 - The Azure key is **server-only**; the browser gets a ~10-min token from
   `/api/speech/token` (auto-refreshed every 4 min mid-session). Both API
   routes share a fail-closed auth gate (`lib/route-auth.ts`): Firebase ID

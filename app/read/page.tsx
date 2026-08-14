@@ -113,7 +113,11 @@ export default function ReadPage() {
 
   function armSilenceStop() {
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
-    silenceTimer.current = setTimeout(() => void finishListening(), 1800);
+    // Must exceed Azure's 2.2 s segmentation pause, and gets re-armed by every
+    // partial transcript — so it measures silence since the child last SPOKE,
+    // not since the last finalized segment. A 5-year-old's mid-page thinking
+    // pause must never cut the mic while they're still reading.
+    silenceTimer.current = setTimeout(() => void finishListening(), 3000);
   }
 
   async function beginListening(referenceText: string) {
@@ -128,7 +132,8 @@ export default function ReadPage() {
           if (s === 'listening') setPhase('listening');
           if (s === 'error' && sessionRef.current) void finishListening();
         },
-        onSegment: () => armSilenceStop(), // a burst of speech landed — stop shortly after the next silence
+        onPartialTranscript: () => armSilenceStop(), // active speech keeps postponing the stop
+        onSegment: () => armSilenceStop(), // a finalized burst also counts
       });
       if (disposedRef.current) {
         session.cancel();
@@ -141,6 +146,8 @@ export default function ReadPage() {
     } catch (e) {
       if (!disposedRef.current) {
         setPhase('ready');
+        attemptRef.current = 0; // a dead retry-take must not leave correction disabled
+        setTricky(null);
         setError(e instanceof Error ? e.message : String(e));
       }
     }
@@ -152,14 +159,28 @@ export default function ReadPage() {
     sessionRef.current = null;
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
     setPhase('scoring');
+    let result: ReadingAssessmentResult;
     try {
-      const result = await session.stop();
-      if (disposedRef.current) return;
+      result = await session.stop();
+    } catch {
+      // stop() only throws when the connection died with ZERO recognized
+      // segments — nothing was assessed, so stay on this page and say so.
+      // Silently advancing here would fabricate the parent report.
+      if (!disposedRef.current) {
+        setPhase('ready');
+        attemptRef.current = 0;
+        setTricky(null);
+        setError("The connection dropped — let's try that page again!");
+      }
+      return;
+    }
+    if (disposedRef.current) return;
+    try {
       const verdicts = await decode(result);
       if (disposedRef.current) return;
       handleVerdicts(result, verdicts);
     } catch {
-      if (!disposedRef.current) advance(); // scoring failed — never strand the child
+      if (!disposedRef.current) advance(); // scoring hiccup on a real read — never strand the child
     }
   }
 
@@ -184,14 +205,17 @@ export default function ReadPage() {
 
   function handleVerdicts(r: ReadingAssessmentResult, verdicts: WordVerdict[]) {
     const flagged = verdicts.filter((v) => v.needsHelp);
-    pet.awardReading({
-      accuracy: r.scores.accuracy,
-      wordCount: r.words.filter((w) => w.errorType !== 'Insertion').length,
-      flaggedCount: flagged.length,
-    });
+    if (attemptRef.current === 0) {
+      // Award once per page — the word-retry take is practice, not a reading.
+      pet.awardReading({
+        accuracy: r.scores.accuracy,
+        wordCount: r.words.filter((w) => w.errorType !== 'Insertion').length,
+        flaggedCount: flagged.length,
+      });
+    }
     if (flagged.length > 0 && attemptRef.current === 0) {
       const word = flagged[0].word;
-      practicedRef.current.set(word, `practiced in "${page.text.split(/\s+/).find((t) => t.toLowerCase().includes(word)) ?? word}"`);
+      practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
       attemptRef.current = 1;
       setTricky(word);
       setPhase('correction');
@@ -221,12 +245,14 @@ export default function ReadPage() {
   function finishChapter() {
     const c = chapter!;
     saveReport({
-      date: new Date().toISOString().slice(0, 10),
+      date: new Date().toLocaleDateString('en-CA'), // local YYYY-MM-DD, not UTC
       childName: profile!.childName,
       newWords: c.pages.flatMap((p) => p.focusWords).filter((w) => w !== c.character),
-      practiced: c.phonics.map((ph) => ({ word: ph.words[0], hint: ph.hint })).concat(
-        [...practicedRef.current.keys()].map((w) => ({ word: w, hint: 'a tricky word today' })),
-      ),
+      // Words the child actually struggled with come FIRST so they survive the
+      // parent screen's top-3 slice; generic chapter phonics fill the rest.
+      practiced: [...practicedRef.current.entries()]
+        .map(([word, hint]) => ({ word, hint }))
+        .concat(c.phonics.map((ph) => ({ word: ph.words[0], hint: ph.hint }))),
       teaser: c.teaser,
     });
     setPhase('chapter-end');
@@ -314,7 +340,12 @@ export default function ReadPage() {
           className="icon-btn"
           aria-label="Close"
           onClick={() => {
+            // Full teardown BEFORE navigating: a still-resolving session or a
+            // pending silence timer must not resurrect the flow mid-exit.
+            disposedRef.current = true;
+            if (silenceTimer.current) clearTimeout(silenceTimer.current);
             sessionRef.current?.cancel();
+            sessionRef.current = null;
             router.push('/home');
           }}
         >
@@ -335,7 +366,9 @@ export default function ReadPage() {
             animation: 'lc-pop 0.25s ease',
           }}
         >
-          {phase === 'correction' && tricky ? (
+          {/* Keep the big word visible through the retry's listening/scoring —
+              hiding it the moment the child taps "Try the word" defeats it. */}
+          {tricky ? (
             <div style={{ textAlign: 'center' }}>
               <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
                 Let&rsquo;s try that word together.

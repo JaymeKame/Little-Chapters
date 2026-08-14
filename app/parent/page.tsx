@@ -21,6 +21,11 @@ export default function ParentMessagePage() {
   }, []);
 
   const name = report?.childName ?? profile?.childName ?? 'your reader';
+  const isToday = report?.date === new Date().toLocaleDateString('en-CA');
+  const reportDay =
+    report && !isToday
+      ? new Date(`${report.date}T12:00:00`).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
+      : null;
 
   return (
     <div className="screen" style={{ background: '#f4f2ee' }}>
@@ -52,7 +57,7 @@ export default function ParentMessagePage() {
 
       <main style={{ flex: 1, padding: '18px 18px 30px' }}>
         <p style={{ textAlign: 'center', fontSize: 11, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
-          Today {now}
+          {reportDay ?? `Today ${now}`}
         </p>
 
         {report ? (
@@ -70,12 +75,12 @@ export default function ParentMessagePage() {
           >
             <p style={{ margin: '0 0 12px' }}>Hi there! 👋</p>
             <p style={{ margin: '0 0 12px' }}>
-              {name} read a great chapter today.
+              {name} read a great chapter {isToday ? 'today' : `on ${reportDay}`}.
             </p>
-            <p style={{ margin: '0 0 4px' }}>He practiced:</p>
+            <p style={{ margin: '0 0 4px' }}>They practiced:</p>
             <div style={{ margin: '0 0 12px' }}>
-              {report.practiced.slice(0, 3).map((p) => (
-                <div key={p.hint} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+              {report.practiced.slice(0, 3).map((p, i) => (
+                <div key={`${p.word}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
                   <span aria-hidden style={{ fontSize: 12 }}>
                     ✳️
                   </span>
@@ -83,15 +88,15 @@ export default function ParentMessagePage() {
                 </div>
               ))}
             </div>
-            <p style={{ margin: '0 0 4px' }}>New words he read:</p>
+            <p style={{ margin: '0 0 4px' }}>New words they read:</p>
             <p style={{ margin: '0 0 12px', color: 'var(--leaf)', fontWeight: 600 }}>
               {report.newWords.slice(0, 6).join(', ')}
             </p>
             <p style={{ margin: '0 0 12px', color: 'var(--ink-soft)' }}>—</p>
             <p style={{ margin: '0 0 12px' }}>
-              Tomorrow: {report.teaser}
+              {isToday ? 'Tomorrow' : 'Next chapter'}: {report.teaser}
             </p>
-            <p style={{ margin: 0 }}>See you tomorrow!</p>
+            <p style={{ margin: 0 }}>{isToday ? 'See you tomorrow!' : 'See you soon!'}</p>
             <p aria-hidden style={{ margin: '10px 0 0', fontSize: 16 }}>
               💚
             </p>
