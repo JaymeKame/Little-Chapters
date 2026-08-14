@@ -59,7 +59,7 @@ function Waveform({ active }: { active: boolean }) {
 function PageText({ text, focusWords }: { text: string; focusWords: string[] }) {
   const lower = focusWords.map((w) => w.toLowerCase());
   return (
-    <p style={{ fontSize: 24, lineHeight: 1.6, margin: 0, fontWeight: 500 }}>
+    <p className="lc-page-text">
       {text.split(/(\s+)/).map((tok, i) => {
         const clean = tok.toLowerCase().replace(/[^a-z']/g, '');
         const idx = clean ? lower.indexOf(clean) : -1;
@@ -276,7 +276,8 @@ export default function ReadPage() {
   /* ── Screen 5: chapter end ── */
   if (phase === 'chapter-end') {
     return (
-      <div className="screen" style={{ background: scene }}>
+      <div className="scene" style={{ background: scene }}>
+      <div className="screen">
         <header style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
           <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
             🏠
@@ -329,12 +330,14 @@ export default function ReadPage() {
           </div>
         </main>
       </div>
+      </div>
     );
   }
 
   /* ── Screen 4: reading ── */
   return (
-    <div className="screen" style={{ background: scene }}>
+    <div className="scene" style={{ background: scene }}>
+    <div className="screen">
       <header style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
         <button
           className="icon-btn"
@@ -373,7 +376,7 @@ export default function ReadPage() {
               <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
                 Let&rsquo;s try that word together.
               </p>
-              <p style={{ fontSize: 38, fontWeight: 700, color: 'var(--sky)', margin: '0 0 6px' }}>{tricky}</p>
+              <p className="lc-tricky-word">{tricky}</p>
               <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
                 • • •
               </div>
@@ -477,6 +480,7 @@ export default function ReadPage() {
           </div>
         )}
       </main>
+    </div>
     </div>
   );
 }

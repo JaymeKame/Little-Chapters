@@ -53,8 +53,12 @@ a {
   color: inherit;
 }
 
-/* Phone-like column every screen lives in (the mockup is mobile-first). */
+/* App column (mobile-first, per the mockup). Phones: full-bleed. Tablet and
+ * desktop: a centered app-card floating on the warm stone backdrop — the
+ * child screens stay one-column by design (one big button), they just get
+ * room, rounding, and a soft shadow. */
 .screen {
+  width: 100%;
   max-width: 430px;
   min-height: 100dvh;
   margin: 0 auto;
@@ -62,6 +66,193 @@ a {
   display: flex;
   flex-direction: column;
   position: relative;
+}
+
+@media (min-width: 600px) {
+  .screen {
+    max-width: 520px;
+    min-height: calc(100dvh - 56px);
+    margin: 28px auto;
+    border-radius: 26px;
+    box-shadow: 0 18px 48px rgba(60, 50, 30, 0.14), 0 2px 8px rgba(60, 50, 30, 0.08);
+    overflow: hidden;
+  }
+}
+
+@media (min-width: 1100px) {
+  .screen {
+    max-width: 560px;
+  }
+}
+
+/* Full-bleed scene wrapper (reading + chapter end): the storybook gradient
+ * fills the whole viewport; the content column floats transparent inside. */
+.scene {
+  min-height: 100dvh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.scene > .screen {
+  background: transparent;
+  flex: 1;
+}
+
+@media (min-width: 600px) {
+  .scene > .screen {
+    margin: 0 auto;
+    min-height: 100dvh;
+    border-radius: 0;
+    box-shadow: none;
+    max-width: 560px;
+  }
+}
+
+/* Reading text scales up where kids actually hold tablets. */
+.lc-page-text {
+  font-size: 24px;
+  line-height: 1.6;
+  margin: 0;
+  font-weight: 500;
+}
+
+.lc-tricky-word {
+  font-size: 38px;
+  font-weight: 700;
+  color: var(--sky);
+  margin: 0 0 6px;
+}
+
+@media (min-width: 600px) {
+  .lc-page-text {
+    font-size: 30px;
+  }
+  .lc-tricky-word {
+    font-size: 52px;
+  }
+}
+
+/* ── Landing page (parents visit on laptops — a real webpage there) ────── */
+.lc-landing {
+  min-height: 100dvh;
+  background: var(--paper);
+}
+
+.lc-landing-inner {
+  max-width: 1060px;
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.lc-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 0 6px;
+}
+
+.lc-hero {
+  flex: 1;
+  display: grid;
+  grid-template-areas: 'copy' 'art' 'cta';
+  gap: 30px;
+  align-items: center;
+  text-align: center;
+  padding: 22px 0 30px;
+}
+
+.lc-hero-copy {
+  grid-area: copy;
+}
+
+.lc-hero-art {
+  grid-area: art;
+}
+
+.lc-hero-cta {
+  grid-area: cta;
+}
+
+.lc-h1 {
+  font-family: var(--serif);
+  font-size: 40px;
+  line-height: 1.12;
+  margin: 10px 0 14px;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.lc-features {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.lc-cta {
+  display: block;
+  width: 100%;
+}
+
+.lc-lede {
+  margin: 0 auto 22px;
+}
+
+.lc-cta-caption {
+  text-align: center;
+}
+
+@media (min-width: 900px) {
+  .lc-hero {
+    grid-template-columns: 1.05fr 0.95fr;
+    grid-template-areas: 'copy art' 'cta art';
+    align-items: end;
+    text-align: left;
+    padding: 48px 0 56px;
+  }
+
+  .lc-hero-copy {
+    align-self: end;
+  }
+
+  .lc-hero-cta {
+    align-self: start;
+  }
+
+  .lc-hero-copy {
+    max-width: 470px;
+  }
+
+  .lc-hero-copy .lc-lede {
+    margin: 0 0 22px;
+  }
+
+  .lc-hero-copy .lc-cta-caption {
+    text-align: left;
+  }
+
+  .lc-h1 {
+    font-size: 58px;
+  }
+
+  .lc-features {
+    justify-content: flex-start;
+  }
+
+  .lc-cta {
+    display: inline-block;
+    width: auto;
+    padding-left: 44px;
+    padding-right: 44px;
+  }
+
+  .lc-cta-caption {
+    text-align: left;
+  }
 }
 
 .btn-primary {
