@@ -1,3 +1,5 @@
+import { Analytics } from '@vercel/analytics/react';
+import { SpeedInsights } from '@vercel/speed-insights/next';
 import type { Metadata, Viewport } from 'next';
 import { Lexend, Lora } from 'next/font/google';
 import { AuthProvider } from '@/components/AuthProvider';
@@ -21,6 +23,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${lexend.variable} ${lora.variable}`}>
       <body>
         <AuthProvider>{children}</AuthProvider>
+        <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );

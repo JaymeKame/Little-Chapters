@@ -100,6 +100,11 @@ npm run typecheck    # strict TS; keep it clean
 cd mdd && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/python server.py   # decoding grader on :8010 (first run downloads ~1.3 GB model)
 ```
 
+- **Never run `npm run build` while the dev server is running** — they share
+  `.next/`, and the production build clobbers the dev server's asset
+  manifests: every page then loads unstyled (CSS 404s) until the dev server
+  is stopped, `.next/` deleted, and restarted. Stop dev first, or let Vercel
+  do the building and run only `npm run typecheck` locally.
 - Azure resource setup (one-time, free tier): `docs/AZURE_SPEECH_SETUP.md`;
   fill `.env.local` from `.env.local.example`.
 - **No mic needed to develop**: `/read` and `/dev/assess` show `sim: good` /
