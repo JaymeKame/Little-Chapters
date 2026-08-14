@@ -87,6 +87,10 @@ in `docs/DECODING_GRADER.md`).
   carries everything until that's resolved.
 - Firebase project is currently the shared `inzone-f93e4` (config via env).
   The app renders fully without any Firebase config (anonymous mode).
+- The font tokens in `globals.css` MUST keep their in-var fallbacks
+  (`var(--font-lexend, 'Lexend')`): without one, a missing next/font variable
+  invalidates the whole token at computed-value time and every screen
+  collapses to the browser default font (Times).
 
 ## Dev workflow
 

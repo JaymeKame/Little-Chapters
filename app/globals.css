@@ -18,8 +18,11 @@
   --line: #e6ddcd;
   --gold: #c9a13b;
 
-  --serif: var(--font-serif), Georgia, 'Times New Roman', serif;
-  --sans: var(--font-lexend), 'Lexend', -apple-system, 'Segoe UI', sans-serif;
+  /* In-var fallbacks are load-bearing: without them, a missing next/font
+   * variable makes the whole token invalid at computed-value time and
+   * font-family collapses to the browser default (Times). */
+  --serif: var(--font-serif, 'Lora'), Georgia, 'Iowan Old Style', serif;
+  --sans: var(--font-lexend, 'Lexend'), -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
 * {
