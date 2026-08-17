@@ -27,6 +27,28 @@ import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/read
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
+/* Live karaoke highlight: SHELVED for now — Azure partials trail real speech
+ * by up to a second, which reads as lag rather than magic. The matcher still
+ * runs headlessly (it powers the finished-page fast-stop below); flip this to
+ * true to bring the visuals and the `sim: live` button back. */
+const LIVE_HIGHLIGHT = false;
+
+/* Graded praise for the celebrate beat — always warm, never a failure state;
+ * only the intensity tracks the result. */
+const PRAISE = {
+  top: ['Awesome!', 'Amazing!', 'Fantastic!'],
+  great: ['Great job!', 'Great reading!'],
+  good: ['Good reading!', 'Nice work!'],
+} as const;
+
+const pick = (arr: readonly string[]) => arr[Math.floor(Math.random() * arr.length)];
+
+function praiseFor(accuracy: number, flaggedCount: number): string {
+  if (flaggedCount === 0 && accuracy >= 90) return pick(PRAISE.top);
+  if (flaggedCount === 0 && accuracy >= 75) return pick(PRAISE.great);
+  return pick(PRAISE.good);
+}
+
 /* Scene backgrounds come from the handoff (.lc-scenic / .lc-cliff in
  * globals.css); per-interest artwork returns when the approved watercolor
  * assets replace the CSS placeholders. */
@@ -117,6 +139,7 @@ export default function ReadPage() {
   const [tricky, setTricky] = useState<string | null>(null); // correction-state word
   const [error, setError] = useState<string | null>(null);
   const [readCount, setReadCount] = useState(0); // live karaoke highlight cursor
+  const [praise, setPraise] = useState('Great reading!');
   const liveRef = useRef<LiveProgress | null>(null);
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -144,13 +167,15 @@ export default function ReadPage() {
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
 
-  function armSilenceStop() {
+  function armSilenceStop(ms = 3000) {
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
-    // Must exceed Azure's 2.2 s segmentation pause, and gets re-armed by every
-    // partial transcript — so it measures silence since the child last SPOKE,
-    // not since the last finalized segment. A 5-year-old's mid-page thinking
-    // pause must never cut the mic while they're still reading.
-    silenceTimer.current = setTimeout(() => void finishListening(), 3000);
+    // Default must exceed Azure's 2.2 s segmentation pause, and gets re-armed
+    // by every partial transcript — so it measures silence since the child
+    // last SPOKE, not since the last finalized segment. A 5-year-old's
+    // mid-page thinking pause must never cut the mic while they're still
+    // reading. Once the live matcher has seen the page's FINAL word, the
+    // grace drops to ~1 s: the page is done, so feedback should be quick.
+    silenceTimer.current = setTimeout(() => void finishListening(), ms);
   }
 
   async function beginListening(referenceText: string) {
@@ -168,15 +193,17 @@ export default function ReadPage() {
           if (s === 'error' && sessionRef.current) void finishListening();
         },
         onPartialTranscript: (text) => {
-          // Active speech keeps postponing the stop — and moves the highlight.
+          // Active speech keeps postponing the stop — and moves the cursor.
           if (disposedRef.current) return;
-          armSilenceStop();
-          if (liveRef.current) setReadCount(liveRef.current.partial(text));
+          const n = liveRef.current ? liveRef.current.partial(text) : 0;
+          if (LIVE_HIGHLIGHT) setReadCount(n);
+          armSilenceStop(liveRef.current && n >= liveRef.current.total ? 1000 : 3000);
         },
         onSegment: (words) => {
           if (disposedRef.current) return;
-          armSilenceStop(); // a finalized burst also counts
-          if (liveRef.current) setReadCount(liveRef.current.segment(words.map((w) => w.word)));
+          const n = liveRef.current ? liveRef.current.segment(words.map((w) => w.word)) : 0;
+          if (LIVE_HIGHLIGHT) setReadCount(n);
+          armSilenceStop(liveRef.current && n >= liveRef.current.total ? 1000 : 3000);
         },
       });
       if (disposedRef.current) {
@@ -265,14 +292,16 @@ export default function ReadPage() {
       setPhase('correction');
       return;
     }
-    celebrateAndAdvance();
+    // Retry take: the praise rewards the effort, not the original stumble.
+    celebrateAndAdvance(attemptRef.current > 0 ? 'You did it!' : praiseFor(r.scores.accuracy, flagged.length));
   }
 
-  function celebrateAndAdvance() {
+  function celebrateAndAdvance(p: string) {
+    setPraise(p);
     setPhase('celebrate');
     setTimeout(() => {
       if (!disposedRef.current) advance();
-    }, 1300);
+    }, 1600);
   }
 
   function advance() {
@@ -453,7 +482,7 @@ export default function ReadPage() {
               </div>
             </div>
           ) : (
-            <PageText text={page.text} focusWords={page.focusWords} live={phase === 'listening'} readCount={readCount} />
+            <PageText text={page.text} focusWords={page.focusWords} live={LIVE_HIGHLIGHT && phase === 'listening'} readCount={readCount} />
           )}
           <div aria-hidden style={{ textAlign: 'center', marginTop: 20, letterSpacing: 4, fontSize: 10, color: 'var(--leaf)' }}>
             {chapter.pages.map((_, i) => (
@@ -483,8 +512,22 @@ export default function ReadPage() {
         <div style={{ flex: 1 }} />
 
         {phase === 'celebrate' ? (
-          <div style={{ textAlign: 'center', fontSize: 44, animation: 'lc-pop 0.3s ease' }} aria-label="Great reading!">
-            🎉⭐
+          <div role="status" style={{ textAlign: 'center', animation: 'lc-pop 0.3s ease' }}>
+            <div aria-hidden style={{ fontSize: 36 }}>
+              🎉
+            </div>
+            <div
+              style={{
+                fontFamily: 'var(--serif)',
+                fontSize: 34,
+                fontWeight: 700,
+                color: 'var(--dark)',
+                textShadow: '0 1px 0 rgba(255,255,255,0.55)',
+                marginTop: 4,
+              }}
+            >
+              {praise}
+            </div>
           </div>
         ) : phase === 'correction' && tricky ? (
           <div style={{ display: 'flex', gap: 10 }}>
@@ -501,7 +544,7 @@ export default function ReadPage() {
             <button
               className="btn-primary"
               style={{ flex: 1 }}
-              onClick={celebrateAndAdvance}
+              onClick={() => celebrateAndAdvance('On we go!')}
             >
               Keep going →
             </button>
@@ -550,9 +593,11 @@ export default function ReadPage() {
             <button onClick={() => simulate('tricky')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
               sim: tricky
             </button>
-            <button onClick={simulateLive} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
-              sim: live
-            </button>
+            {LIVE_HIGHLIGHT && (
+              <button onClick={simulateLive} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
+                sim: live
+              </button>
+            )}
           </div>
         )}
       </main>

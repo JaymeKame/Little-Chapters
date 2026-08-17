@@ -91,16 +91,20 @@ in `docs/DECODING_GRADER.md`).
   (`var(--font-lexend, 'Lexend')`): without one, a missing next/font variable
   invalidates the whole token at computed-value time and every screen
   collapses to the browser default font (Times).
-- **Live karaoke highlight** (`lib/live-progress.ts`): words light up as the
-  child reads, driven by Azure PARTIAL transcripts. It tracks the child's
-  POSITION, never correctness (misreads/skips are jumped or re-anchored via
-  bigram search; a repeat of the just-matched word is a stutter, not an
-  advance; the cursor is monotonic — never retreats). Its word tokenizer and
-  `PageText`'s in `app/read/page.tsx` MUST change in lockstep (fold curly
-  apostrophes, keep digits, hyphenated words count once) or the highlight
-  index drifts. Azure only finalizes phoneme detail per utterance, so
-  phoneme-level LIVE feedback is impossible with this engine — word-level is
-  the floor. Test with the `sim: live` dev button (mic-free).
+- **Live word matcher** (`lib/live-progress.ts`): tracks the child's POSITION
+  in the page (never correctness) from Azure PARTIAL transcripts —
+  misreads/skips are jumped or re-anchored via bigram search; a repeat of the
+  just-matched word is a stutter, not an advance; the cursor is monotonic.
+  Its word tokenizer and `PageText`'s in `app/read/page.tsx` MUST change in
+  lockstep (fold curly apostrophes, keep digits, hyphenated words count once)
+  or the word index drifts. Today it runs HEADLESS: when it sees the page's
+  final word it drops the silence auto-stop from 3 s to ~1 s (fast praise).
+  The karaoke visuals it was built for are shelved behind
+  `LIVE_HIGHLIGHT = false` in `app/read/page.tsx` — Azure partials trail
+  speech by up to a second, which read as lag; flipping the flag restores the
+  visuals and the mic-free `sim: live` dev button. Azure only finalizes
+  phoneme detail per utterance, so phoneme-level LIVE feedback is impossible
+  with this engine — word-level is the floor.
 
 ## Dev workflow
 
