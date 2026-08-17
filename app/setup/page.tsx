@@ -185,6 +185,15 @@ export default function SetupPage() {
         <button className="btn-primary" onClick={start} disabled={!ready}>
           Start Their First Chapter ✨
         </button>
+        {/* A disabled button that silently ignores clicks reads as "broken" —
+            always say exactly what's still needed. */}
+        {!ready && (
+          <p role="status" style={{ textAlign: 'center', fontSize: 12.5, color: 'var(--ink-soft)', margin: '10px 0 0' }}>
+            {!name.trim()
+              ? 'First, add their name above ✏️'
+              : `Pick ${3 - picked.length} more thing${3 - picked.length === 1 ? '' : 's'} they love`}
+          </p>
+        )}
       </footer>
     </div>
   );
