@@ -1,0 +1,26 @@
+{
+  "name": "Little Chapters",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.11" }
+  },
+  "forwardPorts": [3001, 8010],
+  "portsAttributes": {
+    "3001": { "label": "Next.js app" },
+    "8010": { "label": "MDD decoding service" }
+  },
+  "postCreateCommand": "npm install",
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
+    }
+  },
+  "secrets": {
+    "AZURE_SPEECH_KEY": {
+      "description": "Azure Speech resource key (docs/AZURE_SPEECH_SETUP.md)"
+    },
+    "AZURE_SPEECH_REGION": {
+      "description": "Azure region identifier, e.g. eastus"
+    }
+  }
+}
