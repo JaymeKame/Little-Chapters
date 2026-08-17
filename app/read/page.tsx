@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { chapterFor, type Chapter } from '@/lib/chapters';
+import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
   startReadingSession,
@@ -51,22 +52,52 @@ function Waveform({ active }: { active: boolean }) {
 }
 
 /** Handoff spec: one sentence per line with breathing room; every focus word
- *  bold in the accessible reading blue (#075DAD). */
-function PageText({ text, focusWords }: { text: string; focusWords: string[] }) {
+ *  bold in the accessible reading blue (#075DAD).
+ *
+ *  While the mic is live, words light up karaoke-style as the child reads
+ *  them: unread words sit dimmed, heard words return to full strength, and
+ *  the most recent one glows sunshine. Lighting tracks position, never
+ *  correctness — a misread word still lights when the child moves on.       */
+function PageText({
+  text,
+  focusWords,
+  live = false,
+  readCount = 0,
+}: {
+  text: string;
+  focusWords: string[];
+  live?: boolean;
+  readCount?: number;
+}) {
   const lower = focusWords.map((w) => w.toLowerCase());
   const sentences = text.split(/(?<=[.!?])\s+/);
+  let wordIdx = 0;
   return (
     <p className="lc-page-text">
       {sentences.map((sentence, si) => (
         <span key={si} className="lc-sentence">
           {sentence.split(/(\s+)/).map((tok, i) => {
-            const clean = tok.toLowerCase().replace(/[^a-z']/g, '');
-            return clean && lower.includes(clean) ? (
-              <span key={i} className="lc-focus-word">
+            // Word-counting MUST stay in lockstep with lib/live-progress.ts
+            // (fold curly apostrophes, keep digits) or the highlight drifts.
+            const clean = tok.replace(/[’ʼ]/g, "'").toLowerCase().replace(/[^a-z0-9']/g, '');
+            if (!clean) return <span key={i}>{tok}</span>;
+            const idx = wordIdx++;
+            const cls = [
+              'lc-word',
+              lower.includes(clean) ? 'lc-focus-word' : '',
+              // Strictly greater: the word the child is decoding RIGHT NOW
+              // (idx === readCount) stays at full strength — the highlight
+              // trails recognition, so dimming it would dim the very word
+              // being read.
+              live && idx > readCount ? 'lc-word-dim' : '',
+              live && idx === readCount - 1 ? 'lc-word-now' : '',
+            ]
+              .filter(Boolean)
+              .join(' ');
+            return (
+              <span key={i} className={cls}>
                 {tok}
               </span>
-            ) : (
-              <span key={i}>{tok}</span>
             );
           })}
         </span>
@@ -85,6 +116,8 @@ export default function ReadPage() {
   const [phase, setPhase] = useState<Phase>('ready');
   const [tricky, setTricky] = useState<string | null>(null); // correction-state word
   const [error, setError] = useState<string | null>(null);
+  const [readCount, setReadCount] = useState(0); // live karaoke highlight cursor
+  const liveRef = useRef<LiveProgress | null>(null);
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptRef = useRef(0);
@@ -122,6 +155,8 @@ export default function ReadPage() {
 
   async function beginListening(referenceText: string) {
     setError(null);
+    liveRef.current = createLiveProgress(referenceText);
+    setReadCount(0);
     try {
       const authToken = user ? await user.getIdToken() : null;
       const session = await startReadingSession({
@@ -132,8 +167,17 @@ export default function ReadPage() {
           if (s === 'listening') setPhase('listening');
           if (s === 'error' && sessionRef.current) void finishListening();
         },
-        onPartialTranscript: () => armSilenceStop(), // active speech keeps postponing the stop
-        onSegment: () => armSilenceStop(), // a finalized burst also counts
+        onPartialTranscript: (text) => {
+          // Active speech keeps postponing the stop — and moves the highlight.
+          if (disposedRef.current) return;
+          armSilenceStop();
+          if (liveRef.current) setReadCount(liveRef.current.partial(text));
+        },
+        onSegment: (words) => {
+          if (disposedRef.current) return;
+          armSilenceStop(); // a finalized burst also counts
+          if (liveRef.current) setReadCount(liveRef.current.segment(words.map((w) => w.word)));
+        },
       });
       if (disposedRef.current) {
         session.cancel();
@@ -234,6 +278,8 @@ export default function ReadPage() {
   function advance() {
     setTricky(null);
     attemptRef.current = 0;
+    liveRef.current = null;
+    setReadCount(0);
     if (pageIdx + 1 < chapter!.pages.length) {
       setPageIdx((i) => i + 1);
       setPhase('ready');
@@ -271,6 +317,31 @@ export default function ReadPage() {
       needsHelp: kind === 'tricky' && i === words.length - 1, reason: null,
     })) as WordVerdict[];
     handleVerdicts(fakeResult, verdicts);
+  }
+
+  /* Dev-only: stream fake partial transcripts through the real highlight
+   * path so the karaoke effect is testable without a microphone. */
+  function simulateLive() {
+    const live = createLiveProgress(page.text);
+    liveRef.current = live;
+    setReadCount(0);
+    setPhase('listening');
+    const words = page.text.split(/\s+/).filter(Boolean);
+    let i = 0;
+    const timer = setInterval(() => {
+      if (disposedRef.current) {
+        clearInterval(timer);
+        return;
+      }
+      i++;
+      setReadCount(live.partial(words.slice(0, i).join(' ')));
+      if (i >= words.length) {
+        clearInterval(timer);
+        setTimeout(() => {
+          if (!disposedRef.current) simulate('good');
+        }, 600);
+      }
+    }, 350);
   }
 
   /* ── Screen 5: chapter end ── */
@@ -382,7 +453,7 @@ export default function ReadPage() {
               </div>
             </div>
           ) : (
-            <PageText text={page.text} focusWords={page.focusWords} />
+            <PageText text={page.text} focusWords={page.focusWords} live={phase === 'listening'} readCount={readCount} />
           )}
           <div aria-hidden style={{ textAlign: 'center', marginTop: 20, letterSpacing: 4, fontSize: 10, color: 'var(--leaf)' }}>
             {chapter.pages.map((_, i) => (
@@ -478,6 +549,9 @@ export default function ReadPage() {
             </button>
             <button onClick={() => simulate('tricky')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
               sim: tricky
+            </button>
+            <button onClick={simulateLive} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
+              sim: live
             </button>
           </div>
         )}

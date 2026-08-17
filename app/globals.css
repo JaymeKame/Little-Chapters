@@ -137,6 +137,25 @@ a {
   font-weight: 700;
 }
 
+/* Live karaoke highlight while the mic is on: unread words dim, heard words
+ * return to full strength, the most recent one glows sunshine. */
+.lc-page-text .lc-word {
+  border-radius: 6px;
+  transition: opacity 0.25s ease, background-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.lc-page-text .lc-word-dim {
+  /* Keep dimmed words genuinely readable: the child decodes words while
+   * they are still dim (the highlight trails recognition). 0.65 keeps ink
+   * ≈4.5:1 and the bold blue focus words ≈3:1 on the white card. */
+  opacity: 0.65;
+}
+
+.lc-page-text .lc-word-now {
+  background: rgba(244, 201, 93, 0.5);
+  box-shadow: 0 0 0 3px rgba(244, 201, 93, 0.5);
+}
+
 .lc-tricky-word {
   font-size: 38px;
   font-weight: 700;
