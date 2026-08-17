@@ -9,7 +9,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { useAuth } from '@/components/AuthProvider';
-import { loadProfile, type ChildProfile } from '@/lib/profile';
+import { avatarEmoji, loadProfile, type ChildProfile } from '@/lib/profile';
 
 export default function ChildHomePage() {
   const router = useRouter();
@@ -47,7 +47,7 @@ export default function ChildHomePage() {
               boxShadow: '0 1px 4px rgba(43,43,43,0.12)',
             }}
           >
-            🧒
+            {avatarEmoji(profile.avatar)}
           </span>
           {profile.childName}
         </span>
