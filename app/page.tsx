@@ -34,7 +34,7 @@ export default function LandingPage() {
               style={{
                 fontFamily: 'var(--serif)',
                 fontStyle: 'italic',
-                color: 'var(--leaf)',
+                color: 'var(--dark)',
                 fontSize: 20,
                 lineHeight: 1.35,
                 margin: '0 0 14px',

@@ -6,10 +6,16 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { PetCompanion, usePet } from '@/components/PetCompanion';
+import { useAuth } from '@/components/AuthProvider';
 import { loadProfile, loadReport, type ChildProfile, type SessionReport } from '@/lib/profile';
+
+const PRACTICE_ICONS = ['🌱', '✨', '🪄'];
 
 export default function ParentMessagePage() {
   const router = useRouter();
+  const { user } = useAuth();
+  const pet = usePet(user?.uid ?? null);
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [report, setReport] = useState<SessionReport | null>(null);
   const [now, setNow] = useState('');
@@ -63,14 +69,12 @@ export default function ParentMessagePage() {
         {report ? (
           <div
             style={{
-              background: 'var(--card)',
-              border: '1px solid var(--line)',
-              borderRadius: '16px 16px 16px 4px',
-              padding: '16px 18px',
-              fontSize: 14.5,
-              lineHeight: 1.65,
+              background: '#f2f2f2',
+              borderRadius: 17,
+              padding: '15px 16px',
+              fontSize: 13.5,
+              lineHeight: 1.6,
               maxWidth: 330,
-              boxShadow: '0 1px 4px rgba(43,43,43,0.06)',
             }}
           >
             <p style={{ margin: '0 0 12px' }}>Hi there! 👋</p>
@@ -82,7 +86,7 @@ export default function ParentMessagePage() {
               {report.practiced.slice(0, 3).map((p, i) => (
                 <div key={`${p.word}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
                   <span aria-hidden style={{ fontSize: 12 }}>
-                    ✳️
+                    {PRACTICE_ICONS[i % PRACTICE_ICONS.length]}
                   </span>
                   <span>{p.hint}</span>
                 </div>
@@ -120,6 +124,11 @@ export default function ParentMessagePage() {
             </p>
           </div>
         )}
+        {/* Progress detail lives HERE, not on the child's screens — the
+            handoff forbids scores/streaks/XP in child-facing UI. */}
+        <div style={{ marginTop: 22 }}>
+          <PetCompanion pet={pet} variant="parent" />
+        </div>
       </main>
     </div>
   );

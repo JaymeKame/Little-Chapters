@@ -26,14 +26,9 @@ import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/read
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
-const SCENES: Record<string, string> = {
-  dogs: 'linear-gradient(180deg, #bfe0f5 0%, #d8ecc8 45%, #a9cf94 100%)',
-  space: 'linear-gradient(180deg, #1d2a52 0%, #3a4a7c 60%, #56679c 100%)',
-  dinosaurs: 'linear-gradient(180deg, #cfe8cf 0%, #a8d0a0 55%, #7fb27d 100%)',
-  trains: 'linear-gradient(180deg, #cfe4f2 0%, #e3d9c4 55%, #c9b489 100%)',
-  unicorns: 'linear-gradient(180deg, #f3d9ef 0%, #dcd2f2 55%, #b8c8ee 100%)',
-  ocean: 'linear-gradient(180deg, #bfe4f0 0%, #8fc8e6 55%, #5aa6d4 100%)',
-};
+/* Scene backgrounds come from the handoff (.lc-scenic / .lc-cliff in
+ * globals.css); per-interest artwork returns when the approved watercolor
+ * assets replace the CSS placeholders. */
 
 function Waveform({ active }: { active: boolean }) {
   return (
@@ -55,21 +50,27 @@ function Waveform({ active }: { active: boolean }) {
   );
 }
 
-/** Page text with focus words colored: first = sky blue, rest = leaf green. */
+/** Handoff spec: one sentence per line with breathing room; every focus word
+ *  bold in the accessible reading blue (#075DAD). */
 function PageText({ text, focusWords }: { text: string; focusWords: string[] }) {
   const lower = focusWords.map((w) => w.toLowerCase());
+  const sentences = text.split(/(?<=[.!?])\s+/);
   return (
     <p className="lc-page-text">
-      {text.split(/(\s+)/).map((tok, i) => {
-        const clean = tok.toLowerCase().replace(/[^a-z']/g, '');
-        const idx = clean ? lower.indexOf(clean) : -1;
-        const color = idx === 0 ? 'var(--sky)' : idx > 0 ? 'var(--leaf)' : undefined;
-        return (
-          <span key={i} style={color ? { color, fontWeight: 700 } : undefined}>
-            {tok}
-          </span>
-        );
-      })}
+      {sentences.map((sentence, si) => (
+        <span key={si} className="lc-sentence">
+          {sentence.split(/(\s+)/).map((tok, i) => {
+            const clean = tok.toLowerCase().replace(/[^a-z']/g, '');
+            return clean && lower.includes(clean) ? (
+              <span key={i} className="lc-focus-word">
+                {tok}
+              </span>
+            ) : (
+              <span key={i}>{tok}</span>
+            );
+          })}
+        </span>
+      ))}
     </p>
   );
 }
@@ -109,7 +110,6 @@ export default function ReadPage() {
 
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
-  const scene = SCENES[profile.interests[0]] ?? SCENES.dogs;
 
   function armSilenceStop() {
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
@@ -276,7 +276,7 @@ export default function ReadPage() {
   /* ── Screen 5: chapter end ── */
   if (phase === 'chapter-end') {
     return (
-      <div className="scene" style={{ background: scene }}>
+      <div className="scene lc-cliff">
       <div className="screen">
         <header style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
           <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
@@ -336,7 +336,7 @@ export default function ReadPage() {
 
   /* ── Screen 4: reading ── */
   return (
-    <div className="scene" style={{ background: scene }}>
+    <div className="scene lc-scenic">
     <div className="screen">
       <header style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
         <button
@@ -384,10 +384,10 @@ export default function ReadPage() {
           ) : (
             <PageText text={page.text} focusWords={page.focusWords} />
           )}
-          <div aria-hidden style={{ textAlign: 'center', marginTop: 14, letterSpacing: 4, fontSize: 11 }}>
+          <div aria-hidden style={{ textAlign: 'center', marginTop: 20, letterSpacing: 4, fontSize: 10, color: 'var(--leaf)' }}>
             {chapter.pages.map((_, i) => (
-              <span key={i} style={{ color: i === pageIdx ? 'var(--leaf)' : 'var(--stone-deep)' }}>
-                ●
+              <span key={i} style={{ opacity: i === pageIdx ? 1 : 0.35 }}>
+                {i === pageIdx ? '●' : '○'}
               </span>
             ))}
           </div>
@@ -419,7 +419,7 @@ export default function ReadPage() {
           <div style={{ display: 'flex', gap: 10 }}>
             <button
               className="btn-primary"
-              style={{ background: 'var(--sky)', boxShadow: '0 3px 0 #5f9ccb', flex: 1 }}
+              style={{ background: 'var(--blue)', boxShadow: '0 3px 0 #054a8a', flex: 1 }}
               onClick={() => {
                 setPhase('scoring');
                 void beginListening(tricky);
@@ -448,24 +448,26 @@ export default function ReadPage() {
             disabled={phase === 'scoring'}
             aria-label={phase === 'listening' ? "I'm listening — tap when you're done" : 'Start reading'}
             style={{
-              background: 'rgba(255,255,255,0.96)',
+              background: '#fffaf0',
               border: 0,
-              borderRadius: 16,
+              borderRadius: 18,
               padding: '16px 18px',
-              fontSize: 15,
-              color: 'var(--ink-soft)',
+              fontSize: 14,
+              fontWeight: 700,
+              color: 'var(--leaf)',
               boxShadow: '0 4px 14px rgba(43,43,43,0.14)',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               gap: 8,
               width: '100%',
+              lineHeight: 1.7,
             }}
           >
             <Waveform active={phase === 'listening'} />
             {phase === 'ready' && 'Tap, then read the page out loud!'}
-            {phase === 'listening' && 'I’m listening...'}
-            {phase === 'scoring' && 'One moment...'}
+            {phase === 'listening' && 'I’m listening…'}
+            {phase === 'scoring' && 'One moment…'}
           </button>
         )}
 

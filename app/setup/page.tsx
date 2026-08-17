@@ -39,11 +39,11 @@ export default function SetupPage() {
         >
           ‹
         </button>
-        {/* Progress: step 1 of 3 */}
+        {/* Progress: step 1 of 3 — green, per the handoff (● ─ ○ ─ ○) */}
         <div aria-hidden style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 999, background: 'var(--gold)' }} />
-          <span style={{ width: 54, height: 2, background: 'var(--gold)' }} />
-          <span style={{ width: 10, height: 10, borderRadius: 999, border: '2px solid var(--gold)', background: 'var(--paper)' }} />
+          <span style={{ width: 10, height: 10, borderRadius: 999, background: 'var(--leaf)' }} />
+          <span style={{ width: 54, height: 2, background: 'var(--leaf)' }} />
+          <span style={{ width: 10, height: 10, borderRadius: 999, border: '2px solid var(--leaf)', background: 'var(--paper)' }} />
           <span style={{ width: 54, height: 2, background: 'var(--stone-deep)' }} />
           <span style={{ width: 10, height: 10, borderRadius: 999, border: '2px solid var(--stone-deep)', background: 'var(--paper)' }} />
         </div>
@@ -61,8 +61,8 @@ export default function SetupPage() {
         <div
           aria-hidden
           style={{
-            width: 96,
-            height: 96,
+            width: 100,
+            height: 100,
             margin: '0 auto 24px',
             borderRadius: 999,
             background: 'linear-gradient(180deg, #fdf3dd, #f6e7c8)',

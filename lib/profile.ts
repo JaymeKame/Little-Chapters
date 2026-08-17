@@ -3,7 +3,7 @@
  * not a signup"). */
 
 export const INTERESTS = [
-  { id: 'dogs', label: 'Dogs', emoji: '🐕' },
+  { id: 'dogs', label: 'Dogs', emoji: '🐶' },
   { id: 'space', label: 'Space', emoji: '🚀' },
   { id: 'dinosaurs', label: 'Dinosaurs', emoji: '🦖' },
   { id: 'trains', label: 'Trains', emoji: '🚂' },

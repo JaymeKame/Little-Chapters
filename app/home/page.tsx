@@ -29,9 +29,9 @@ export default function ChildHomePage() {
   if (!profile) return <div className="screen" />;
 
   return (
-    <div className="screen" style={{ background: 'linear-gradient(180deg, #eef6ee 0%, var(--paper) 55%)' }}>
+    <div className="screen lc-scenic">
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 18px' }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 600 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 600, fontFamily: 'var(--serif)' }}>
           <span
             aria-hidden
             style={{
@@ -57,35 +57,27 @@ export default function ChildHomePage() {
       </header>
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '4px 24px 0' }}>
-        {/* Book cover */}
+        {/* Book cover — parchment with a double gold border, per the handoff */}
         <div
           style={{
-            width: '100%',
-            maxWidth: 300,
-            borderRadius: 16,
-            background: 'linear-gradient(165deg, #dcecd4 0%, #bcd9b0 55%, #a5cba1 100%)',
-            border: '1px solid #b3c9a8',
-            boxShadow: '0 10px 22px rgba(60, 90, 60, 0.18)',
-            padding: '30px 20px 34px',
+            width: '78%',
+            maxWidth: 290,
+            minHeight: 240,
+            border: '4px double #c69b4c',
+            background: '#fff2ce',
+            borderRadius: 8,
+            boxShadow: '10px 12px #4b663855',
+            display: 'grid',
+            placeItems: 'center',
             textAlign: 'center',
-            position: 'relative',
+            padding: '26px 16px',
+            marginTop: 14,
           }}
         >
-          <span
-            style={{
-              fontFamily: 'var(--serif)',
-              fontSize: 30,
-              color: '#2f4b33',
-              display: 'block',
-              marginBottom: 12,
-            }}
-          >
+          <span style={{ fontFamily: 'var(--serif)', fontWeight: 700, fontSize: 30, color: 'var(--dark)', lineHeight: 1.2 }}>
             Today&rsquo;s
             <br />
             Chapter
-          </span>
-          <span aria-hidden style={{ fontSize: 44 }}>
-            🏡🐕
           </span>
         </div>
 
@@ -94,9 +86,9 @@ export default function ChildHomePage() {
           onClick={() => router.push('/read')}
           aria-label="Start today's chapter"
           style={{
-            marginTop: -34,
-            width: 96,
-            height: 96,
+            marginTop: 26,
+            width: 85,
+            height: 85,
             borderRadius: 999,
             border: 0,
             background: '#fff',
@@ -111,10 +103,10 @@ export default function ChildHomePage() {
             style={{
               width: 0,
               height: 0,
-              borderTop: '20px solid transparent',
-              borderBottom: '20px solid transparent',
-              borderLeft: '32px solid var(--leaf)',
-              marginLeft: 8,
+              borderTop: '18px solid transparent',
+              borderBottom: '18px solid transparent',
+              borderLeft: '28px solid var(--dark)',
+              marginLeft: 7,
             }}
           />
         </button>
@@ -122,23 +114,22 @@ export default function ChildHomePage() {
         <div
           style={{
             marginTop: 22,
-            background: 'rgba(255,255,255,0.94)',
+            background: '#fffaf0',
             border: '1px solid var(--line)',
-            borderRadius: 999,
-            padding: '12px 20px',
-            fontSize: 14.5,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
+            borderRadius: 18,
+            padding: '13px 20px',
+            fontSize: 14,
+            textAlign: 'center',
             boxShadow: '0 2px 8px rgba(43,43,43,0.08)',
           }}
         >
-          There&rsquo;s a new chapter ready for you!
+          There&rsquo;s a new chapter ready for you!&nbsp;&nbsp;
           <span aria-hidden>🔊</span>
         </div>
 
-        <div style={{ width: '100%', marginTop: 24 }}>
-          <PetCompanion pet={pet} />
+        {/* Momo: companion only — no XP/streak/score chrome for the child. */}
+        <div style={{ width: '100%', marginTop: 22 }}>
+          <PetCompanion pet={pet} variant="child" />
         </div>
       </main>
     </div>

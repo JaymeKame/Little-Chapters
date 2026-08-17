@@ -4,8 +4,10 @@
  * emerging readers); storybook moments use the serif display face.          */
 
 :root {
+  /* Tokens from the developer-handoff mockup (source of truth). */
   --leaf: #2e7d63;
-  --leaf-deep: #24614d;
+  --dark: #145c3a; /* buttons, storybook headings */
+  --blue: #075dad; /* reading focus words + supportive correction */
   --sunshine: #f4c95d;
   --sky: #7eb7e6;
   --sky-soft: #eaf3fb;
@@ -13,9 +15,10 @@
   --stone-deep: #ece3d4;
   --ink: #2b2b2b;
   --ink-soft: #6b6459;
-  --paper: #fdfbf7;
+  --bg: #f8f6ef; /* site backdrop */
+  --paper: #fffdf8; /* screen surface */
   --card: #ffffff;
-  --line: #e6ddcd;
+  --line: #ddd2c1;
   --gold: #c9a13b;
 
   /* In-var fallbacks are load-bearing: without them, a missing next/font
@@ -36,7 +39,7 @@ body {
 }
 
 body {
-  background: var(--stone);
+  background: var(--bg);
   color: var(--ink);
   font-family: var(--sans);
   -webkit-font-smoothing: antialiased;
@@ -112,34 +115,57 @@ a {
   }
 }
 
-/* Reading text scales up where kids actually hold tablets. */
+/* Reading text: handoff spec is one sentence per line with breathing room,
+ * focus words bold in the accessible reading blue. Scales up on tablets. */
 .lc-page-text {
-  font-size: 24px;
-  line-height: 1.6;
+  font-size: 20px;
+  line-height: 1.55;
   margin: 0;
   font-weight: 500;
+}
+
+.lc-page-text .lc-sentence {
+  display: block;
+}
+
+.lc-page-text .lc-sentence + .lc-sentence {
+  margin-top: 18px;
+}
+
+.lc-focus-word {
+  color: var(--blue);
+  font-weight: 700;
 }
 
 .lc-tricky-word {
   font-size: 38px;
   font-weight: 700;
-  color: var(--sky);
+  color: var(--blue);
   margin: 0 0 6px;
 }
 
 @media (min-width: 600px) {
   .lc-page-text {
-    font-size: 30px;
+    font-size: 26px;
   }
   .lc-tricky-word {
     font-size: 52px;
   }
 }
 
+/* Handoff scene gradients. */
+.lc-scenic {
+  background: linear-gradient(#8fc9ed 0 38%, #dce7a4 39%, #76994f 70%, #d8b66e 100%);
+}
+
+.lc-cliff {
+  background: linear-gradient(#bfe0ef 0 42%, #7f9b6d 56%, #173c32 100%);
+}
+
 /* ── Landing page (parents visit on laptops — a real webpage there) ────── */
 .lc-landing {
   min-height: 100dvh;
-  background: var(--paper);
+  background: linear-gradient(#fffdf8, #f7edd8);
 }
 
 .lc-landing-inner {
@@ -261,20 +287,20 @@ a {
 .btn-primary {
   display: block;
   width: 100%;
-  background: var(--leaf);
+  background: var(--dark);
   color: #fff;
   border: 0;
   border-radius: 999px;
   padding: 16px 24px;
-  font-size: 17px;
-  font-weight: 600;
-  box-shadow: 0 3px 0 var(--leaf-deep);
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: 0 3px 0 #0d3f27;
   transition: transform 0.08s ease;
 }
 
 .btn-primary:active {
   transform: translateY(2px);
-  box-shadow: 0 1px 0 var(--leaf-deep);
+  box-shadow: 0 1px 0 #0d3f27;
 }
 
 .btn-primary:disabled {
