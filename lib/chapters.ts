@@ -247,6 +247,11 @@ function loadCachedTutorChapter(id: string): Chapter | null {
   }
 }
 
+/* In-flight generations, keyed by chapter id. Every generation is a paid
+ * model call, and React StrictMode fires the mount effect twice in dev — so
+ * without this, the first load of a day buys the same story twice. */
+const inFlight = new Map<string, Promise<Chapter | null>>();
+
 /** One generation per child per day: the tutor chapter is cached under the
  *  same stable per-day id the demo chapter uses, so a mid-day reload reads
  *  the SAME story instead of paying for (and waiting on) a new one. */
@@ -256,6 +261,22 @@ export async function requestTutorChapter(profile: ChildProfile, authToken?: str
   const id = `${chapterIdFor(profile.interests[0], profile.childName)}:s${stageForAge(profile.age)}`;
   const cached = loadCachedTutorChapter(id);
   if (cached) return cached;
+  const pending = inFlight.get(id);
+  if (pending) return pending;
+  const run = generateTutorChapter(profile, id, authToken);
+  inFlight.set(id, run);
+  try {
+    return await run;
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+async function generateTutorChapter(
+  profile: ChildProfile,
+  id: string,
+  authToken?: string | null,
+): Promise<Chapter | null> {
   const context = tutorStoryContext(profile);
   try {
     const response = await fetch('/api/chapters/story', {
