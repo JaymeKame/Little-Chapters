@@ -28,7 +28,11 @@ export const PLANS: SubscriptionPlan[] = [
     id: 'monthly',
     name: 'Monthly',
     priceId: process.env.STRIPE_MONTHLY_PRICE_ID || '',
-    amount: 999, // $9.99
+    // $20/month — the price the landing page has stated since the first
+    // commit. The 999 that used to be here came from the payments branch as a
+    // stock placeholder; the payment screen renders this number while Stripe
+    // charges whatever the price ID says, so the two MUST agree.
+    amount: 2000,
     interval: 'month',
     currency: 'usd',
   },
@@ -36,7 +40,8 @@ export const PLANS: SubscriptionPlan[] = [
     id: 'yearly',
     name: 'Yearly',
     priceId: process.env.STRIPE_YEARLY_PRICE_ID || '',
-    amount: 9999, // $99.99
+    // $200/year = two months free against $20/month.
+    amount: 20000,
     interval: 'year',
     currency: 'usd',
   },
