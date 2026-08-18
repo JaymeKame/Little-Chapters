@@ -18,6 +18,7 @@ import {
   type User,
 } from 'firebase/auth';
 import { getFirebaseAuth } from '@/lib/firebase';
+import { claimPetFromAnonymousUid } from '@/lib/pet';
 import { doc, setDoc, getFirestore } from 'firebase/firestore';
 
 interface AuthContextValue {
@@ -43,6 +44,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 async function upgradeOrSignIn(provider: GoogleAuthProvider | OAuthProvider): Promise<void> {
   const auth = getFirebaseAuth();
   const current = auth.currentUser;
+  const outgoingAnonUid = current?.isAnonymous ? current.uid : null;
   if (current?.isAnonymous) {
     try {
       await linkWithPopup(current, provider);
@@ -56,7 +58,11 @@ async function upgradeOrSignIn(provider: GoogleAuthProvider | OAuthProvider): Pr
       if (!recoverable) throw err;
     }
   }
-  await signInWithPopup(auth, provider);
+  const cred = await signInWithPopup(auth, provider);
+  // Linking was impossible (this Google account already belongs to another
+  // Firebase user), so the uid changed after all. Carry the pet across, but
+  // only into an account that has none — never merge two real histories.
+  if (outgoingAnonUid) claimPetFromAnonymousUid(cred.user.uid, outgoingAnonUid);
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {

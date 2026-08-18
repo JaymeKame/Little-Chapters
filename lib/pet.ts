@@ -273,17 +273,39 @@ const MIRROR_TO_FIRESTORE = process.env.NEXT_PUBLIC_READING_PETS_SYNC === '1';
  * egg at both hops. Only ever claims the signed-out "anon" slot, only when the
  * destination is empty, and removes the source — so a sibling's pet on a
  * shared device is never absorbed. */
-function claimAnonPet(uid: string): PetState | null {
+function claimPetFrom(uid: string, fromUid: string | null): PetState | null {
   try {
     if (localStorage.getItem(lsKey(uid))) return null; // destination already owned
-    const orphan = normalize(JSON.parse(localStorage.getItem(lsKey(null)) ?? 'null'));
+    const orphan = normalize(JSON.parse(localStorage.getItem(lsKey(fromUid)) ?? 'null'));
     if (!orphan) return null;
     localStorage.setItem(lsKey(uid), JSON.stringify(orphan));
-    localStorage.removeItem(lsKey(null));
+    localStorage.removeItem(lsKey(fromUid));
     return orphan;
   } catch {
     return null;
   }
+}
+
+/** Adopt the signed-out "anon" pet. */
+function claimAnonPet(uid: string): PetState | null {
+  return claimPetFrom(uid, null);
+}
+
+/* The other hop that loses a pet: registering when the Google account is
+ * ALREADY attached to a different Firebase user. Linking is impossible there,
+ * so AuthProvider falls back to a plain sign-in and the uid changes anyway,
+ * stranding whatever the child earned on this device.
+ *
+ * Deliberately NOT a merge. XP could be summed but a streak cannot: a child
+ * who read five days here and three days there did not earn eight, and the
+ * streak is the one number the parent screen treats as meaningful. So this
+ * keeps the same claim-once rule as everywhere else — adopt only into an
+ * EMPTY destination — and the caller only invokes it for an outgoing
+ * ANONYMOUS user, so switching between two real sibling accounts on a shared
+ * device can never absorb one into the other. */
+export function claimPetFromAnonymousUid(uid: string, anonymousUid: string): PetState | null {
+  if (!uid || !anonymousUid || uid === anonymousUid) return null;
+  return claimPetFrom(uid, anonymousUid);
 }
 
 /** Load the pet: localStorage first, then Firestore when signed in — the
