@@ -1,4 +1,6 @@
-/* Today's chapter — demo content until the AI chapter-writer exists.
+/* Today's chapter — the built-in demo arc, plus the reading-tutor path
+ * (skeleton + stage-matched generation via /api/chapters/story with an
+ * explicit fallback to the demo arc).
  *
  * One five-page story arc, personalized by the child's top interest: the
  * companion character and scenery change, the phonics shape stays (short
@@ -6,13 +8,13 @@
  * "Only one or two sentences at a time"). Each page lists focus words that
  * get highlighted in the reader and reported to the parent.                  */
 
-import type { InterestId } from './profile';
-import type { ChildProfile } from './profile';
+import type { ChildProfile, InterestId } from './profile';
+import { pickSkeleton, type Skeleton } from '../reading-tutor/src/skeletons';
+import { assignSlots } from '../reading-tutor/src/slots';
+import type { StoryDraft } from '../reading-tutor/src/validators';
 
 export interface ChapterPage {
-  /** 1–2 short sentences; the exact reference text the child reads. */
   text: string;
-  /** Words highlighted in the reader (blue = character, green = new word). */
   focusWords: string[];
 }
 
@@ -29,11 +31,8 @@ export interface Chapter {
   /** Ambience identity for playStoryAmbience() (see lib/audio.ts). */
   ambience: 'farm' | 'space' | 'jungle' | 'countryside' | 'fantasy' | 'ocean';
   pages: ChapterPage[];
-  /** Chapter-end cliffhanger lines (mockup screen 5). */
   cliffhanger: [string, string];
-  /** Teaser for the parent message (mockup screen 6). */
   teaser: string;
-  /** Phonics the chapter practices, for the parent report. */
   phonics: { hint: string; words: string[] }[];
 }
 
@@ -75,11 +74,11 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
       { text: 'The door began to open. Something was inside!', focusWords: ['open', 'inside'] },
     ],
     cliffhanger: ['The door opened... and something amazing was waiting inside.', 'To be continued tomorrow...'],
-    teaser: `${s.character} finds out what was behind the door... 🐾`,
+    teaser: `${s.character} finds out what was behind the door...`,
     phonics: [
-      { hint: 'sh in “shiny”', words: ['shiny'] },
-      { hint: 'short vowels (a, i)', words: ['path', 'fit', 'hill'] },
-      { hint: 'blends (cl, cr)', words: ['click', 'raced'] },
+      { hint: 'sh in shiny', words: ['shiny'] },
+      { hint: 'short vowels', words: ['path', 'fit', 'hill'] },
+      { hint: 'blends', words: ['click', 'raced'] },
     ],
   };
 }
@@ -178,6 +177,91 @@ export function loadCachedVisuals(chapterId: string): ChapterVisuals | null {
   }
 }
 
+/* ── Reading-tutor story path (skeletons + stage-matched generation) ───── */
+
+function stageForAge(age: number): number {
+  return Math.min(10, Math.max(1, Math.round(age) - 4));
+}
+
+function stateKey(profile: ChildProfile): string {
+  return `little-chapters-story-state:${profile.childName.trim().toLowerCase()}`;
+}
+
+function recentSkeletons(profile: ChildProfile): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(stateKey(profile)) ?? '[]') as string[];
+  } catch {
+    return [];
+  }
+}
+
+function rememberSkeleton(profile: ChildProfile, id: string): void {
+  try {
+    const recent = [id, ...recentSkeletons(profile).filter((item) => item !== id)].slice(0, 4);
+    localStorage.setItem(stateKey(profile), JSON.stringify(recent));
+  } catch {
+    /* best-effort rotation memory */
+  }
+}
+
+export function tutorStoryContext(profile: ChildProfile): { stage: number; skeleton: Skeleton } {
+  const stage = stageForAge(profile.age);
+  return { stage, skeleton: pickSkeleton(stage, recentSkeletons(profile)) };
+}
+
+export function adaptTutorDraft(profile: ChildProfile, draft: StoryDraft, skeleton: Skeleton): Chapter {
+  const stage = stageForAge(profile.age);
+  rememberSkeleton(profile, skeleton.id);
+  const base = chapterFor(profile.interests[0], profile.childName);
+  return {
+    ...base,
+    pages: draft.sentences.map((text) => ({ text, focusWords: [] })),
+    cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
+    teaser: draft.summaryLine || `${profile.childName} has more to discover tomorrow...`,
+    phonics: [{ hint: `Stage ${stage} practice`, words: Object.values(assignSlots(skeleton.beats, stage)) }],
+  };
+}
+
+const TUTOR_CACHE_PREFIX = 'little-chapters-tutor-chapter:';
+
+function loadCachedTutorChapter(id: string): Chapter | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TUTOR_CACHE_PREFIX + id) ?? 'null') as Chapter | null;
+    return raw && Array.isArray(raw.pages) && raw.pages.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One generation per child per day: the tutor chapter is cached under the
+ *  same stable per-day id the demo chapter uses, so a mid-day reload reads
+ *  the SAME story instead of paying for (and waiting on) a new one. */
+export async function requestTutorChapter(profile: ChildProfile): Promise<Chapter | null> {
+  const id = chapterIdFor(profile.interests[0], profile.childName);
+  const cached = loadCachedTutorChapter(id);
+  if (cached) return cached;
+  const context = tutorStoryContext(profile);
+  try {
+    const response = await fetch('/api/chapters/story', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile, stage: context.stage, skeletonId: context.skeleton.id }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as { draft?: StoryDraft; skeleton?: Skeleton };
+    if (!data.draft || !data.skeleton) return null;
+    const chapter = adaptTutorDraft(profile, data.draft, data.skeleton);
+    try {
+      localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));
+    } catch {
+      /* best-effort cache */
+    }
+    return chapter;
+  } catch {
+    return null;
+  }
+}
+
 function cacheVisuals(chapterId: string, visuals: ChapterVisuals): void {
   try {
     localStorage.setItem(VISUALS_CACHE_PREFIX + chapterId, JSON.stringify(visuals));
@@ -226,4 +310,3 @@ export async function requestChapterVisuals(
 export function interestFallbackImage(interest: InterestId | undefined): string {
   return `/images/setup/interest-${interest ?? 'dogs'}.png`;
 }
-

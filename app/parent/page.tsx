@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { useAuth } from '@/components/AuthProvider';
 import { loadProfile, loadReport, type ChildProfile, type SessionReport } from '@/lib/profile';
+import { ParentMessages } from '@/components/ParentMessages';
 
 const PRACTICE_ICONS = ['🌱', '✨', '🪄'];
 
@@ -66,6 +67,10 @@ export default function ParentMessagePage() {
           {reportDay ?? `Today ${now}`}
         </p>
 
+        {/* In-app message display */}
+        <ParentMessages />
+
+        {/* Legacy session report display */}
         {report ? (
           <div
             style={{

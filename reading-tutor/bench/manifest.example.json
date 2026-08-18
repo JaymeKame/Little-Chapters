@@ -1,0 +1,39 @@
+{
+  "_readme": [
+    "One entry per calibration clip.",
+    "",
+    "words: the target sentence, tokenised. What the child was ASKED to read.",
+    "expert_correct: one boolean per word. Did Christine or Sophie judge that the",
+    "  child actually read it? This is the ground truth and everything depends on",
+    "  it. Get two experts to label independently and check they agree before you",
+    "  trust any result - if the humans disagree, no tool can be judged.",
+    "phonemes: optional. Leave it out and espeak-ng generates them, which is what",
+    "  you want, because the model was fine-tuned on espeak output. Only override",
+    "  when espeak is wrong about a specific word.",
+    "precomputed: per-WORD scores you already have from Azure and SpeechAce.",
+    "  Both APIs return per-word accuracy alongside the clip-level number. Use the",
+    "  per-word ones. Feeding in a clip-level score is the mistake that makes the",
+    "  whole comparison meaningless."
+  ],
+  "clips": [
+    {
+      "audio": "clips/clip01.wav",
+      "words": ["the", "cat", "sat", "on", "my", "mat"],
+      "expert_correct": [true, true, true, true, true, false],
+      "precomputed": {
+        "azure": [0.94, 0.91, 0.88, 0.93, 0.90, 0.41],
+        "speechace": [0.90, 0.87, 0.85, 0.89, 0.88, 0.55]
+      }
+    },
+    {
+      "audio": "clips/clip02.wav",
+      "words": ["pip", "had", "a", "big", "red", "bag"],
+      "expert_correct": [true, true, true, false, true, true],
+      "phonemes": { "pip": ["p", "ɪ", "p"] },
+      "precomputed": {
+        "azure": [0.88, 0.92, 0.95, 0.62, 0.90, 0.86],
+        "speechace": [0.84, 0.90, 0.93, 0.70, 0.88, 0.83]
+      }
+    }
+  ]
+}

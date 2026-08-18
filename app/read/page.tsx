@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
-import { chapterFor, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
@@ -165,6 +165,7 @@ export default function ReadPage() {
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptRef = useRef(0);
   const practicedRef = useRef<Map<string, string>>(new Map());
+  const startedReadingRef = useRef(false); // once true, never swap the chapter text
   const disposedRef = useRef(false);
 
   useEffect(() => {
@@ -176,6 +177,13 @@ export default function ReadPage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
+    // Upgrade to a stage-matched reading-tutor chapter when one is available
+    // (cached from earlier today, or freshly generated when OPENAI_API_KEY is
+    // configured server-side). Never swap once the child has started reading;
+    // without the key the request 503s instantly and the demo arc stays.
+    void requestTutorChapter(p).then((tutorChapter) => {
+      if (tutorChapter && !disposedRef.current && !startedReadingRef.current) setChapter(tutorChapter);
+    });
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
@@ -232,6 +240,7 @@ export default function ReadPage() {
 
   async function beginListening(referenceText: string) {
     setError(null);
+    startedReadingRef.current = true;
     liveRef.current = createLiveProgress(referenceText);
     setReadCount(0);
     stopSpeaking();
@@ -403,6 +412,7 @@ export default function ReadPage() {
 
   /* Dev-only shortcut so the whole flow is testable without a microphone. */
   function simulate(kind: 'good' | 'tricky') {
+    startedReadingRef.current = true; // sims count as reading — no chapter swaps mid-flow
     const words = page.text.split(/\s+/).map((t) => t.toLowerCase().replace(/[^a-z']/g, '')).filter(Boolean);
     const fakeResult = {
       scores: { pronunciation: 90, accuracy: kind === 'good' ? 94 : 70, fluency: 90, completeness: 100, prosody: 80 },
@@ -493,6 +503,58 @@ export default function ReadPage() {
           </p>
           <div aria-hidden style={{ marginTop: 26, fontSize: 22, color: 'var(--sunshine)' }}>
             ✦
+          </div>
+
+          {/* Account creation prompt after free chapter */}
+          <div
+            style={{
+              marginTop: 40,
+              background: 'rgba(255,255,255,0.95)',
+              borderRadius: 16,
+              padding: '20px 24px',
+              maxWidth: 320,
+              boxShadow: '0 4px 16px rgba(43,43,43,0.15)',
+            }}
+          >
+            <p style={{ fontFamily: 'var(--serif)', fontSize: 16, margin: '0 0 12px', color: 'var(--ink)' }}>
+              Great job on the first chapter!
+            </p>
+            <p style={{ fontSize: 14, margin: '0 0 16px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
+              Create an account to get daily progress updates via SMS with specific wins from each reading session.
+            </p>
+            <button
+              onClick={() => router.push('/register')}
+              className="btn-primary"
+              style={{
+                width: '100%',
+                padding: '12px',
+                fontSize: 15,
+                fontWeight: 600,
+                borderRadius: 10,
+                border: 0,
+                background: 'var(--leaf)',
+                color: '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              Create Free Account
+            </button>
+            <button
+              onClick={() => router.push('/home')}
+              style={{
+                width: '100%',
+                padding: '10px',
+                fontSize: 13,
+                marginTop: 8,
+                borderRadius: 10,
+                border: 0,
+                background: 'transparent',
+                color: 'var(--ink-soft)',
+                cursor: 'pointer',
+              }}
+            >
+              Maybe Later
+            </button>
           </div>
         </main>
       </div>
