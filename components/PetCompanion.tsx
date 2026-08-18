@@ -103,6 +103,9 @@ export function PetCompanion({ pet, variant = 'parent' }: { pet: PetHandle; vari
   // Tab left open past midnight: yesterday's count isn't "today" anymore.
   const readingsToday = s.lastActiveDay === todayKey() ? s.readingsToday : 0;
   const mood = pet.message?.mood ?? 'happy';
+  // Child screens use the Little Chapters storybook palette (leaf/cream/
+  // stone/sunshine); the parent dashboard keeps its own purple treatment.
+  const child = variant === 'child';
 
   return (
     <section
@@ -111,8 +114,8 @@ export function PetCompanion({ pet, variant = 'parent' }: { pet: PetHandle; vari
         display: 'flex',
         gap: 16,
         alignItems: 'center',
-        border: '1px solid #e3d9f3',
-        background: 'linear-gradient(135deg, #faf7ff 0%, #f0f7ff 100%)',
+        border: child ? '1px solid var(--line)' : '1px solid var(--line)',
+        background: child ? 'var(--stone)' : 'var(--paper)',
         borderRadius: 14,
         padding: '14px 18px',
         marginBottom: 20,
@@ -131,8 +134,8 @@ export function PetCompanion({ pet, variant = 'parent' }: { pet: PetHandle; vari
         <div className="pet-emoji" style={{ fontSize: 52, lineHeight: 1.2, animation: MOOD_ANIMATION[mood] }}>
           {stage.emoji}
         </div>
-        <div style={{ fontSize: 11, color: '#7a6f8f', marginTop: 2 }}>
-          {variant === 'child' ? s.name : `${s.name} · Lv ${level}`}
+        <div style={{ fontSize: 11, color: 'var(--ink-soft)', marginTop: 2 }}>
+          {child ? s.name : `${s.name} · Lv ${level}`}
         </div>
         {pet.flash && (
           <div
@@ -143,7 +146,7 @@ export function PetCompanion({ pet, variant = 'parent' }: { pet: PetHandle; vari
               right: -6,
               fontSize: 14,
               fontWeight: 700,
-              color: '#7c3aed',
+              color: 'var(--leaf)',
               animation: 'pet-xp-float 2.4s ease-out forwards',
             }}
           >
@@ -156,12 +159,12 @@ export function PetCompanion({ pet, variant = 'parent' }: { pet: PetHandle; vari
         {pet.message && (
           <div
             style={{
-              background: '#fff',
-              border: '1px solid #e6e0f0',
+              background: child ? 'var(--paper)' : '#fff',
+              border: '1px solid var(--line)',
               borderRadius: '12px 12px 12px 3px',
               padding: '8px 12px',
               fontSize: 14,
-              color: '#3d3554',
+              color: 'var(--ink)',
               marginBottom: 8,
               display: 'inline-block',
             }}
@@ -173,18 +176,18 @@ export function PetCompanion({ pet, variant = 'parent' }: { pet: PetHandle; vari
         {variant === 'parent' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <div style={{ flex: '1 1 140px', maxWidth: 240 }}>
-            <div style={{ height: 8, background: '#e9e3f5', borderRadius: 999 }}>
+            <div style={{ height: 8, background: 'var(--stone-deep)', borderRadius: 999 }}>
               <div
                 style={{
                   height: 8,
                   width: `${Math.min(100, Math.round((gained / needed) * 100))}%`,
-                  background: 'linear-gradient(90deg, #a78bfa, #7c3aed)',
+                  background: 'var(--leaf)',
                   borderRadius: 999,
                   transition: 'width 0.6s ease',
                 }}
               />
             </div>
-            <div style={{ fontSize: 10.5, color: '#8b81a3', marginTop: 2 }}>
+            <div style={{ fontSize: 10.5, color: 'var(--ink-soft)', marginTop: 2 }}>
               {gained}/{needed} XP to level {level + 1} · {stage.label}
             </div>
           </div>
@@ -194,8 +197,8 @@ export function PetCompanion({ pet, variant = 'parent' }: { pet: PetHandle; vari
           </div>
 
           <div title={`Today's readings (goal: ${s.dailyGoal})`} style={{ fontSize: 13, letterSpacing: 2 }}>
-            {Array.from({ length: s.dailyGoal }, (_, i) => (
-              <span key={i} style={{ color: i < readingsToday ? '#7c3aed' : '#d8d0e8' }}>
+                {Array.from({ length: s.dailyGoal }, (_, i) => (
+              <span key={i} style={{ color: i < readingsToday ? 'var(--leaf)' : 'var(--stone-deep)' }}>
                 ●
               </span>
             ))}
