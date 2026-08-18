@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
+import { adminUnconfiguredResponse } from '@/lib/route-auth';
 import { sendSMS } from '@/lib/sms';
 import { generateParentMessage } from '@/lib/parent-message';
 import { validateParentMessage } from '@/lib/message-validator';
@@ -28,6 +29,9 @@ const E164 = /^\+[1-9]\d{6,14}$/;
 
 export async function POST(request: NextRequest) {
   try {
+    const unconfigured = adminUnconfiguredResponse();
+    if (unconfigured) return unconfigured;
+
     // Initialize Firebase Admin
     const auth = adminAuth();
     const db = adminDb();

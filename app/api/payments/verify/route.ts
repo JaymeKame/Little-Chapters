@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
+import { adminUnconfiguredResponse } from '@/lib/route-auth';
 import { retrieveCheckoutSession, retrieveSubscription, subscriptionPeriod } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
@@ -7,6 +8,9 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
+    const unconfigured = adminUnconfiguredResponse();
+    if (unconfigured) return unconfigured;
+
     const authHeader = request.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Missing authorization header' }, { status: 401 });
