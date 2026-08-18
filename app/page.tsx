@@ -72,25 +72,13 @@ export default function LandingPage() {
             </div>
           </div>
 
-          {/* Cozy reading moment — the storybook bear illustration from the
-              scene library (portrait crop keeps the bear + book in frame). */}
-          <div
-            className="lc-hero-art"
-            aria-hidden
-            style={{
-              border: '1px solid var(--line)',
-              borderRadius: 22,
-              overflow: 'hidden',
-              maxHeight: 'clamp(300px, 48vh, 460px)',
-              boxShadow: '0 10px 30px rgba(60, 50, 30, 0.14)',
-            }}
-          >
+          {/* Cozy reading moment. hero-bear.jpg is a bear-centred crop of the
+              storybook scene (the bear sits left of centre in the full
+              painting); framing lives in globals.css .lc-hero-art so every
+              breakpoint stays consistent. */}
+          <div className="lc-hero-art" aria-hidden>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/images/landing/dinosaurs-01.png"
-              alt=""
-              style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 62%', display: 'block' }}
-            />
+            <img src="/images/landing/hero-bear.jpg" alt="" />
           </div>
 
           <div className="lc-hero-cta">
