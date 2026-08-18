@@ -48,7 +48,13 @@ a { color: inherit; }
 @media (min-width: 600px) {
   .screen {
     max-width: 520px;
-    min-height: calc(100dvh - 52px);
+    /* Capped, not just shrunk-to-fit: a standalone card (setup, parent) should
+     * still read as a full app screen on a normal phone-ish height, but an
+     * iPad in portrait (~1180px tall) has far more vertical room than any of
+     * these forms need — uncapped, the card stretches to fill it and leaves
+     * a dead, unstyled gap below short content (worst on /parent's empty
+     * state). 800px comfortably fits every standalone-.screen page's content. */
+    min-height: min(calc(100dvh - 52px), 800px);
     margin: 26px auto;
     border-radius: 26px;
     box-shadow: 0 18px 48px rgba(60, 50, 30, 0.14), 0 2px 8px rgba(60, 50, 30, 0.08);
@@ -1195,7 +1201,19 @@ a { color: inherit; }
 .lc-cliff-star { align-self: center; }
 
 .lc-parent-screen { background: #f5efe6; }
-.lc-parent-main { width: min(100%, 620px); margin: 0 auto; padding: 24px 24px 34px; }
+.lc-parent-main {
+  width: min(100%, 620px);
+  margin: 0 auto;
+  padding: 24px 24px 34px;
+  /* .screen is a flex column with a capped-but-still-generous min-height
+   * (see .screen @600px) — on an iPad-portrait-tall viewport, an empty
+   * parent note is much shorter than the card, so without this the content
+   * sits pinned at the top with a dead, unstyled void below it. */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
 .lc-parent-message { max-width: 480px; padding: 26px 24px; border-radius: 6px 18px 18px 18px; background: #fffdf8; border: 1px solid #dfd2bd; box-shadow: 0 12px 28px rgba(80,59,29,.09); }
 .lc-parent-list-item { padding: 8px 0; border-bottom: 1px solid #eadfce; }
 .lc-parent-pet { max-width: 480px; margin: 22px auto 0; }
