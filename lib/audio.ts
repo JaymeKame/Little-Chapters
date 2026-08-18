@@ -33,14 +33,17 @@ export function speakPrompt(
 ): void {
   if (typeof window === 'undefined' || !window.speechSynthesis) return;
   try {
+    duckAmbience();
     window.speechSynthesis.cancel(); // one voice line at a time
     const u = new SpeechSynthesisUtterance(text);
     u.rate = opts?.rate ?? 0.95; // slightly slower — early readers, not adults
     u.pitch = opts?.pitch ?? 1.05;
-    if (opts?.onEnd) {
-      u.onend = opts.onEnd;
-      u.onerror = opts.onEnd; // blocked/unsupported mid-utterance — still clear the "speaking" state
-    }
+    const finish = () => {
+      opts?.onEnd?.();
+      restoreAmbience();
+    };
+    u.onend = finish;
+    u.onerror = finish; // blocked/unsupported mid-utterance — still clear the "speaking" state
     window.speechSynthesis.speak(u);
   } catch {
     /* speechSynthesis unsupported/blocked — voice is a nice-to-have, never fatal */
@@ -61,11 +64,11 @@ export function welcomeLine(childName: string, chapter?: Chapter | null): string
 /* ── Ambience / music / UI sound (asset-based; silent if asset missing) ─ */
 
 const AUDIO_VOLUMES = {
-  theme: 0.045,
-  ambience: 0.03,
-  music: 0.18,
-  ui: 0.28,
-  duckFactor: 0.35,
+  theme: 0.022,
+  ambience: 0.014,
+  music: 0.1,
+  ui: 0.18,
+  duckFactor: 0.05,
 } as const;
 
 let themeEl: HTMLAudioElement | null = null;
@@ -80,12 +83,17 @@ function audioLog(message: string): void {
   if (process.env.NODE_ENV === 'development') console.info(`[Audio] ${message}`);
 }
 
-function fadeElement(el: HTMLAudioElement | null, target: number): void {
+/* Duck reacts quickly (a child starts speaking, we must get out of the way);
+ * restore is slower and gentler so the theme doesn't visibly "snap" back in
+ * mid-listen. Tick length stays short (30ms) so both feel smooth. */
+const FADE_TICK_MS = 30;
+
+function fadeElement(el: HTMLAudioElement | null, target: number, durationMs = 200): void {
   if (!el) return;
   const previous = fadeTimers.get(el);
   if (previous) clearInterval(previous);
   const start = el.volume;
-  const steps = 8;
+  const steps = Math.max(1, Math.round(durationMs / FADE_TICK_MS));
   let step = 0;
   const timer = setInterval(() => {
     step += 1;
@@ -94,7 +102,7 @@ function fadeElement(el: HTMLAudioElement | null, target: number): void {
       clearInterval(timer);
       fadeTimers.delete(el);
     }
-  }, 25);
+  }, FADE_TICK_MS);
   fadeTimers.set(el, timer);
 }
 
@@ -191,15 +199,15 @@ export function setAmbienceVolume(volume: number): void {
 /** Speech always wins: duck ambience while the child/AI/help audio plays. */
 export function duckAmbience(): void {
   ducked = true;
-  fadeElement(themeEl, AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor);
-  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor);
+  fadeElement(themeEl, AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor, 130);
+  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor, 130);
   audioLog('duck -> listening');
 }
 
 export function restoreAmbience(): void {
   ducked = false;
-  fadeElement(themeEl, AUDIO_VOLUMES.theme);
-  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience);
+  fadeElement(themeEl, AUDIO_VOLUMES.theme, 1100);
+  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience, 1100);
   audioLog('restore');
 }
 

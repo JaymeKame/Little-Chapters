@@ -1,9 +1,5 @@
 'use client';
 
-/* Screen 6 — Parent message (after each session). Mockup: a chat-style
- * message from Little Chapters — warm, specific, pressure-free. No scores.
- * No comparison. Just what they practiced, new words, and tomorrow's hook.  */
-
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
@@ -34,99 +30,55 @@ export default function ParentMessagePage() {
       : null;
 
   return (
-    <div className="screen" style={{ background: '#f4f2ee' }}>
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          padding: '14px 16px',
-          borderBottom: '1px solid var(--line)',
-          background: 'var(--paper)',
-        }}
-      >
-        <button
-          onClick={() => router.push('/home')}
-          aria-label="Back"
-          style={{ border: 0, background: 'none', fontSize: 20, color: 'var(--ink-soft)', padding: 4 }}
-        >
+    <div className="screen lc-parent-screen">
+      <header className="lc-parent-header">
+        <button onClick={() => router.push('/home')} aria-label="Back" className="lc-parent-back">
           ‹
         </button>
-        <div style={{ flex: 1, textAlign: 'center' }}>
-          <div aria-hidden style={{ fontSize: 22 }}>
-            📖
-          </div>
-          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Little Chapters</div>
+        <div className="lc-parent-brand">
+          <div aria-hidden className="lc-parent-bookmark">✦</div>
+          <div>Little Chapters</div>
         </div>
-        <span style={{ width: 28 }} />
+        <span className="lc-parent-spacer" />
       </header>
 
-      <main style={{ flex: 1, padding: '18px 18px 30px' }}>
-        <p style={{ textAlign: 'center', fontSize: 11, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
-          {reportDay ?? `Today ${now}`}
-        </p>
+      <main className="lc-parent-main">
+        <p className="lc-parent-date">{reportDay ?? `Today ${now}`}</p>
 
         {report ? (
-          <div
-            style={{
-              background: '#f2f2f2',
-              borderRadius: 17,
-              padding: '15px 16px',
-              fontSize: 13.5,
-              lineHeight: 1.6,
-              maxWidth: 330,
-            }}
-          >
-            <p style={{ margin: '0 0 12px' }}>Hi there! 👋</p>
-            <p style={{ margin: '0 0 12px' }}>
-              {name} read a great chapter {isToday ? 'today' : `on ${reportDay}`}.
+          <div className="lc-parent-message">
+            <p className="lc-parent-greeting">Hi there! 👋</p>
+            <p>
+              {name} read a great chapter {isToday ? 'today' : `on ${reportDay}`}. 
             </p>
-            <p style={{ margin: '0 0 4px' }}>They practiced:</p>
-            <div style={{ margin: '0 0 12px' }}>
+            <p className="lc-parent-label">They practiced:</p>
+            <div className="lc-parent-list">
               {report.practiced.slice(0, 3).map((p, i) => (
-                <div key={`${p.word}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
-                  <span aria-hidden style={{ fontSize: 12 }}>
-                    {PRACTICE_ICONS[i % PRACTICE_ICONS.length]}
-                  </span>
+                <div key={`${p.word}-${i}`} className="lc-parent-list-item">
+                  <span aria-hidden className="lc-parent-practice-icon">{PRACTICE_ICONS[i % PRACTICE_ICONS.length]}</span>
                   <span>{p.hint}</span>
                 </div>
               ))}
             </div>
-            <p style={{ margin: '0 0 4px' }}>New words they read:</p>
-            <p style={{ margin: '0 0 12px', color: 'var(--leaf)', fontWeight: 600 }}>
-              {report.newWords.slice(0, 6).join(', ')}
-            </p>
-            <p style={{ margin: '0 0 12px', color: 'var(--ink-soft)' }}>—</p>
-            <p style={{ margin: '0 0 12px' }}>
+            <p className="lc-parent-label">New words they read:</p>
+            <p className="lc-parent-words">{report.newWords.slice(0, 6).join(', ')}</p>
+            <div className="lc-parent-divider" aria-hidden />
+            <p>
               {isToday ? 'Tomorrow' : 'Next chapter'}: {report.teaser}
             </p>
-            <p style={{ margin: 0 }}>{isToday ? 'See you tomorrow!' : 'See you soon!'}</p>
-            <p aria-hidden style={{ margin: '10px 0 0', fontSize: 16 }}>
-              💚
-            </p>
+            <p className="lc-parent-signoff">{isToday ? 'See you tomorrow!' : 'See you soon!'}</p>
+            <p aria-hidden className="lc-parent-heart">💚</p>
           </div>
         ) : (
-          <div
-            style={{
-              background: 'var(--card)',
-              border: '1px solid var(--line)',
-              borderRadius: '16px 16px 16px 4px',
-              padding: '16px 18px',
-              fontSize: 14.5,
-              lineHeight: 1.65,
-              maxWidth: 330,
-            }}
-          >
-            <p style={{ margin: '0 0 10px' }}>Hi there! 👋</p>
-            <p style={{ margin: 0 }}>
-              After {name ? `${name}'s` : 'the'} first chapter tonight, you&rsquo;ll get a note here about what they
-              practiced and the new words they read. No scores. No pressure. 💚
+          <div className="lc-parent-message lc-parent-empty">
+            <p className="lc-parent-greeting">Hi there! 👋</p>
+            <p>
+              After {name ? `${name}'s` : 'the'} first chapter tonight, you&rsquo;ll get a note here about what they practiced and the new words they read. No scores. No pressure. 💚
             </p>
           </div>
         )}
-        {/* Progress detail lives HERE, not on the child's screens — the
-            handoff forbids scores/streaks/XP in child-facing UI. */}
-        <div style={{ marginTop: 22 }}>
+
+        <div className="lc-parent-pet">
           <PetCompanion pet={pet} variant="parent" />
         </div>
       </main>

@@ -11,12 +11,12 @@
  *  - Chapter end: no summary, no scores — just the cliffhanger and a reason
  *    to return. XP quietly feeds Momo; the parent gets the detail instead.  */
 
-import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
-import { chapterFor, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { chapterFor, selectChapterScenes, type Chapter } from '@/lib/chapters';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
   startReadingSession,
@@ -42,6 +42,22 @@ import {
 } from '@/lib/audio';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
+
+/* Graded praise for the celebrate beat — always warm, never a failure state;
+ * only the intensity tracks the result. */
+const PRAISE = {
+  top: ['Awesome reading!', 'Amazing!', 'Fantastic reading!'],
+  great: ['Great reading!', 'Great job!'],
+  good: ['Nice reading!', 'Good job!'],
+} as const;
+
+const pick = (arr: readonly string[]) => arr[Math.floor(Math.random() * arr.length)];
+
+function praiseFor(accuracy: number, hadHelp: boolean): string {
+  if (!hadHelp && accuracy >= 90) return pick(PRAISE.top);
+  if (!hadHelp && accuracy >= 75) return pick(PRAISE.great);
+  return pick(PRAISE.good);
+}
 
 /* Scene background: the SAME real curated story scene selection as Screen 3
  * (lib/chapters.ts selectStoryScene — interest-aware, stable per chapter.id)
@@ -92,8 +108,12 @@ function PageText({ text, focusWords }: { text: string; focusWords: string[] }) 
   );
 }
 
-export default function ReadPage() {
+function ReadExperience() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const debug = searchParams.get('debug') === '1';
+  // Dev-only handle to reach the real cliffhanger presentation without playing the whole chapter.
+  const previewCliffhanger = process.env.NODE_ENV === 'development' && searchParams.get('preview') === 'cliffhanger';
   const { user } = useAuth();
   const pet = usePet(user?.uid ?? null);
   const [profile, setProfile] = useState<ChildProfile | null>(null);
@@ -104,6 +124,7 @@ export default function ReadPage() {
   const [error, setError] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false); // TTS replay of the current sentence — distinct from mic-listening
   const [sentenceLeaving, setSentenceLeaving] = useState(false); // brief out-transition before the next sentence mounts
+  const [praise, setPraise] = useState('Nice reading!'); // graded celebrate-beat copy — set once per successful read
   const listeningCuePlayedRef = useRef(false);
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -120,6 +141,7 @@ export default function ReadPage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
+    if (previewCliffhanger) setPhase('chapter-end');
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
@@ -151,7 +173,8 @@ export default function ReadPage() {
 
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
-  const sceneBg = selectStoryScene(chapter.id, profile.interests);
+  const scenes = selectChapterScenes(chapter.id, profile.interests);
+  const sceneBg = scenes.reading; // cliffhanger reuses this — never a separate pick
 
   function replayCurrentSentence() {
     if (speaking) {
@@ -176,7 +199,9 @@ export default function ReadPage() {
     setError(null);
     stopSpeaking();
     setSpeaking(false);
-    listeningCuePlayedRef.current = false;
+    duckAmbience();
+    listeningCuePlayedRef.current = true;
+    playListeningStart();
     try {
       const authToken = user ? await user.getIdToken() : null;
       const session = await startReadingSession({
@@ -186,10 +211,6 @@ export default function ReadPage() {
           if (disposedRef.current) return;
           if (s === 'listening') {
             setPhase('listening');
-            if (!listeningCuePlayedRef.current) {
-              listeningCuePlayedRef.current = true;
-              playListeningStart();
-            }
           }
           if (s === 'error' && sessionRef.current) void finishListening();
         },
@@ -282,11 +303,13 @@ export default function ReadPage() {
       setPhase('correction');
       return;
     }
+    setPraise(praiseFor(r.scores.accuracy, attemptRef.current > 0));
     celebrateAndAdvance();
   }
 
   function celebrateAndAdvance(successfulRead = true) {
     if (successfulRead) playReadingCue('section-success.mp3');
+    else setPraise(pick(PRAISE.good)); // neutral "keep going" skip — still warm, no success cue
     setPhase('celebrate');
     setTimeout(() => {
       if (!disposedRef.current) advance();
@@ -345,218 +368,140 @@ export default function ReadPage() {
   if (phase === 'chapter-end') {
     return (
       <div className="scene lc-cliff" style={{ position: 'relative' }}>
-      <SceneBackground src={sceneBg} cliff />
-      <div className="screen lc-scene-content">
-        <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
-          <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
-            🏠
-          </button>
-          <button className="icon-btn" aria-label="Read aloud">
-            🔊
-          </button>
-        </header>
-        <main
-          style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'flex-end',
-            alignItems: 'center',
-            textAlign: 'center',
-            padding: '0 34px 70px',
-          }}
-        >
-          <p className="lc-cliff-copy"
-            style={{
-              fontFamily: 'var(--serif)',
-              fontStyle: 'italic',
-              fontSize: 20,
-              lineHeight: 1.5,
-              color: 'var(--sunshine)',
-              textShadow: '0 1px 8px rgba(43,43,43,0.45)',
-              margin: '0 0 18px',
-            }}
-          >
-            {chapter.cliffhanger[0]}
-          </p>
-          <p className="lc-cliff-continue"
-            style={{
-              fontFamily: 'var(--serif)',
-              fontSize: 30,
-              lineHeight: 1.3,
-              color: 'var(--sunshine)',
-              textShadow: '0 1px 8px rgba(43,43,43,0.5)',
-              margin: 0,
-            }}
-          >
-            {chapter.cliffhanger[1]}
-          </p>
-          <div aria-hidden style={{ marginTop: 26, fontSize: 22, color: 'var(--sunshine)' }}>
-            ✦
-          </div>
-        </main>
-      </div>
+        <SceneBackground src={sceneBg} cliff />
+        <div className="screen lc-scene-content lc-cliff-shell">
+          <header className="lc-top-controls lc-cliff-header">
+            <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
+              🏠
+            </button>
+            <button className="icon-btn" aria-label="Read aloud">
+              🔊
+            </button>
+          </header>
+          <main className="lc-cliff-main">
+            <p className="lc-cliff-complete">You finished today&rsquo;s chapter.</p>
+            <p className="lc-cliff-copy">{chapter.cliffhanger[0]}</p>
+            <p className="lc-cliff-return">Come back tomorrow to see what happens next.</p>
+            <p className="lc-cliff-continue">{chapter.cliffhanger[1]}</p>
+          </main>
+        </div>
       </div>
     );
   }
 
-  /* ── Screen 4: reading ── */
   return (
     <div className="scene lc-scenic lc-reading-scene" style={{ position: 'relative' }}>
-    <SceneBackground src={sceneBg} />
-    <div className="screen lc-scene-content">
-      <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
-        <button
-          className="icon-btn"
-          aria-label="Close"
-          onClick={() => {
-            // Full teardown BEFORE navigating: a still-resolving session or a
-            // pending silence timer must not resurrect the flow mid-exit.
-            disposedRef.current = true;
-            if (silenceTimer.current) clearTimeout(silenceTimer.current);
-            sessionRef.current?.cancel();
-            sessionRef.current = null;
-            playHomeSound('close.mp3');
-            router.push('/home');
-          }}
-        >
-          ✕
-        </button>
-        <button className="icon-btn" aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'} onClick={() => { playHomeSound('replay.mp3'); replayCurrentSentence(); }}>
-          {speaking ? '🔇' : '🔊'}
-        </button>
-      </header>
+      <SceneBackground src={sceneBg} />
+      <div className="screen lc-scene-content lc-reading-shell">
+        <header className="lc-top-controls lc-reading-header">
+          <button
+            className="icon-btn"
+            aria-label="Close"
+            onClick={() => {
+              disposedRef.current = true;
+              if (silenceTimer.current) clearTimeout(silenceTimer.current);
+              sessionRef.current?.cancel();
+              sessionRef.current = null;
+              playHomeSound('close.mp3');
+              router.push('/home');
+            }}
+          >
+            ✕
+          </button>
+          <button
+            className="icon-btn"
+            aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'}
+            onClick={() => {
+              playHomeSound('replay.mp3');
+              replayCurrentSentence();
+            }}
+          >
+            {speaking ? '🔇' : '🔊'}
+          </button>
+        </header>
 
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '4px 22px 26px' }}>
-        <div
-          className={`lc-reading-card-in${phase === 'celebrate' ? ' lc-section-success' : ''}`}
-          style={{
-            background: '#fffdf8',
-            borderRadius: 18,
-            padding: '26px 24px 18px',
-            boxShadow: '0 6px 20px rgba(43,43,43,0.16)',
-          }}
-        >
-          {/* Keep the big word visible through the retry's listening/scoring —
-              hiding it the moment the child taps "Try the word" defeats it. */}
-          {tricky ? (
-            <div className="lc-help-pulse" style={{ textAlign: 'center' }}>
-              <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
-                Let&rsquo;s try that word together.
-              </p>
-              <p className="lc-tricky-word">{tricky}</p>
-              <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
-                • • •
+        <main className="lc-reading-main">
+          <div className="lc-reading-stack">
+            <div className={`lc-reading-card-in${phase === 'celebrate' ? ' lc-section-success' : ''} lc-reading-card`}>
+              {tricky ? (
+                <div className="lc-help-pulse lc-tricky-wrap">
+                  <p className="lc-tricky-label">Let&rsquo;s try that word together.</p>
+                  <p className="lc-tricky-word">{tricky}</p>
+                  <div aria-hidden className="lc-tricky-dots">• • •</div>
+                </div>
+              ) : (
+                <div key={pageIdx} className={sentenceLeaving ? 'lc-sentence-out' : 'lc-sentence-in'}>
+                  <PageText text={page.text} focusWords={page.focusWords} />
+                </div>
+              )}
+              <div aria-hidden className="lc-page-dots">
+                {chapter.pages.map((_, i) => (
+                  <span key={i} className={i === pageIdx ? 'is-current' : ''}>
+                    {i === pageIdx ? '●' : '○'}
+                  </span>
+                ))}
               </div>
             </div>
-          ) : (
-            <div key={pageIdx} className={sentenceLeaving ? 'lc-sentence-out' : 'lc-sentence-in'}>
-              <PageText text={page.text} focusWords={page.focusWords} />
+
+            {error && <div className="lc-reading-error">{error}</div>}
+
+            {phase === 'celebrate' ? (
+              <div className="lc-fade-up lc-reading-praise" aria-label={praise}>
+                ✓ {praise}
+              </div>
+            ) : phase === 'correction' && tricky ? (
+              <div className="lc-reading-actions">
+                <button
+                  className="btn-primary lc-reading-primary"
+                  onClick={() => {
+                    setPhase('scoring');
+                    void beginListening(tricky);
+                  }}
+                >
+                  Try the word
+                </button>
+                <button className="btn-primary lc-reading-secondary" onClick={() => celebrateAndAdvance(false)}>
+                  Keep going →
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => {
+                  if (phase === 'ready') {
+                    setPhase('listening');
+                    void beginListening(page.text);
+                  } else if (phase === 'listening') {
+                    void finishListening();
+                  }
+                }}
+                disabled={phase === 'scoring'}
+                aria-label={phase === 'listening' ? "I'm listening — tap when you're done" : 'Start reading'}
+                className="lc-listen-btn"
+              >
+                <ListenBars active={phase === 'listening'} />
+                <span>{phase === 'ready' && 'Tap to read aloud'}</span>
+                <span>{phase === 'listening' && 'I’m listening…'}</span>
+                <span>{phase === 'scoring' && 'One moment…'}</span>
+              </button>
+            )}
+          </div>
+
+          {process.env.NODE_ENV === 'development' && debug && phase === 'ready' && (
+            <div className="lc-dev-sim">
+              <button onClick={() => simulate('good')}>sim: good</button>
+              <button onClick={() => simulate('tricky')}>sim: tricky</button>
             </div>
           )}
-          <div aria-hidden style={{ textAlign: 'center', marginTop: 20, letterSpacing: 4, fontSize: 10, color: 'var(--leaf)' }}>
-            {chapter.pages.map((_, i) => (
-              <span key={i} style={{ opacity: i === pageIdx ? 1 : 0.35 }}>
-                {i === pageIdx ? '●' : '○'}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        {error && (
-          <div
-            style={{
-              marginTop: 14,
-              background: 'var(--sky-soft)',
-              border: '1px solid var(--sky)',
-              color: 'var(--ink)',
-              borderRadius: 12,
-              padding: '10px 14px',
-              fontSize: 13.5,
-            }}
-          >
-            {error}
-          </div>
-        )}
-
-        <div style={{ flex: 1 }} />
-
-        {phase === 'celebrate' ? (
-          <div
-            className="lc-fade-up"
-            aria-label="Nice reading!"
-            style={{ textAlign: 'center', fontSize: 15, fontWeight: 600, color: 'var(--leaf)', padding: '14px 0' }}
-          >
-            ✓ Nice reading!
-          </div>
-        ) : phase === 'correction' && tricky ? (
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button
-              className="btn-primary"
-              style={{ background: 'var(--blue)', boxShadow: '0 3px 0 #054a8a', flex: 1 }}
-              onClick={() => {
-                setPhase('scoring');
-                void beginListening(tricky);
-              }}
-            >
-              🎙️ Try the word
-            </button>
-            <button
-              className="btn-primary"
-              style={{ flex: 1 }}
-              onClick={() => celebrateAndAdvance(false)}
-            >
-              Keep going →
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => {
-              if (phase === 'ready') {
-                setPhase('scoring');
-                void beginListening(page.text);
-              } else if (phase === 'listening') {
-                void finishListening();
-              }
-            }}
-            disabled={phase === 'scoring'}
-            aria-label={phase === 'listening' ? "I'm listening — tap when you're done" : 'Start reading'}
-            style={{
-              background: '#fffaf0',
-              border: 0,
-              borderRadius: 18,
-              padding: '16px 18px',
-              fontSize: 14,
-              fontWeight: 700,
-              color: 'var(--leaf)',
-              boxShadow: '0 4px 14px rgba(43,43,43,0.14)',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 8,
-              width: '100%',
-              lineHeight: 1.7,
-            }}
-          >
-            <ListenBars active={phase === 'listening'} />
-            {phase === 'ready' && 'Tap, then read the page out loud!'}
-            {phase === 'listening' && 'I’m listening…'}
-            {phase === 'scoring' && 'One moment…'}
-          </button>
-        )}
-
-        {process.env.NODE_ENV === 'development' && phase === 'ready' && (
-          <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 10 }}>
-            <button onClick={() => simulate('good')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
-              sim: good
-            </button>
-            <button onClick={() => simulate('tricky')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
-              sim: tricky
-            </button>
-          </div>
-        )}
-      </main>
+        </main>
+      </div>
     </div>
-    </div>
+  );
+}
+
+export default function ReadPage() {
+  return (
+    <Suspense fallback={<div className="scene lc-reading-scene" />}>
+      <ReadExperience />
+    </Suspense>
   );
 }

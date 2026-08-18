@@ -126,38 +126,58 @@ export function storySceneUrl(interest: InterestId | undefined, variant: number)
   return `/images/home/story-scenes/${interest ?? 'dogs'}-${n}.png`;
 }
 
-/* ── Screen 3: real discovered scene assets (2026-08-17 inventory) ───────
+/* ── Screen 3-5: real discovered scene assets (2026-08-17 inventory) ─────
  * public/images/home/story-scenes/ has no files yet (storySceneUrl above
  * always misses and falls to the CSS gradient). public/images/landing/ DOES
  * have real, large, portrait story-scene illustrations already — just not
- * named/organized for this use. Inventoried by hand (dimensions + intent),
- * excluding the landing hero photo, the three tiny landing benefit icons,
- * and the setup-icons sprite sheet:
- *   dinosaurs-01.png, dinosaurs-02.png (note: on-disk name has a literal
- *     space: "dinosaurs-02.png .png" — percent-encoded below), ocean-01.png,
- *     ocean-02.png, space-01.png, unicorns-01.png.
+ * named/organized for this use. Inventoried by hand, excluding
+ * landing-reading-scene.png (that's the LANDING PAGE's own marketing hero —
+ * never reused as a story scene), the three tiny landing benefit icons, and
+ * the setup-icons sprite sheet:
+ *   dinosaurs-01.png, dinosaurs-02.png, ocean-01.png, ocean-02.png,
+ *   space-01.png, unicorns-01.png.
  * No scene currently exists for dogs/trains — best-effort matching falls
  * through to the general pool for those interests, per product decision. */
 const REAL_SCENE_POOL: Partial<Record<InterestId, string[]>> = {
-  dinosaurs: ['/images/landing/dinosaurs-01.png', '/images/landing/dinosaurs-02.png%20.png'],
+  dinosaurs: ['/images/landing/dinosaurs-01.png', '/images/landing/dinosaurs-02.png'],
   ocean: ['/images/landing/ocean-01.png', '/images/landing/ocean-02.png'],
   space: ['/images/landing/space-01.png'],
   unicorns: ['/images/landing/unicorns-01.png'],
 };
 
-/** Interest-aware, best-effort, stable scene selection from the REAL assets
- *  that exist today. Picks the first of the child's interests with a
- *  matching scene; if none match, picks (deterministically) from the whole
- *  curated pool; returns null only if the pool is empty (caller falls back
- *  to the .lc-scenic/.lc-cliff gradient — never to a setup icon). */
-export function selectStoryScene(chapterId: string, interests: InterestId[]): string | null {
+const ALL_SCENES = Object.values(REAL_SCENE_POOL).flat();
+
+export interface ChapterScenes {
+  home: string | null;
+  reading: string | null;
+}
+
+/** Interest-aware, deterministic home/reading scene pair for a chapter.
+ *  home and reading are picked to DIFFER whenever more than one real asset
+ *  is available, so Screen 3 and Screen 4 don't show the identical frame.
+ *  The cliffhanger (Screen 5) reuses `reading` — never a separate pick.
+ *  Never returns the landing marketing hero; returns null only if no real
+ *  scene assets exist at all (caller falls back to the CSS gradient). */
+export function selectChapterScenes(chapterId: string, interests: InterestId[]): ChapterScenes {
+  if (!ALL_SCENES.length) return { home: null, reading: null };
   const hash = stableHash(chapterId);
+  let pool: string[] = ALL_SCENES;
   for (const interest of interests) {
-    const pool = REAL_SCENE_POOL[interest];
-    if (pool?.length) return pool[hash % pool.length];
+    const matched = REAL_SCENE_POOL[interest];
+    if (matched?.length) {
+      pool = matched;
+      break;
+    }
   }
-  const everything = Object.values(REAL_SCENE_POOL).flat();
-  return everything.length ? everything[hash % everything.length] : null;
+  const home = pool[hash % pool.length];
+  // secondary pick: a different asset from the same pool if one exists,
+  // otherwise the best available image from the full cross-interest pool.
+  const secondaryPool = pool.length > 1 ? pool : ALL_SCENES;
+  let reading = secondaryPool[(hash + 1) % secondaryPool.length];
+  if (reading === home && secondaryPool.length > 1) {
+    reading = secondaryPool[(hash + 2) % secondaryPool.length];
+  }
+  return { home, reading };
 }
 
 export interface ChapterVisuals {
