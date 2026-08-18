@@ -209,16 +209,30 @@ export function tutorStoryContext(profile: ChildProfile): { stage: number; skele
   return { stage, skeleton: pickSkeleton(stage, recentSkeletons(profile)) };
 }
 
-export function adaptTutorDraft(profile: ChildProfile, draft: StoryDraft, skeleton: Skeleton): Chapter {
+export function adaptTutorDraft(
+  profile: ChildProfile,
+  draft: StoryDraft,
+  skeleton: Skeleton,
+  slots?: Record<string, string>,
+): Chapter | null {
+  if (!Array.isArray(draft.sentences) || draft.sentences.length === 0) return null; // a page-less chapter would crash the reader
   const stage = stageForAge(profile.age);
   rememberSkeleton(profile, skeleton.id);
   const base = chapterFor(profile.interests[0], profile.childName);
+  // Practice words MUST be the slots the story was actually generated with
+  // (returned by the API) — re-rolling assignSlots here would report words
+  // the child never read. The re-roll stays only as a last-resort fallback.
+  const practiceWords = Object.values(slots ?? assignSlots(skeleton.beats, stage));
+  const focusFor = (sentence: string): string[] => {
+    const lower = sentence.toLowerCase();
+    return practiceWords.filter((w) => lower.includes(w.toLowerCase())).slice(0, 2);
+  };
   return {
     ...base,
-    pages: draft.sentences.map((text) => ({ text, focusWords: [] })),
+    pages: draft.sentences.map((text) => ({ text, focusWords: focusFor(text) })),
     cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
     teaser: draft.summaryLine || `${profile.childName} has more to discover tomorrow...`,
-    phonics: [{ hint: `Stage ${stage} practice`, words: Object.values(assignSlots(skeleton.beats, stage)) }],
+    phonics: [{ hint: `Stage ${stage} practice`, words: practiceWords }],
   };
 }
 
@@ -236,21 +250,27 @@ function loadCachedTutorChapter(id: string): Chapter | null {
 /** One generation per child per day: the tutor chapter is cached under the
  *  same stable per-day id the demo chapter uses, so a mid-day reload reads
  *  the SAME story instead of paying for (and waiting on) a new one. */
-export async function requestTutorChapter(profile: ChildProfile): Promise<Chapter | null> {
-  const id = chapterIdFor(profile.interests[0], profile.childName);
+export async function requestTutorChapter(profile: ChildProfile, authToken?: string | null): Promise<Chapter | null> {
+  // Stage is part of the cache key: same-named profile at a different age
+  // must not be served the wrong-stage story for the rest of the day.
+  const id = `${chapterIdFor(profile.interests[0], profile.childName)}:s${stageForAge(profile.age)}`;
   const cached = loadCachedTutorChapter(id);
   if (cached) return cached;
   const context = tutorStoryContext(profile);
   try {
     const response = await fetch('/api/chapters/story', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      },
       body: JSON.stringify({ profile, stage: context.stage, skeletonId: context.skeleton.id }),
     });
     if (!response.ok) return null;
-    const data = await response.json() as { draft?: StoryDraft; skeleton?: Skeleton };
+    const data = await response.json() as { draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string> };
     if (!data.draft || !data.skeleton) return null;
-    const chapter = adaptTutorDraft(profile, data.draft, data.skeleton);
+    const chapter = adaptTutorDraft(profile, data.draft, data.skeleton, data.slots);
+    if (!chapter) return null;
     try {
       localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));
     } catch {

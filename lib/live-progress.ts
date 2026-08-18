@@ -101,6 +101,9 @@ export interface LiveProgress {
   partial(text: string): number;
   /** Feed a finalized segment's recognized words; returns display words read so far. */
   segment(words: string[]): number;
+  /** True once EVERY reference token has been heard — including all parts of
+   *  a hyphenated final word, so a fast-stop never cuts the mic mid-word. */
+  isComplete(): boolean;
 }
 
 export function createLiveProgress(referenceText: string): LiveProgress {
@@ -118,6 +121,9 @@ export function createLiveProgress(referenceText: string): LiveProgress {
       base = advanceThrough(flat, base, words.flatMap((w) => tokenizeWords(w)));
       peak = Math.max(peak, base);
       return displayCount();
+    },
+    isComplete() {
+      return peak >= flat.length;
     },
   };
 }

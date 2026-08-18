@@ -85,9 +85,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       async saveParentPhoneNumber(phoneNumber: string) {
         if (!user) throw new Error('No authenticated user');
+        // Normalize to E.164 — Twilio rejects anything else, and the SMS
+        // route validates the stored value before sending.
+        const digits = phoneNumber.replace(/[^\d+]/g, '');
+        const normalized = digits.startsWith('+')
+          ? `+${digits.slice(1).replace(/\D/g, '')}`
+          : digits.length === 10
+            ? `+1${digits}` // bare 10 digits: assume US/Canada
+            : `+${digits}`;
+        if (!/^\+[1-9]\d{6,14}$/.test(normalized)) {
+          throw new Error('Please enter a valid phone number, like +1 555 123 4567');
+        }
         const db = getFirestore();
         await setDoc(doc(db, 'parents', user.uid), {
-          phoneNumber,
+          phoneNumber: normalized,
           updatedAt: new Date().toISOString(),
         }, { merge: true });
       },

@@ -210,7 +210,9 @@ a {
   object-position: center;
 }
 
-.lc-scene-bg--cliff img {
+/* Doubled class beats the later .lc-scene-bg img drift rule — without it the
+ * cliff zoom is dead CSS. */
+.lc-scene-bg.lc-scene-bg--cliff img {
   animation: lc-scene-zoom 1.4s ease-out forwards;
 }
 

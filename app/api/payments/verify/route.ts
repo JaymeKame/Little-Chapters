@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
-import { retrieveCheckoutSession, retrieveSubscription } from '@/lib/stripe';
+import { retrieveCheckoutSession, retrieveSubscription, subscriptionPeriod } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,22 +26,26 @@ export async function GET(request: NextRequest) {
     if (!customerId || customerId !== expectedCustomerId || session.metadata?.firebaseUid !== decoded.uid) {
       return NextResponse.json({ error: 'Checkout session does not belong to this account' }, { status: 403 });
     }
-    if (session.payment_status !== 'paid' || typeof session.subscription !== 'string') {
+    // retrieveCheckoutSession expands the subscription, so it arrives as an
+    // OBJECT here — a typeof-string check would reject every paid session.
+    const rawSub = session.subscription as string | { id: string } | null;
+    const subscriptionId = typeof rawSub === 'string' ? rawSub : rawSub?.id;
+    if (session.payment_status !== 'paid' || !subscriptionId) {
       return NextResponse.json({ error: 'Payment has not completed' }, { status: 409 });
     }
 
-    const subscription = await retrieveSubscription(session.subscription);
+    const subscription = await retrieveSubscription(subscriptionId);
     if (!['active', 'trialing'].includes(subscription.status)) {
       return NextResponse.json({ error: 'Subscription is not active' }, { status: 409 });
     }
 
-    const subscriptionData = subscription as unknown as { current_period_end: number; cancel_at_period_end: boolean };
+    const period = subscriptionPeriod(subscription);
 
     await parentRef.set({
       subscriptionStatus: subscription.status,
       stripeSubscriptionId: subscription.id,
-      currentPeriodEnd: new Date(subscriptionData.current_period_end * 1000).toISOString(),
-      cancelAtPeriodEnd: subscriptionData.cancel_at_period_end,
+      currentPeriodEnd: period.currentPeriodEnd,
+      cancelAtPeriodEnd: period.cancelAtPeriodEnd,
       updatedAt: new Date().toISOString(),
     }, { merge: true });
 

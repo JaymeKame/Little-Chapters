@@ -1,19 +1,19 @@
 import Stripe from 'stripe';
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
-import { retrieveSubscription } from '@/lib/stripe';
+import { retrieveSubscription, subscriptionPeriod } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 async function persistSubscription(uid: string, subscription: Stripe.Subscription) {
-  const subscriptionData = subscription as unknown as { current_period_end: number; cancel_at_period_end: boolean };
+  const period = subscriptionPeriod(subscription);
   await adminDb().collection('parents').doc(uid).set({
     stripeCustomerId: typeof subscription.customer === 'string' ? subscription.customer : subscription.customer.id,
     stripeSubscriptionId: subscription.id,
     subscriptionStatus: subscription.status,
-    currentPeriodEnd: new Date(subscriptionData.current_period_end * 1000).toISOString(),
-    cancelAtPeriodEnd: subscriptionData.cancel_at_period_end,
+    currentPeriodEnd: period.currentPeriodEnd,
+    cancelAtPeriodEnd: period.cancelAtPeriodEnd,
     updatedAt: new Date().toISOString(),
   }, { merge: true });
 }

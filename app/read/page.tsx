@@ -164,6 +164,7 @@ export default function ReadPage() {
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptRef = useRef(0);
+  const awardedRef = useRef(false); // XP granted for the CURRENT page (survives retry-take errors)
   const practicedRef = useRef<Map<string, string>>(new Map());
   const startedReadingRef = useRef(false); // once true, never swap the chapter text
   const disposedRef = useRef(false);
@@ -181,9 +182,11 @@ export default function ReadPage() {
     // (cached from earlier today, or freshly generated when OPENAI_API_KEY is
     // configured server-side). Never swap once the child has started reading;
     // without the key the request 503s instantly and the demo arc stays.
-    void requestTutorChapter(p).then((tutorChapter) => {
+    void (async () => {
+      const authToken = user ? await user.getIdToken().catch(() => null) : null;
+      const tutorChapter = await requestTutorChapter(p, authToken);
       if (tutorChapter && !disposedRef.current && !startedReadingRef.current) setChapter(tutorChapter);
-    });
+    })();
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
@@ -218,6 +221,10 @@ export default function ReadPage() {
   const sceneBg = selectStoryScene(chapter.id, profile.interests);
 
   function replayCurrentSentence() {
+    // Never speak the reference text while the mic is live — the recognizer
+    // would score the TTS voice as the child's reading (echo cancellation
+    // does not reliably remove OS-level TTS from the mic signal).
+    if (sessionRef.current || phase === 'listening' || phase === 'scoring') return;
     if (speaking) {
       stopSpeaking();
       setSpeaking(false);
@@ -247,6 +254,19 @@ export default function ReadPage() {
     setSpeaking(false);
     listeningCuePlayedRef.current = false;
     try {
+      // Setup watchdog: the token fetch / SDK load / mic prompt can hang on a
+      // bad network while the only button sits disabled on "One moment…" —
+      // never strand the child there.
+      let setupTimedOut = false;
+      const setupWatchdog = setTimeout(() => {
+        setupTimedOut = true;
+        if (!disposedRef.current && !sessionRef.current) {
+          setPhase('ready');
+          attemptRef.current = 0;
+          setTricky(null);
+          setError("That took too long to get ready — let's try again!");
+        }
+      }, 20_000);
       const authToken = user ? await user.getIdToken() : null;
       const session = await startReadingSession({
         referenceText,
@@ -267,16 +287,17 @@ export default function ReadPage() {
           if (disposedRef.current) return;
           const n = liveRef.current ? liveRef.current.partial(text) : 0;
           if (LIVE_HIGHLIGHT) setReadCount(n);
-          armSilenceStop(liveRef.current && n >= liveRef.current.total ? 1000 : 3000);
+          armSilenceStop(liveRef.current?.isComplete() ? 1000 : 3000);
         },
         onSegment: (words) => {
           if (disposedRef.current) return;
           const n = liveRef.current ? liveRef.current.segment(words.map((w) => w.word)) : 0;
           if (LIVE_HIGHLIGHT) setReadCount(n);
-          armSilenceStop(liveRef.current && n >= liveRef.current.total ? 1000 : 3000);
+          armSilenceStop(liveRef.current?.isComplete() ? 1000 : 3000);
         },
       });
-      if (disposedRef.current) {
+      clearTimeout(setupWatchdog);
+      if (disposedRef.current || setupTimedOut) {
         session.cancel();
         return;
       }
@@ -346,8 +367,12 @@ export default function ReadPage() {
 
   function handleVerdicts(r: ReadingAssessmentResult, verdicts: WordVerdict[]) {
     const flagged = verdicts.filter((v) => v.needsHelp);
-    if (attemptRef.current === 0) {
+    if (!awardedRef.current && attemptRef.current === 0) {
       // Award once per page — the word-retry take is practice, not a reading.
+      // awardedRef (not attemptRef) is the gate: error recoveries reset
+      // attemptRef to keep correction usable, and that reset must never
+      // re-arm a second award for the same page.
+      awardedRef.current = true;
       pet.awardReading({
         accuracy: r.scores.accuracy,
         wordCount: r.words.filter((w) => w.errorType !== 'Insertion').length,
@@ -381,6 +406,7 @@ export default function ReadPage() {
       if (disposedRef.current) return;
       setTricky(null);
       attemptRef.current = 0;
+      awardedRef.current = false;
       liveRef.current = null;
       setReadCount(0);
       if (pageIdx + 1 < chapter!.pages.length) {
@@ -407,6 +433,31 @@ export default function ReadPage() {
         .concat(c.phonics.map((ph) => ({ word: ph.words[0], hint: ph.hint }))),
       teaser: c.teaser,
     });
+    // Signed-in parents opted into the session note at registration — send it
+    // (in-app always; SMS when Twilio + their phone number are configured).
+    // Best-effort: a delivery failure must never affect the child's flow.
+    if (user && !user.isAnonymous) {
+      void (async () => {
+        try {
+          const authToken = await user.getIdToken();
+          await fetch('/api/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            body: JSON.stringify({
+              sessionData: {
+                childName: profile!.childName,
+                newWords: c.pages.flatMap((p) => p.focusWords).filter((w) => w !== c.character),
+                practicedWords: [...practicedRef.current.entries()].map(([word, hint]) => ({ word, hint })),
+                mostlyAssisted: false,
+                tomorrowTeaser: c.teaser,
+              },
+            }),
+          });
+        } catch {
+          /* message delivery is best-effort */
+        }
+      })();
+    }
     setPhase('chapter-end');
   }
 
@@ -584,7 +635,17 @@ export default function ReadPage() {
         >
           ✕
         </button>
-        <button className="icon-btn" aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'} onClick={() => { playHomeSound('replay.mp3'); replayCurrentSentence(); }}>
+        <button
+          className="icon-btn"
+          aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'}
+          disabled={phase === 'listening' || phase === 'scoring'}
+          style={phase === 'listening' || phase === 'scoring' ? { opacity: 0.45, cursor: 'default' } : undefined}
+          onClick={() => {
+            if (phase === 'listening' || phase === 'scoring') return;
+            playHomeSound('replay.mp3');
+            replayCurrentSentence();
+          }}
+        >
           {speaking ? '🔇' : '🔊'}
         </button>
       </header>

@@ -7,6 +7,25 @@ import { generateParentMessage } from '@/lib/parent-message';
 import { validateParentMessage } from '@/lib/message-validator';
 import type { ReadingSessionData } from '@/lib/parent-message';
 
+/* SMS costs money and reaches real phones: per-uid daily brake (in-memory,
+ * per instance — a Twilio spend alert is the real backstop). */
+const MESSAGES_PER_DAY = 6;
+const WINDOW_MS = 24 * 60 * 60 * 1000;
+const sends = new Map<string, { windowStart: number; count: number }>();
+
+function overLimit(key: string): boolean {
+  const now = Date.now();
+  const g = sends.get(key);
+  if (!g || now - g.windowStart > WINDOW_MS) {
+    sends.set(key, { windowStart: now, count: 1 });
+    return false;
+  }
+  g.count += 1;
+  return g.count > MESSAGES_PER_DAY;
+}
+
+const E164 = /^\+[1-9]\d{6,14}$/;
+
 export async function POST(request: NextRequest) {
   try {
     // Initialize Firebase Admin
@@ -28,6 +47,15 @@ export async function POST(request: NextRequest) {
     }
 
     const uid = decodedToken.uid;
+
+    // Anonymous identities are free to mint — a real signed-in parent account
+    // is required before anything can be sent on the operator's Twilio.
+    if (decodedToken.firebase?.sign_in_provider === 'anonymous') {
+      return NextResponse.json({ error: 'Sign in with a parent account first' }, { status: 403 });
+    }
+    if (overLimit(uid)) {
+      return NextResponse.json({ error: 'RATE_LIMITED' }, { status: 429 });
+    }
 
     // Parse request body
     const body = await request.json();
@@ -66,7 +94,9 @@ export async function POST(request: NextRequest) {
     let smsSent = false;
     let smsError: string | undefined;
 
-    if (phoneNumber) {
+    if (phoneNumber && !E164.test(phoneNumber)) {
+      smsError = 'Saved phone number is not in E.164 format';
+    } else if (phoneNumber) {
       const smsResult = await sendSMS({
         to: phoneNumber,
         message: generated.rawMessage,

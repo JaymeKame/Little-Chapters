@@ -72,23 +72,25 @@ export default function LandingPage() {
             </div>
           </div>
 
-          {/* Illustration stand-in: cozy reading moment (mockup: child + dog on the couch). */}
+          {/* Cozy reading moment — the storybook bear illustration from the
+              scene library (portrait crop keeps the bear + book in frame). */}
           <div
             className="lc-hero-art"
             aria-hidden
             style={{
-              background: 'linear-gradient(180deg, #fdf6e6 0%, #f3e8d2 100%)',
               border: '1px solid var(--line)',
               borderRadius: 22,
-              padding: 'clamp(26px, 6vw, 64px) 10px',
-              fontSize: 'clamp(52px, 7vw, 88px)',
-              letterSpacing: 8,
-              textAlign: 'center',
+              overflow: 'hidden',
+              maxHeight: 'clamp(300px, 48vh, 460px)',
+              boxShadow: '0 10px 30px rgba(60, 50, 30, 0.14)',
             }}
           >
-            <span style={{ display: 'inline-block', animation: 'lc-float 4s ease-in-out infinite' }}>🪴</span>
-            <span>🧒📖</span>
-            <span>🐕</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/images/landing/dinosaurs-01.png"
+              alt=""
+              style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 62%', display: 'block' }}
+            />
           </div>
 
           <div className="lc-hero-cta">
