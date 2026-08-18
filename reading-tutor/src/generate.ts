@@ -9,12 +9,12 @@
  * offline without an API key.
  */
 
-import { getStage, paletteForStage, allowedWordsForStage } from '../content/stages.js';
-import { validateAll, type CastContext, type StoryDraft, type Violation } from './validators.js';
-import type { Skeleton } from './skeletons.js';
+import { getStage, paletteForStage, allowedWordsForStage } from '../content/stages';
+import { validateAll, type CastContext, type StoryDraft, type Violation } from './validators';
+import type { Skeleton } from './skeletons';
 import {
   assignSlots, renderBeats, unresolvedSlots, type SlotAssignment,
-} from './slots.js';
+} from './slots';
 
 export interface LlmClient {
   /** Returns raw JSON text matching StoryDraft. */

@@ -4,23 +4,16 @@
  * Follows the pattern from inzone-games but requires both authentication
  * and phone number for SMS notifications after the free chapter experience. */
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
 
 export default function RegisterPage() {
   const router = useRouter();
-  const { user, signInWithGoogle, signInWithApple, saveParentPhoneNumber } = useAuth();
+  const { user, loading: authLoading, isAuthenticated, signInWithGoogle, signInWithApple, saveParentPhoneNumber } = useAuth();
   const [phoneNumber, setPhoneNumber] = useState('');
   const [busy, setBusy] = useState<'google' | 'apple' | 'submit' | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Redirect if already authenticated
-  useEffect(() => {
-    if (user) {
-      router.push('/home');
-    }
-  }, [user, router]);
 
   async function handleProvider(provider: 'google' | 'apple') {
     setError(null);
@@ -49,6 +42,9 @@ export default function RegisterPage() {
       }
 
       // Save phone number to Firestore
+      if (!isAuthenticated) {
+        throw new Error('Please sign in before continuing.');
+      }
       await saveParentPhoneNumber(phoneNumber);
 
       // Redirect to payment setup after successful registration
@@ -154,7 +150,7 @@ export default function RegisterPage() {
               background: 'var(--card)',
               outline: 'none',
             }}
-            disabled={busy === 'submit'}
+              disabled={busy === 'submit' || authLoading}
           />
           <p style={{ fontSize: '12', color: 'var(--ink-soft)', marginTop: '6px' }}>
             We'll send you one specific win after each reading session
@@ -164,7 +160,7 @@ export default function RegisterPage() {
         <button
           type="submit"
           className="btn-primary"
-          disabled={busy === 'submit' || !phoneNumber.trim()}
+          disabled={busy === 'submit' || !phoneNumber.trim() || !isAuthenticated}
           style={{
             padding: '14px',
             fontSize: '16',
@@ -177,7 +173,7 @@ export default function RegisterPage() {
             opacity: busy === 'submit' || !phoneNumber.trim() ? 0.6 : 1,
           }}
         >
-          {busy === 'submit' ? 'Creating Account...' : 'Continue to Payment'}
+          {busy === 'submit' ? 'Saving...' : 'Continue to Payment'}
         </button>
       </form>
 

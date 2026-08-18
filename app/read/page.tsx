@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
-import { chapterFor, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
   startReadingSession,
@@ -120,6 +120,7 @@ export default function ReadPage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
+    void requestTutorChapter(p).then((generated) => { if (generated) setChapter(generated); });
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();

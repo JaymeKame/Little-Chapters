@@ -19,7 +19,7 @@
  * Every skeleton ends on a verb or a noun, never on a resolution.
  */
 
-import { canRunAtStage, slotsUsed, type SlotType } from './slots.js';
+import { canRunAtStage, slotsUsed, type SlotType } from './slots';
 
 export interface Skeleton {
   id: string;

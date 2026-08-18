@@ -20,7 +20,7 @@ import type {
   ChildProgress,
   ProgressionDecision,
   SessionReading,
-} from './types.js';
+} from './types';
 
 export interface ProgressionConfig {
   minStage: number;

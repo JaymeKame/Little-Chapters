@@ -28,7 +28,7 @@ import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
 import { loadProfile, type ChildProfile } from '@/lib/profile';
-import { chapterFor, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { playHomeSound, playTheme, prepareStoryAudio, speakPrompt, stopAmbience, stopTheme, themeAssetFor, welcomeLine } from '@/lib/audio';
 
 export default function ChildHomePage() {
@@ -47,6 +47,7 @@ export default function ChildHomePage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
+    void requestTutorChapter(p).then((generated) => { if (generated) setChapter(generated); });
   }, [router]);
 
   // Prepare the real flat theme asset; playback waits for a user gesture.

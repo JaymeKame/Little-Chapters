@@ -14,7 +14,7 @@ import {
   HUMAN_NOUNS,
   getStage,
   tokenize,
-} from '../content/stages.js';
+} from '../content/stages';
 
 export interface Violation {
   rule: string;
