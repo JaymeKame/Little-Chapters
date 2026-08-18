@@ -88,7 +88,12 @@ const MOOD_ANIMATION: Record<string, string> = {
   longing: 'pet-bob 3.6s ease-in-out infinite',
 };
 
-export function PetCompanion({ pet }: { pet: PetHandle }) {
+/* variant 'child': Momo as a pure companion — stage, name, speech bubble, and
+ * the XP float only. NO xp bar, level number, streak, or goal dots: the
+ * product handoff forbids scores/streaks/XP in child-facing UI (growth shows
+ * wordlessly through the stage emoji). variant 'parent' shows the full
+ * progress detail — that's "progress you can feel good about", for adults.  */
+export function PetCompanion({ pet, variant = 'parent' }: { pet: PetHandle; variant?: 'child' | 'parent' }) {
   const s = pet.state;
   if (!s) return null;
   const level = levelForXp(s.xp);
@@ -127,7 +132,7 @@ export function PetCompanion({ pet }: { pet: PetHandle }) {
           {stage.emoji}
         </div>
         <div style={{ fontSize: 11, color: '#7a6f8f', marginTop: 2 }}>
-          {s.name} · Lv {level}
+          {variant === 'child' ? s.name : `${s.name} · Lv ${level}`}
         </div>
         {pet.flash && (
           <div
@@ -165,6 +170,7 @@ export function PetCompanion({ pet }: { pet: PetHandle }) {
           </div>
         )}
 
+        {variant === 'parent' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <div style={{ flex: '1 1 140px', maxWidth: 240 }}>
             <div style={{ height: 8, background: '#e9e3f5', borderRadius: 999 }}>
@@ -195,6 +201,7 @@ export function PetCompanion({ pet }: { pet: PetHandle }) {
             ))}
           </div>
         </div>
+        )}
       </div>
     </section>
   );

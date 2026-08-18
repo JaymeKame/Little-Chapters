@@ -15,7 +15,8 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
-import { chapterFor, type Chapter } from '@/lib/chapters';
+import { SceneBackground } from '@/components/SceneBackground';
+import { chapterFor, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
   startReadingSession,
@@ -23,30 +24,41 @@ import {
   type ReadingSession,
 } from '@/lib/pronunciation';
 import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
+import {
+  duckAmbience,
+  playCliffhanger,
+  playListeningStart,
+  playReadingCue,
+  playHomeSound,
+  playTheme,
+  prepareStoryAudio,
+  restoreAmbience,
+  speakPrompt,
+  stopAmbience,
+  stopMusic,
+  stopSpeaking,
+  stopTheme,
+  themeAssetFor,
+} from '@/lib/audio';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
-const SCENES: Record<string, string> = {
-  dogs: 'linear-gradient(180deg, #bfe0f5 0%, #d8ecc8 45%, #a9cf94 100%)',
-  space: 'linear-gradient(180deg, #1d2a52 0%, #3a4a7c 60%, #56679c 100%)',
-  dinosaurs: 'linear-gradient(180deg, #cfe8cf 0%, #a8d0a0 55%, #7fb27d 100%)',
-  trains: 'linear-gradient(180deg, #cfe4f2 0%, #e3d9c4 55%, #c9b489 100%)',
-  unicorns: 'linear-gradient(180deg, #f3d9ef 0%, #dcd2f2 55%, #b8c8ee 100%)',
-  ocean: 'linear-gradient(180deg, #bfe4f0 0%, #8fc8e6 55%, #5aa6d4 100%)',
-};
+/* Scene background: the SAME real curated story scene selection as Screen 3
+ * (lib/chapters.ts selectStoryScene — interest-aware, stable per chapter.id)
+ * → .lc-scenic/.lc-cliff gradient. The automatic AI-generation path remains
+ * intentionally unused here — see lib/chapters.ts requestChapterVisuals. */
 
-function Waveform({ active }: { active: boolean }) {
+/* Mandatory calm listening animation: 6 small organic bars gently changing
+ * scaleY (~900ms cycle) — no waveform, no neon, no frantic movement. */
+function ListenBars({ active }: { active: boolean }) {
   return (
-    <span aria-hidden style={{ display: 'inline-flex', gap: 2.5, alignItems: 'center', height: 18 }}>
-      {[10, 16, 8, 14, 18, 9, 15, 11, 17, 8, 13].map((h, i) => (
+    <span className="lc-listen-bars" aria-hidden>
+      {[0, 1, 2, 3, 4, 5].map((i) => (
         <span
           key={i}
           style={{
-            width: 3,
-            height: h,
-            borderRadius: 2,
-            background: 'var(--leaf)',
-            animation: active ? `lc-listen 0.9s ease-in-out ${i * 0.08}s infinite` : 'none',
+            animationDelay: `${i * 110}ms`,
+            animationPlayState: active ? 'running' : 'paused',
             opacity: active ? 1 : 0.4,
           }}
         />
@@ -55,21 +67,27 @@ function Waveform({ active }: { active: boolean }) {
   );
 }
 
-/** Page text with focus words colored: first = sky blue, rest = leaf green. */
+/** Handoff spec: one sentence per line with breathing room; every focus word
+ *  bold in the accessible reading blue (#075DAD). */
 function PageText({ text, focusWords }: { text: string; focusWords: string[] }) {
   const lower = focusWords.map((w) => w.toLowerCase());
+  const sentences = text.split(/(?<=[.!?])\s+/);
   return (
     <p className="lc-page-text">
-      {text.split(/(\s+)/).map((tok, i) => {
-        const clean = tok.toLowerCase().replace(/[^a-z']/g, '');
-        const idx = clean ? lower.indexOf(clean) : -1;
-        const color = idx === 0 ? 'var(--sky)' : idx > 0 ? 'var(--leaf)' : undefined;
-        return (
-          <span key={i} style={color ? { color, fontWeight: 700 } : undefined}>
-            {tok}
-          </span>
-        );
-      })}
+      {sentences.map((sentence, si) => (
+        <span key={si} className="lc-sentence">
+          {sentence.split(/(\s+)/).map((tok, i) => {
+            const clean = tok.toLowerCase().replace(/[^a-z']/g, '');
+            return clean && lower.includes(clean) ? (
+              <span key={i} className="lc-focus-word">
+                {tok}
+              </span>
+            ) : (
+              <span key={i}>{tok}</span>
+            );
+          })}
+        </span>
+      ))}
     </p>
   );
 }
@@ -84,6 +102,9 @@ export default function ReadPage() {
   const [phase, setPhase] = useState<Phase>('ready');
   const [tricky, setTricky] = useState<string | null>(null); // correction-state word
   const [error, setError] = useState<string | null>(null);
+  const [speaking, setSpeaking] = useState(false); // TTS replay of the current sentence — distinct from mic-listening
+  const [sentenceLeaving, setSentenceLeaving] = useState(false); // brief out-transition before the next sentence mounts
+  const listeningCuePlayedRef = useRef(false);
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptRef = useRef(0);
@@ -98,18 +119,49 @@ export default function ReadPage() {
       return;
     }
     setProfile(p);
-    setChapter(chapterFor(p.interests[0]));
+    setChapter(chapterFor(p.interests[0], p.childName));
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
       sessionRef.current = null;
+      stopSpeaking();
+      stopTheme();
+      stopMusic();
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
     };
   }, [router]);
 
+  // Reuse the same flat story theme as Home; the controller prevents duplicate loops.
+  useEffect(() => {
+    if (profile) {
+      prepareStoryAudio(themeAssetFor(profile.interests[0]));
+      playTheme();
+    }
+    return () => stopAmbience();
+  }, [profile]);
+
+  useEffect(() => {
+    if (phase === 'listening' || phase === 'scoring' || speaking) duckAmbience();
+    else restoreAmbience();
+  }, [phase, speaking]);
+
+  useEffect(() => {
+    if (phase === 'chapter-end') playCliffhanger();
+  }, [phase]);
+
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
-  const scene = SCENES[profile.interests[0]] ?? SCENES.dogs;
+  const sceneBg = selectStoryScene(chapter.id, profile.interests);
+
+  function replayCurrentSentence() {
+    if (speaking) {
+      stopSpeaking();
+      setSpeaking(false);
+      return;
+    }
+    setSpeaking(true);
+    speakPrompt(tricky ?? page.text, { onEnd: () => setSpeaking(false) });
+  }
 
   function armSilenceStop() {
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
@@ -122,6 +174,9 @@ export default function ReadPage() {
 
   async function beginListening(referenceText: string) {
     setError(null);
+    stopSpeaking();
+    setSpeaking(false);
+    listeningCuePlayedRef.current = false;
     try {
       const authToken = user ? await user.getIdToken() : null;
       const session = await startReadingSession({
@@ -129,7 +184,13 @@ export default function ReadPage() {
         authToken,
         onStatus: (s) => {
           if (disposedRef.current) return;
-          if (s === 'listening') setPhase('listening');
+          if (s === 'listening') {
+            setPhase('listening');
+            if (!listeningCuePlayedRef.current) {
+              listeningCuePlayedRef.current = true;
+              playListeningStart();
+            }
+          }
           if (s === 'error' && sessionRef.current) void finishListening();
         },
         onPartialTranscript: () => armSilenceStop(), // active speech keeps postponing the stop
@@ -224,7 +285,8 @@ export default function ReadPage() {
     celebrateAndAdvance();
   }
 
-  function celebrateAndAdvance() {
+  function celebrateAndAdvance(successfulRead = true) {
+    if (successfulRead) playReadingCue('section-success.mp3');
     setPhase('celebrate');
     setTimeout(() => {
       if (!disposedRef.current) advance();
@@ -232,14 +294,20 @@ export default function ReadPage() {
   }
 
   function advance() {
-    setTricky(null);
-    attemptRef.current = 0;
-    if (pageIdx + 1 < chapter!.pages.length) {
-      setPageIdx((i) => i + 1);
-      setPhase('ready');
-    } else {
-      finishChapter();
-    }
+    setSentenceLeaving(true);
+    setTimeout(() => {
+      if (disposedRef.current) return;
+      setTricky(null);
+      attemptRef.current = 0;
+      if (pageIdx + 1 < chapter!.pages.length) {
+        playReadingCue('page-turn.mp3');
+        setPageIdx((i) => i + 1);
+        setPhase('ready');
+      } else {
+        finishChapter();
+      }
+      setSentenceLeaving(false);
+    }, 140);
   }
 
   function finishChapter() {
@@ -276,9 +344,10 @@ export default function ReadPage() {
   /* ── Screen 5: chapter end ── */
   if (phase === 'chapter-end') {
     return (
-      <div className="scene" style={{ background: scene }}>
-      <div className="screen">
-        <header style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
+      <div className="scene lc-cliff" style={{ position: 'relative' }}>
+      <SceneBackground src={sceneBg} cliff />
+      <div className="screen lc-scene-content">
+        <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
           <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
             🏠
           </button>
@@ -297,10 +366,7 @@ export default function ReadPage() {
             padding: '0 34px 70px',
           }}
         >
-          <div aria-hidden style={{ fontSize: 64, marginBottom: 40, animation: 'lc-float 4s ease-in-out infinite' }}>
-            🌈🐕
-          </div>
-          <p
+          <p className="lc-cliff-copy"
             style={{
               fontFamily: 'var(--serif)',
               fontStyle: 'italic',
@@ -313,7 +379,7 @@ export default function ReadPage() {
           >
             {chapter.cliffhanger[0]}
           </p>
-          <p
+          <p className="lc-cliff-continue"
             style={{
               fontFamily: 'var(--serif)',
               fontSize: 30,
@@ -388,9 +454,10 @@ export default function ReadPage() {
 
   /* ── Screen 4: reading ── */
   return (
-    <div className="scene" style={{ background: scene }}>
-    <div className="screen">
-      <header style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
+    <div className="scene lc-scenic lc-reading-scene" style={{ position: 'relative' }}>
+    <SceneBackground src={sceneBg} />
+    <div className="screen lc-scene-content">
+      <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
         <button
           className="icon-btn"
           aria-label="Close"
@@ -401,30 +468,31 @@ export default function ReadPage() {
             if (silenceTimer.current) clearTimeout(silenceTimer.current);
             sessionRef.current?.cancel();
             sessionRef.current = null;
+            playHomeSound('close.mp3');
             router.push('/home');
           }}
         >
           ✕
         </button>
-        <button className="icon-btn" aria-label="Read aloud">
-          🔊
+        <button className="icon-btn" aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'} onClick={() => { playHomeSound('replay.mp3'); replayCurrentSentence(); }}>
+          {speaking ? '🔇' : '🔊'}
         </button>
       </header>
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '4px 22px 26px' }}>
         <div
+          className={`lc-reading-card-in${phase === 'celebrate' ? ' lc-section-success' : ''}`}
           style={{
-            background: 'rgba(255,255,255,0.96)',
+            background: '#fffdf8',
             borderRadius: 18,
             padding: '26px 24px 18px',
             boxShadow: '0 6px 20px rgba(43,43,43,0.16)',
-            animation: 'lc-pop 0.25s ease',
           }}
         >
           {/* Keep the big word visible through the retry's listening/scoring —
               hiding it the moment the child taps "Try the word" defeats it. */}
           {tricky ? (
-            <div style={{ textAlign: 'center' }}>
+            <div className="lc-help-pulse" style={{ textAlign: 'center' }}>
               <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
                 Let&rsquo;s try that word together.
               </p>
@@ -434,12 +502,14 @@ export default function ReadPage() {
               </div>
             </div>
           ) : (
-            <PageText text={page.text} focusWords={page.focusWords} />
+            <div key={pageIdx} className={sentenceLeaving ? 'lc-sentence-out' : 'lc-sentence-in'}>
+              <PageText text={page.text} focusWords={page.focusWords} />
+            </div>
           )}
-          <div aria-hidden style={{ textAlign: 'center', marginTop: 14, letterSpacing: 4, fontSize: 11 }}>
+          <div aria-hidden style={{ textAlign: 'center', marginTop: 20, letterSpacing: 4, fontSize: 10, color: 'var(--leaf)' }}>
             {chapter.pages.map((_, i) => (
-              <span key={i} style={{ color: i === pageIdx ? 'var(--leaf)' : 'var(--stone-deep)' }}>
-                ●
+              <span key={i} style={{ opacity: i === pageIdx ? 1 : 0.35 }}>
+                {i === pageIdx ? '●' : '○'}
               </span>
             ))}
           </div>
@@ -464,14 +534,18 @@ export default function ReadPage() {
         <div style={{ flex: 1 }} />
 
         {phase === 'celebrate' ? (
-          <div style={{ textAlign: 'center', fontSize: 44, animation: 'lc-pop 0.3s ease' }} aria-label="Great reading!">
-            🎉⭐
+          <div
+            className="lc-fade-up"
+            aria-label="Nice reading!"
+            style={{ textAlign: 'center', fontSize: 15, fontWeight: 600, color: 'var(--leaf)', padding: '14px 0' }}
+          >
+            ✓ Nice reading!
           </div>
         ) : phase === 'correction' && tricky ? (
           <div style={{ display: 'flex', gap: 10 }}>
             <button
               className="btn-primary"
-              style={{ background: 'var(--sky)', boxShadow: '0 3px 0 #5f9ccb', flex: 1 }}
+              style={{ background: 'var(--blue)', boxShadow: '0 3px 0 #054a8a', flex: 1 }}
               onClick={() => {
                 setPhase('scoring');
                 void beginListening(tricky);
@@ -482,7 +556,7 @@ export default function ReadPage() {
             <button
               className="btn-primary"
               style={{ flex: 1 }}
-              onClick={celebrateAndAdvance}
+              onClick={() => celebrateAndAdvance(false)}
             >
               Keep going →
             </button>
@@ -500,24 +574,26 @@ export default function ReadPage() {
             disabled={phase === 'scoring'}
             aria-label={phase === 'listening' ? "I'm listening — tap when you're done" : 'Start reading'}
             style={{
-              background: 'rgba(255,255,255,0.96)',
+              background: '#fffaf0',
               border: 0,
-              borderRadius: 16,
+              borderRadius: 18,
               padding: '16px 18px',
-              fontSize: 15,
-              color: 'var(--ink-soft)',
+              fontSize: 14,
+              fontWeight: 700,
+              color: 'var(--leaf)',
               boxShadow: '0 4px 14px rgba(43,43,43,0.14)',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               gap: 8,
               width: '100%',
+              lineHeight: 1.7,
             }}
           >
-            <Waveform active={phase === 'listening'} />
+            <ListenBars active={phase === 'listening'} />
             {phase === 'ready' && 'Tap, then read the page out loud!'}
-            {phase === 'listening' && 'I’m listening...'}
-            {phase === 'scoring' && 'One moment...'}
+            {phase === 'listening' && 'I’m listening…'}
+            {phase === 'scoring' && 'One moment…'}
           </button>
         )}
 
