@@ -12,7 +12,7 @@ import type {
   SessionReading,
   WordOutcome,
   WordSignal,
-} from './types.js';
+} from './types';
 
 export interface InterpretConfig {
   /** Below this, we are not confident the child said the word. Biased low. */

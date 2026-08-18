@@ -10,16 +10,28 @@ import { PLANS } from '@/lib/stripe';
 
 export default function PaymentPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const [selectedPlan, setSelectedPlan] = useState<string>('monthly');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!user) {
+    if (!isAuthenticated) {
       router.push('/register');
+      return;
     }
-  }, [user, router]);
+    void (async () => {
+      try {
+        const token = await user?.getIdToken();
+        if (!token) return;
+        const response = await fetch('/api/payments/subscription', { headers: { Authorization: `Bearer ${token}` } });
+        const data = await response.json() as { subscribed?: boolean };
+        if (data.subscribed) router.replace('/home');
+      } catch {
+        // Checkout remains available if the status check is temporarily unavailable.
+      }
+    })();
+  }, [isAuthenticated, router, user]);
 
   async function handleSubscribe(planId: string) {
     setLoading(true);

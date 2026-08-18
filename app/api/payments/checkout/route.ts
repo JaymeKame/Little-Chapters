@@ -2,7 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
-import { createCheckoutSession, getOrCreateCustomer, PLANS } from '@/lib/stripe';
+import { createCheckoutSession, getCustomerSubscription, getOrCreateCustomer, PLANS } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,7 +55,12 @@ export async function POST(request: NextRequest) {
     const parentData = parentDoc.data();
     const name = parentData?.name || null;
 
-    const customerId = await getOrCreateCustomer(email, name, { firebaseUid: uid });
+    const storedCustomerId = typeof parentData?.stripeCustomerId === 'string' ? parentData.stripeCustomerId : null;
+    const customerId = storedCustomerId || await getOrCreateCustomer(email, name, { firebaseUid: uid });
+
+    if (storedCustomerId && await getCustomerSubscription(storedCustomerId)) {
+      return NextResponse.json({ error: 'An active subscription already exists' }, { status: 409 });
+    }
 
     // Save customer ID to Firestore
     await db.collection('parents').doc(uid).set(
@@ -71,7 +76,7 @@ export async function POST(request: NextRequest) {
     const successUrl = `${baseUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${baseUrl}/payment/cancel`;
 
-    const session = await createCheckoutSession(customerId, plan.priceId, successUrl, cancelUrl);
+    const session = await createCheckoutSession(customerId, plan.priceId, successUrl, cancelUrl, { firebaseUid: uid });
 
     if (!session) {
       return NextResponse.json({ error: 'Failed to create checkout session' }, { status: 500 });

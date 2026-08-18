@@ -21,6 +21,7 @@ import { doc, setDoc, getFirestore } from 'firebase/firestore';
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
+  isAuthenticated: boolean;
   configError: string | null;
   signInWithGoogle: () => Promise<void>;
   signInWithApple: () => Promise<void>;
@@ -64,6 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       user,
       loading,
+      isAuthenticated: Boolean(user && !user.isAnonymous),
       configError,
       async signInWithGoogle() {
         const auth = getFirebaseAuth();

@@ -15,6 +15,7 @@ import {
 } from '../src/slots.js';
 import { allowedWordsForStage, CONTENT_BLOCKLIST, HUMAN_NOUNS } from '../content/stages.js';
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '../src/types.js';
+import { adaptTutorDraft } from '../../lib/chapters.ts';
 
 let pass = 0, fail = 0;
 const ok = (cond: boolean, label: string, extra = '') => {
@@ -404,6 +405,18 @@ section('Skeletons');
   ok(SKELETONS.every((s) => s.cliffhangerNote.length > 40), 'every skeleton has a real ending instruction');
   ok(SKELETONS.every((s) => s.beats.some((b) => /\{\w+\}/.test(b))),
      'every skeleton actually has blanks in it');
+}
+
+section('Little Chapters adapter');
+{
+  const chapter = adaptTutorDraft(
+    { childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
+    { sentences: ['Sam sat on a mat', 'Pip sat by Sam'], imagePrompt: 'Sam and Pip', summaryLine: 'Sam found a mat' },
+    SKELETONS[0],
+  );
+  ok(chapter.pages.length === 2, 'tutor sentences become Chapter pages');
+  ok(chapter.pages.every((page) => typeof page.text === 'string' && Array.isArray(page.focusWords)), 'Chapter page shape is preserved');
+  ok(chapter.cliffhanger[1] === 'To be continued tomorrow...', 'adapter preserves the cliffhanger contract');
 }
 
 section('Slot filling - nouns chosen by code, never by the model');

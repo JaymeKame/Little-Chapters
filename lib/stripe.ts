@@ -10,7 +10,7 @@ if (!stripeSecretKey) {
 }
 
 const stripe = stripeSecretKey ? new Stripe(stripeSecretKey, {
-  apiVersion: '2024-11-20.acacia',
+  apiVersion: '2026-07-29.dahlia',
 }) : null;
 
 export interface SubscriptionPlan {
@@ -54,6 +54,7 @@ export async function createCheckoutSession(
   priceId: string,
   successUrl: string,
   cancelUrl: string,
+  metadata: Record<string, string> = {},
 ): Promise<{ url: string } | null> {
   if (!stripe) {
     throw new Error('Stripe is not configured');
@@ -72,6 +73,8 @@ export async function createCheckoutSession(
       mode: 'subscription',
       success_url: successUrl,
       cancel_url: cancelUrl,
+      metadata,
+      subscription_data: { metadata },
       allow_promotion_codes: true,
       billing_address_collection: 'required',
       customer_update: {
@@ -134,15 +137,32 @@ export async function getCustomerSubscription(customerId: string) {
   try {
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
-      status: 'active',
       limit: 1,
     });
 
-    return subscriptions.data[0] || null;
+    return subscriptions.data.find((subscription) =>
+      subscription.status === 'active' || subscription.status === 'trialing',
+    ) || null;
   } catch (error) {
     console.error('Error fetching subscription:', error);
     throw error;
   }
+}
+
+export async function retrieveCheckoutSession(sessionId: string) {
+  if (!stripe) {
+    throw new Error('Stripe is not configured');
+  }
+  return stripe.checkout.sessions.retrieve(sessionId, {
+    expand: ['subscription'],
+  });
+}
+
+export async function retrieveSubscription(subscriptionId: string) {
+  if (!stripe) {
+    throw new Error('Stripe is not configured');
+  }
+  return stripe.subscriptions.retrieve(subscriptionId);
 }
 
 /**
