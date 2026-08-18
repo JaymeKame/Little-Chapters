@@ -512,28 +512,29 @@ a {
 }
 
 
-/* ── Landing page (parents visit on laptops — a real webpage there) ────── */
+/* ── Landing page — final design board (PR #4). Replaces the earlier
+ * .lc-hero* grid wholesale: the markup and these rules were authored
+ * together, and the page carries no behaviour to preserve. */
 .lc-landing {
   min-height: 100dvh;
   background: var(--stone);
-  background-image: radial-gradient(rgba(126, 99, 59, 0.08) 0.7px, transparent 0.7px), linear-gradient(145deg, #fffdf8 0%, #f7edd8 100%);
+  background-image: radial-gradient(rgba(126,99,59,0.08) 0.7px, transparent 0.7px), linear-gradient(145deg, #fffdf8 0%, #f7edd8 100%);
   background-size: 7px 7px, auto;
 }
 
 .lc-landing-inner {
-  width: min(100% - 40px, 1180px);
+  width: min(100% - 36px, 1180px);
   margin: 0 auto;
-  padding: 0;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  min-height: 100dvh;
 }
 
-.lc-nav {
+.lc-landing-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 24px 0 6px;
+  padding: 24px 0 8px;
 }
 
 .lc-brand {
@@ -543,248 +544,212 @@ a {
   color: var(--dark);
 }
 
+.lc-brand-mark { font-size: 10px; vertical-align: super; }
+
 .lc-menu {
   width: 42px;
   height: 42px;
-  border: 1px solid var(--line);
   border-radius: 50%;
-  background: rgba(255, 253, 248, 0.7);
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.7);
+  display: grid;
+  place-items: center;
   color: var(--ink-soft);
-  font-size: 19px;
-  line-height: 1;
 }
 
-.lc-hero {
+.lc-landing-main {
   flex: 1;
   display: grid;
   grid-template-areas: 'copy' 'art' 'cta';
-  gap: 12px;
+  gap: 10px;
   align-items: center;
   text-align: center;
-  padding: 20px 0 22px;
+  padding: 12px 0 24px;
 }
 
-.lc-hero-copy {
-  grid-area: copy;
-}
+.lc-landing-copy { grid-area: copy; }
+.lc-landing-art { grid-area: art; }
+.lc-landing-cta { grid-area: cta; }
 
-.lc-hero-art {
+.lc-landing-art-wrap {
   grid-area: art;
+  position: relative;
 }
 
-.lc-hero-cta {
-  grid-area: cta;
+.lc-landing-cta-overlap {
+  /* Was position:absolute + bottom:0 + translateY(42%), badge-style,
+   * straddling the bottom edge of the hero photo — on real artwork (not a
+   * flat mockup placeholder) that meant the button visually sliced across
+   * whatever happened to be at the bottom of the image (a couch cushion,
+   * the dog). Normal flow below the image, like the reference mockup,
+   * reads as an intentional CTA instead of a positioning accident. */
+  position: relative;
+  width: min(100%, 340px);
+  margin: 24px auto 0;
+}
+
+.lc-landing-cta-overlap .lc-cta {
+  box-shadow: 0 12px 28px rgba(43,43,43,.22);
 }
 
 .lc-h1 {
-  font-family: var(--serif);
-  font-size: clamp(40px, 10vw, 66px);
-  line-height: 1.12;
   margin: 0 0 12px;
-  letter-spacing: 0;
-  text-wrap: balance;
   color: var(--ink);
-}
-
-.lc-h1 em {
-  color: var(--dark);
-  font-weight: 400;
+  font-family: var(--serif);
+  font-size: clamp(42px, 11vw, 72px);
+  line-height: 0.98;
 }
 
 .lc-subhead {
+  margin: 0;
   color: var(--dark);
   font-family: var(--serif);
-  font-size: 20px;
+  font-size: clamp(22px, 5vw, 30px);
+  line-height: 1.26;
   font-style: italic;
-  line-height: 1.35;
-  margin: 0 0 12px;
-}
-
-.lc-features {
-  display: flex;
-  justify-content: center;
-  align-items: start;
-  gap: 4px;
-  margin: 0;
-}
-
-.lc-features > div {
-  width: 33.333%;
-  padding: 0 3px;
-  color: var(--ink-soft);
-  font-size: 10.5px;
-  line-height: 1.3;
-  text-align: center;
-}
-
-.lc-feature-image {
-  display: block;
-  height: 68px;
-  margin: 0 auto 5px;
-  object-fit: contain;
-  width: 68px;
-}
-
-.lc-cta {
-  display: block;
-  width: 100%;
 }
 
 .lc-lede {
-  max-width: 340px;
-  margin: 0 auto 16px;
+  margin: 16px auto 18px;
+  max-width: 460px;
   color: var(--ink-soft);
   font-size: 15px;
   line-height: 1.6;
 }
 
-.lc-cta-caption {
-  text-align: center;
+.lc-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: min(100%, 660px);
+  margin: 0 auto;
+  align-items: start;
 }
 
-.lc-price {
-  color: var(--ink-soft);
-  font-size: 12.5px;
-  margin: 12px 0 6px;
-}
-
-.lc-social-proof {
-  align-items: center;
+.lc-feature {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
   gap: 8px;
-  justify-content: center;
-  margin: 0;
-}
-
-.lc-social-proof span:first-child {
-  color: var(--sunshine);
-  letter-spacing: 2px;
-}
-
-.lc-social-proof span:last-child {
   color: var(--ink-soft);
   font-size: 12px;
-}
-
-.lc-footer {
-  border-top: 1px solid var(--line);
-  color: var(--ink-soft);
-  font-size: 11px;
-  padding: 10px 0 14px;
+  line-height: 1.35;
   text-align: center;
 }
 
-.lc-hero-art {
-  aspect-ratio: 1.02 / 1;
-  overflow: hidden;
-  position: relative;
-  border-radius: 18px;
-  border: 1px solid var(--line);
-  box-shadow: 0 10px 30px rgba(60, 50, 30, 0.14);
+.lc-feature-graphic {
+  width: 100%;
+  min-height: 96px;
+  display: grid;
+  place-items: center;
 }
 
-/* hero-bear.jpg is pre-cropped (690×812, aspect 0.85) so the bear sits dead
- * centre horizontally. Every breakpoint's container is WIDER than 0.85, so
- * cover always fits the full width — the bear can never drift sideways and
- * only the vertical is trimmed. 28% biases that trim downward, keeping the
- * ears clear of the top edge even in the widest (tablet) container. */
-.lc-hero-art img {
+.lc-feature-image {
+  display: block;
+  /* Fixed WIDTH, not height: the three source icons have different aspect
+   * ratios (one wide/dense scene, two taller/narrower badges). Fixing
+   * height alone let each render at its own natural width, so the wide one
+   * visually dominated the row while the narrow one looked small and adrift
+   * — read as "not aligned" even though the boxes were centered correctly.
+   * Fixed width keeps their visual footprint consistent; height floats via
+   * object-fit so nothing distorts. */
+  width: 78px;
+  height: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.lc-landing-art {
+  width: min(100%, 580px);
+  margin: 0 auto;
+  aspect-ratio: 1.08 / 1;
+  border-radius: 24px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.4);
+}
+
+.lc-landing-art img {
   width: 100%;
   height: 100%;
   display: block;
   object-fit: cover;
-  object-position: center 28%;
 }
 
-.lc-hero-cta {
-  position: relative;
-  z-index: 2;
-  margin-top: -28px;
+.lc-landing-cta {
+  margin-top: 6px;
 }
 
-.lc-hero-cta .lc-cta {
+.lc-cta {
+  max-width: 340px;
   margin: 0 auto;
-  max-width: 292px;
+}
+
+.lc-cta-caption {
+  margin: 12px auto 0;
+  text-align: center;
+}
+
+.lc-price { color: var(--ink-soft); font-size: 12.5px; }
+.lc-social-proof {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.lc-social-proof span:first-child { color: var(--sunshine); letter-spacing: 2px; }
+
+.lc-footer {
+  border-top: 1px solid var(--line);
+  padding: 12px 0 16px;
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+/* Base-layer design-board adjustments. These MUST precede the landing
+ * media queries: as unconditional rules of equal specificity they would
+ * otherwise win over them and flatten the desktop two-column split. */
+/* Picture-book presentation, per the final design board. */
+.lc-landing { background: #f5efe6; }
+.lc-landing-inner { max-width: 1180px; }
+.lc-landing-main { grid-template-areas: 'copy' 'art' 'cta'; }
+.lc-landing-art { background: #eadfcf; border: 1px solid rgba(43,43,43,.08); box-shadow: 0 18px 44px rgba(80,59,29,.14); }
+.lc-landing-art-wrap + .lc-landing-cta { margin-top: 42px; }
+.lc-feature-graphic { height: 112px; min-height: 112px; align-items: end; }
+.lc-feature-image { width: 84px; height: auto; max-width: 112px; object-fit: contain; }
+
+@media (min-width: 600px) {
+  .lc-landing-inner { width: min(100% - 72px, 1180px); }
+  .lc-landing-main { padding-top: 18px; }
+  .lc-landing-art { width: min(100%, 620px); }
 }
 
 @media (min-width: 900px) {
-  .lc-hero {
-    grid-template-columns: minmax(360px, 0.86fr) minmax(420px, 1.14fr);
+  .lc-landing-header { padding-top: 32px; }
+  .lc-landing-main {
+    grid-template-columns: minmax(360px, 0.9fr) minmax(420px, 1.1fr);
     grid-template-areas: 'copy art' 'cta art';
-    align-items: center;
     text-align: left;
-    padding: 54px 0 64px;
+    gap: 18px;
+    padding: 30px 0 40px;
   }
-
-  .lc-hero-copy {
-    align-self: center;
-  }
-
-  .lc-hero-cta {
-    align-self: center;
-  }
-
-  .lc-hero-copy {
-    max-width: 470px;
-  }
-
-  .lc-hero-copy .lc-lede {
-    margin: 0 0 22px;
-  }
-
-  .lc-hero-copy .lc-cta-caption {
-    text-align: left;
-  }
-
-  .lc-h1 {
-    font-size: clamp(52px, 5.4vw, 74px);
-  }
-
-  .lc-features {
-    justify-content: flex-start;
-    width: 100%;
-    gap: 12px;
-  }
-
-  .lc-features > div {
-    flex: 1;
-    width: auto;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  }
-
-  .lc-cta {
-    display: inline-block;
-    width: auto;
-    padding-left: 44px;
-    padding-right: 44px;
-  }
-
-  .lc-cta-caption {
-    text-align: left;
-  }
-
+  .lc-landing-copy { max-width: 520px; }
+  .lc-lede { margin-left: 0; }
+  .lc-feature-grid { margin: 0; }
   .lc-social-proof { justify-content: flex-start; }
-
-  .lc-hero-art { aspect-ratio: 0.92 / 1; }
+  .lc-landing-art { margin: 0; }
+  .lc-landing-cta { margin-top: 0; }
+  .lc-landing-art-wrap + .lc-landing-cta { margin-top: 0; }
+  .lc-landing-cta .lc-cta { margin-left: 0; }
+  .lc-cta-caption { text-align: left; }
 }
 
-@media (min-width: 600px) and (max-width: 899px) {
-  .lc-landing-inner { width: min(100% - 72px, 650px); }
-  .lc-hero { padding: 36px 0 44px; gap: 18px; }
-  .lc-hero-copy { max-width: 560px; margin: 0 auto; }
-  .lc-hero-art { aspect-ratio: 1.08 / 1; }
-  .lc-h1 { font-size: 58px; }
-  .lc-lede { max-width: 430px; }
-  .lc-cta { max-width: 360px; margin: 0 auto; }
-}
-
-@media (min-width: 900px) {
-  .lc-landing-inner { width: min(100% - 96px, 1180px); }
-  .lc-hero-copy { max-width: 530px; }
-  .lc-hero-art { grid-area: art; }
+@media (max-width: 359px) {
+  .lc-feature-grid { grid-template-columns: 1fr; }
 }
 
 .btn-primary {
