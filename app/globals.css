@@ -220,13 +220,16 @@ a {
   animation: lc-scene-zoom 1.4s ease-out forwards;
 }
 
-/* Cliffhanger text sits on bright artwork — a bottom-weighted scrim restores
- * the legibility the old dark gradient used to provide for free. */
+/* Cliffhanger text sits on bright artwork and would otherwise vanish. The
+ * scrim covers the WHOLE scene, not just the bottom: how far up the copy
+ * floats depends on viewport height and whether the sign-up card is showing
+ * (on a landscape tablet it rides at ~32% of the screen), so a
+ * bottom-weighted gradient misses it entirely. Dusk also suits the moment. */
 .lc-scene-bg--cliff::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(rgba(23, 60, 50, 0) 30%, rgba(23, 60, 50, 0.55) 62%, rgba(11, 34, 28, 0.82) 100%);
+  background: linear-gradient(rgba(11, 34, 28, 0.32) 0%, rgba(11, 34, 28, 0.52) 40%, rgba(11, 34, 28, 0.74) 100%);
 }
 
 .lc-scene-content {
@@ -422,6 +425,9 @@ a {
 .lc-cliff-copy,
 .lc-cliff-continue {
   animation: lc-fade-up 700ms ease both;
+  /* Belt and braces with the scrim above: sunshine-on-sunlit-artwork is the
+   * worst case, so the copy carries its own shadow too. */
+  text-shadow: 0 2px 14px rgba(6, 24, 18, 0.85), 0 1px 3px rgba(6, 24, 18, 0.7);
 }
 
 .lc-cliff-continue {
