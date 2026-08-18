@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@stripe/stripe-js": "^9.13.0",
     "@vercel/analytics": "^2.0.1",
     "@vercel/speed-insights": "^2.0.0",
     "firebase": "^11.10.0",
@@ -16,7 +17,9 @@
     "microsoft-cognitiveservices-speech-sdk": "^1.51.0",
     "next": "^14.2.35",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "stripe": "^22.5.0",
+    "twilio": "^6.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

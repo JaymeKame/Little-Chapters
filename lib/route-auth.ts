@@ -18,6 +18,10 @@ export async function requireReadingUser(req: NextRequest): Promise<RouteAuth> {
     response: NextResponse.json({ error, ...(hint ? { hint } : {}) }, { status }),
   });
 
+  if (process.env.SPEECH_ALLOW_UNAUTH === '1') {
+    return { ok: true, uid: 'anonymous' };
+  }
+
   if (adminCredentialsConfigured()) {
     const header = req.headers.get('authorization') || '';
     const idToken = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -29,7 +33,7 @@ export async function requireReadingUser(req: NextRequest): Promise<RouteAuth> {
       return deny('UNAUTHENTICATED', 401);
     }
   }
-  if (process.env.NODE_ENV !== 'development' && process.env.SPEECH_ALLOW_UNAUTH !== '1') {
+  if (process.env.NODE_ENV !== 'development') {
     return deny(
       'ADMIN_NOT_CONFIGURED',
       503,

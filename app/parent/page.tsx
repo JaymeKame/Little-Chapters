@@ -7,6 +7,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { loadProfile, loadReport, type ChildProfile, type SessionReport } from '@/lib/profile';
+import { ParentMessages } from '@/components/ParentMessages';
 
 export default function ParentMessagePage() {
   const router = useRouter();
@@ -60,6 +61,10 @@ export default function ParentMessagePage() {
           {reportDay ?? `Today ${now}`}
         </p>
 
+        {/* In-app message display */}
+        <ParentMessages />
+
+        {/* Legacy session report display */}
         {report ? (
           <div
             style={{

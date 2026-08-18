@@ -328,6 +328,58 @@ export default function ReadPage() {
           <div aria-hidden style={{ marginTop: 26, fontSize: 22, color: 'var(--sunshine)' }}>
             ✦
           </div>
+
+          {/* Account creation prompt after free chapter */}
+          <div
+            style={{
+              marginTop: 40,
+              background: 'rgba(255,255,255,0.95)',
+              borderRadius: 16,
+              padding: '20px 24px',
+              maxWidth: 320,
+              boxShadow: '0 4px 16px rgba(43,43,43,0.15)',
+            }}
+          >
+            <p style={{ fontFamily: 'var(--serif)', fontSize: 16, margin: '0 0 12px', color: 'var(--ink)' }}>
+              Great job on the first chapter!
+            </p>
+            <p style={{ fontSize: 14, margin: '0 0 16px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
+              Create an account to get daily progress updates via SMS with specific wins from each reading session.
+            </p>
+            <button
+              onClick={() => router.push('/register')}
+              className="btn-primary"
+              style={{
+                width: '100%',
+                padding: '12px',
+                fontSize: 15,
+                fontWeight: 600,
+                borderRadius: 10,
+                border: 0,
+                background: 'var(--leaf)',
+                color: '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              Create Free Account
+            </button>
+            <button
+              onClick={() => router.push('/home')}
+              style={{
+                width: '100%',
+                padding: '10px',
+                fontSize: 13,
+                marginTop: 8,
+                borderRadius: 10,
+                border: 0,
+                background: 'transparent',
+                color: 'var(--ink-soft)',
+                cursor: 'pointer',
+              }}
+            >
+              Maybe Later
+            </button>
+          </div>
         </main>
       </div>
       </div>

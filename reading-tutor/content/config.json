@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0.0",
+  "confidence_floor": 0.35,
+  "silence_timeout_ms": 3500,
+  "max_retries": 2,
+  "voice_id": "TODO_SET_TTS_VOICE_ID",
+
+  "help_template": {
+    "note": "Three rungs, in order. A child only ever descends this ladder - never repeats a rung. Rung 3 sets assisted:true for that sentence.",
+    "rungs": [
+      {
+        "level": 1,
+        "trigger": "silence_timeout_ms elapsed, or word confidence below confidence_floor",
+        "gives": "phoneme",
+        "line": "That word begins with {phoneme}.",
+        "note": "{phoneme} comes from the stage file's new_graphemes for the grapheme the child stalled on."
+      },
+      {
+        "level": 2,
+        "trigger": "silence_timeout_ms elapsed again after rung 1",
+        "gives": "word",
+        "line": "That word is {word}. Your turn.",
+        "note": "Child gets one more attempt after this. Still counts as a real attempt."
+      },
+      {
+        "level": 3,
+        "trigger": "max_retries exhausted",
+        "gives": "sentence",
+        "line": "Let me read this one. {sentence}",
+        "note": "Marks the sentence assisted:true. Story continues immediately - no pause, no second chance, no change in tone."
+      }
+    ]
+  },
+
+  "encouragement_lines": [
+    "Keep going.",
+    "Next one.",
+    "On we go.",
+    "Here comes the next bit.",
+    "Good. Carry on.",
+    "That's the one.",
+    "Let's see what happens.",
+    "Ready for the next line."
+  ],
+
+  "rules": {
+    "never_say": [
+      "wrong", "incorrect", "no", "not quite", "try again", "almost",
+      "oops", "mistake", "error", "score", "points", "level"
+    ],
+    "no_exclamation_marks": true,
+    "no_evaluative_praise": "Encouragement moves the story forward. It never comments on how well the child read.",
+    "confidence_floor_rationale": "Set deliberately low. A missed mistake costs nothing. Falsely telling a child they got a word wrong is the failure mode that loses the customer."
+  }
+}
