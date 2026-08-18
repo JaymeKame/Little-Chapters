@@ -10,6 +10,7 @@ import {
   OAuthProvider,
   onAuthStateChanged,
   signInAnonymously,
+  signInWithCustomToken,
   signInWithPopup,
   signOut as fbSignOut,
   updateProfile,
@@ -40,6 +41,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let unsub = () => {};
     try {
       const auth = getFirebaseAuth();
+
+      /* Dev-only test hook. Signing in as a real parent needs Google's popup
+       * and a human password, which makes the paid flow impossible to drive
+       * from a script. This exposes a custom-token sign-in so a minted test
+       * parent can exercise checkout end to end. Stripped from production
+       * builds by the NODE_ENV guard. */
+      if (process.env.NODE_ENV === 'development') {
+        (window as unknown as Record<string, unknown>).__lcSignInWithCustomToken =
+          (t: string) => signInWithCustomToken(auth, t);
+      }
 
       unsub = onAuthStateChanged(auth, async (u) => {
         if (!u) {

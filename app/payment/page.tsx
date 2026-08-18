@@ -10,12 +10,19 @@ import { PLANS } from '@/lib/stripe';
 
 export default function PaymentPage() {
   const router = useRouter();
-  const { user, isAuthenticated } = useAuth();
+  // authLoading is aliased: this page already has its own `loading` for the
+  // subscribe button.
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
   const [selectedPlan, setSelectedPlan] = useState<string>('monthly');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Firebase resolves the session asynchronously, so isAuthenticated is
+    // false for the first frames of every full page load. Redirecting on it
+    // directly bounced signed-in parents to registration whenever they
+    // refreshed, deep-linked, or came back from Stripe.
+    if (authLoading) return;
     if (!isAuthenticated) {
       router.push('/register');
       return;
@@ -31,7 +38,7 @@ export default function PaymentPage() {
         // Checkout remains available if the status check is temporarily unavailable.
       }
     })();
-  }, [isAuthenticated, router, user]);
+  }, [authLoading, isAuthenticated, router, user]);
 
   async function handleSubscribe(planId: string) {
     setLoading(true);
