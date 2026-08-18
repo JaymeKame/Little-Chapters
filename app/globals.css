@@ -340,6 +340,27 @@ a {
   display: none;
 }
 
+/* Short screens (iPhone SE class, and phones in landscape): tighten the child
+ * home column so Momo lands above the fold rather than ~60px below it. The
+ * spacing being overridden is set inline on the elements, hence !important. */
+@media (max-height: 700px) {
+  .lc-home-scene .lc-storybook {
+    margin-top: 4px !important;
+    /* The cover is the tallest block; letting it take 40vh instead of its
+     * 0.72 aspect ratio is what actually buys the room. */
+    max-height: 40vh;
+  }
+  .lc-home-scene .lc-play-btn {
+    margin-top: 14px !important;
+  }
+  .lc-home-scene .lc-voice-prompt {
+    margin-top: 12px !important;
+  }
+  .lc-home-scene .lc-momo-compact {
+    margin-top: 2px !important;
+  }
+}
+
 .lc-voice-prompt {
   max-width: min(82vw, 270px);
 }

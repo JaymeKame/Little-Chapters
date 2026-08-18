@@ -62,13 +62,13 @@ export default function RegisterPage() {
         <h1 style={{ fontFamily: 'var(--serif)', fontSize: '28px', margin: '0 0 10px' }}>
           Create Your Account
         </h1>
-        <p style={{ color: 'var(--ink-soft)', fontSize: '14', margin: 0 }}>
+        <p style={{ color: 'var(--ink-soft)', fontSize: 14, margin: 0 }}>
           Sign in to get daily progress updates via SMS
         </p>
       </header>
 
       {error && (
-        <div style={{ padding: '12px', borderRadius: '8', background: '#fee', color: '#c33', fontSize: '14', marginBottom: '20px' }}>
+        <div style={{ padding: '12px', borderRadius: 8, background: '#fee', color: '#c33', fontSize: 14, marginBottom: '20px' }}>
           {error}
         </div>
       )}
@@ -84,9 +84,9 @@ export default function RegisterPage() {
             justifyContent: 'center',
             gap: '12px',
             padding: '14px',
-            fontSize: '15',
+            fontSize: 15,
             fontWeight: 500,
-            borderRadius: '12',
+            borderRadius: 12,
             border: '1.5px solid var(--line)',
             background: '#fff',
             color: 'var(--ink)',
@@ -112,9 +112,9 @@ export default function RegisterPage() {
             justifyContent: 'center',
             gap: '12px',
             padding: '14px',
-            fontSize: '15',
+            fontSize: 15,
             fontWeight: 500,
-            borderRadius: '12',
+            borderRadius: 12,
             border: '1.5px solid var(--line)',
             background: '#fff',
             color: 'var(--ink)',
@@ -132,7 +132,7 @@ export default function RegisterPage() {
       {/* Phone number form (required) */}
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
         <div>
-          <label style={{ display: 'block', fontSize: '14', fontWeight: 600, marginBottom: '8px' }}>
+          <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: '8px' }}>
             Phone Number <span style={{ color: 'var(--leaf)' }}>*</span>
           </label>
           <input
@@ -144,15 +144,15 @@ export default function RegisterPage() {
             style={{
               width: '100%',
               padding: '13px 14px',
-              fontSize: '16',
-              borderRadius: '12',
+              fontSize: 16,
+              borderRadius: 12,
               border: '1.5px solid var(--line)',
               background: 'var(--card)',
               outline: 'none',
             }}
               disabled={busy === 'submit' || authLoading}
           />
-          <p style={{ fontSize: '12', color: 'var(--ink-soft)', marginTop: '6px' }}>
+          <p style={{ fontSize: 12, color: 'var(--ink-soft)', marginTop: '6px' }}>
             We'll send you one specific win after each reading session
           </p>
         </div>
@@ -163,9 +163,9 @@ export default function RegisterPage() {
           disabled={busy === 'submit' || !phoneNumber.trim() || !isAuthenticated}
           style={{
             padding: '14px',
-            fontSize: '16',
+            fontSize: 16,
             fontWeight: 600,
-            borderRadius: '12',
+            borderRadius: 12,
             border: 0,
             background: 'var(--leaf)',
             color: '#fff',
@@ -177,7 +177,7 @@ export default function RegisterPage() {
         </button>
       </form>
 
-      <p style={{ textAlign: 'center', fontSize: '12', color: 'var(--ink-soft)', marginTop: '24px' }}>
+      <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--ink-soft)', marginTop: '24px' }}>
         By continuing, you agree to receive SMS messages about your child's reading progress.
       </p>
     </div>

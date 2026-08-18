@@ -147,7 +147,7 @@ function PageText({
 
 export default function ReadPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const pet = usePet(user?.uid ?? null);
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
@@ -178,15 +178,6 @@ export default function ReadPage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
-    // Upgrade to a stage-matched reading-tutor chapter when one is available
-    // (cached from earlier today, or freshly generated when OPENAI_API_KEY is
-    // configured server-side). Never swap once the child has started reading;
-    // without the key the request 503s instantly and the demo arc stays.
-    void (async () => {
-      const authToken = user ? await user.getIdToken().catch(() => null) : null;
-      const tutorChapter = await requestTutorChapter(p, authToken);
-      if (tutorChapter && !disposedRef.current && !startedReadingRef.current) setChapter(tutorChapter);
-    })();
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
@@ -197,6 +188,31 @@ export default function ReadPage() {
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
     };
   }, [router]);
+
+  /* Upgrade the demo arc to a stage-matched reading-tutor chapter (cached from
+   * earlier today, or generated when OPENAI_API_KEY is set server-side).
+   *
+   * This MUST wait for auth to settle rather than ride the mount effect: the
+   * story route requires an ID token in production, and on a direct load of
+   * /read the anonymous sign-in is still in flight at mount — a request sent
+   * then gets a 401 that the client swallows, so generation would silently
+   * never happen and the demo arc would stay forever. Never swaps once the
+   * child has started reading; without a key the request 503s and the demo
+   * arc simply stays. */
+  useEffect(() => {
+    if (!profile || authLoading || startedReadingRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      const authToken = user ? await user.getIdToken().catch(() => null) : null;
+      const tutorChapter = await requestTutorChapter(profile, authToken);
+      if (tutorChapter && !cancelled && !disposedRef.current && !startedReadingRef.current) {
+        setChapter(tutorChapter);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, user, authLoading]);
 
   // Reuse the same flat story theme as Home; the controller prevents duplicate loops.
   useEffect(() => {
@@ -422,10 +438,15 @@ export default function ReadPage() {
 
   function finishChapter() {
     const c = chapter!;
+    // Dedupe: a generated chapter may practise one or two words across every
+    // page, and "den, den, den" reads like a bug to the parent.
+    const newWords = [
+      ...new Set(c.pages.flatMap((p) => p.focusWords).filter((w) => w !== c.character)),
+    ];
     saveReport({
       date: new Date().toLocaleDateString('en-CA'), // local YYYY-MM-DD, not UTC
       childName: profile!.childName,
-      newWords: c.pages.flatMap((p) => p.focusWords).filter((w) => w !== c.character),
+      newWords,
       // Words the child actually struggled with come FIRST so they survive the
       // parent screen's top-3 slice; generic chapter phonics fill the rest.
       practiced: [...practicedRef.current.entries()]
@@ -446,7 +467,7 @@ export default function ReadPage() {
             body: JSON.stringify({
               sessionData: {
                 childName: profile!.childName,
-                newWords: c.pages.flatMap((p) => p.focusWords).filter((w) => w !== c.character),
+                newWords,
                 practicedWords: [...practicedRef.current.entries()].map(([word, hint]) => ({ word, hint })),
                 mostlyAssisted: false,
                 tomorrowTeaser: c.teaser,

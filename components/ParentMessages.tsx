@@ -91,16 +91,16 @@ export function ParentMessages() {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-              <span style={{ fontSize: '12', color: 'var(--ink-soft)' }}>
+              <span style={{ fontSize: 12, color: 'var(--ink-soft)' }}>
                 {new Date(msg.createdAt).toLocaleDateString()}
               </span>
               {msg.smsSent && (
-                <span style={{ fontSize: '11', background: 'var(--sunshine)', padding: '2px 8px', borderRadius: '999', color: '#fff' }}>
+                <span style={{ fontSize: 11, background: 'var(--sunshine)', padding: '2px 8px', borderRadius: 999, color: '#fff' }}>
                   SMS sent
                 </span>
               )}
             </div>
-            <div style={{ whiteSpace: 'pre-line', fontSize: '14', lineHeight: '1.5' }}>
+            <div style={{ whiteSpace: 'pre-line', fontSize: 14, lineHeight: 1.5 }}>
               {msg.lines.map((line, idx) => (
                 <div key={idx} style={{ marginBottom: idx < msg.lines.length - 1 ? '4px' : '0' }}>
                   {line}

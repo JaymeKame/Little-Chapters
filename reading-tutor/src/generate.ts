@@ -9,7 +9,7 @@
  * offline without an API key.
  */
 
-import { getStage, paletteForStage, allowedWordsForStage } from '../content/stages';
+import { getStage, paletteForStage, allowedWordsForStage, STAGES } from '../content/stages';
 import { validateAll, type CastContext, type StoryDraft, type Violation } from './validators';
 import type { Skeleton } from './skeletons';
 import {
@@ -51,6 +51,16 @@ export interface GenerateResult {
 }
 
 const MAX_ATTEMPTS = 4;
+
+/** Every sight word legal at this stage — stages 1..id, deduped. */
+function cumulativeSightWords(id: number): string[] {
+  const out = new Set<string>();
+  for (const s of STAGES) {
+    if (s.id > id) break;
+    for (const w of s.sight_words_introduced) out.add(w.toLowerCase());
+  }
+  return [...out];
+}
 
 export function buildPrompt(
   req: GenerateRequest,
@@ -116,7 +126,11 @@ export function buildPrompt(
     ``,
     `Describing words: ${palette.adjectives.join(' ')}`,
     ``,
-    `Joining words you may also use: ${stage.sight_words_introduced.join(' ')}`,
+    // CUMULATIVE, not this stage's new words: the phonics validator accepts
+    // every sight word from stage 1 up, so listing only the newest ones hides
+    // "a", "and", "the" from a stage-2 writer — over-constraining the model
+    // against the rules it is actually graded on, and paying for the retries.
+    `Joining words you may also use: ${cumulativeSightWords(stage.id).join(' ')}`,
     ``,
     `RULES`,
     `- ${req.skeleton.beats.length} sentences, ${min}-${max} words each.`,

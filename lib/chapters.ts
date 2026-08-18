@@ -223,9 +223,21 @@ export function adaptTutorDraft(
   // (returned by the API) — re-rolling assignSlots here would report words
   // the child never read. The re-roll stays only as a last-resort fallback.
   const practiceWords = Object.values(slots ?? assignSlots(skeleton.beats, stage));
+  /* Whole-token match, NOT substring: the reader highlights whole tokens
+   * (app/read/page.tsx PageText), so a substring hit would claim a focus word
+   * that never lights up and never appears in the parent's "new words" — and
+   * the palettes are full of collisions ('hat' inside 'that', 'top' inside
+   * 'stop', 'pin' inside 'spin'). Tokenizing must mirror the reader exactly. */
+  const tokensOf = (sentence: string): Set<string> =>
+    new Set(
+      sentence
+        .split(/\s+/)
+        .map((t) => t.replace(/[’ʼ]/g, "'").toLowerCase().replace(/[^a-z0-9']/g, ''))
+        .filter(Boolean),
+    );
   const focusFor = (sentence: string): string[] => {
-    const lower = sentence.toLowerCase();
-    return practiceWords.filter((w) => lower.includes(w.toLowerCase())).slice(0, 2);
+    const tokens = tokensOf(sentence);
+    return practiceWords.filter((w) => tokens.has(w.toLowerCase())).slice(0, 2);
   };
   return {
     ...base,

@@ -75,13 +75,13 @@ export default function PaymentPage() {
         <h1 style={{ fontFamily: 'var(--serif)', fontSize: '28px', margin: '0 0 10px' }}>
           Choose Your Plan
         </h1>
-        <p style={{ color: 'var(--ink-soft)', fontSize: '14', margin: 0 }}>
+        <p style={{ color: 'var(--ink-soft)', fontSize: 14, margin: 0 }}>
           Get daily SMS updates about your child's reading progress
         </p>
       </header>
 
       {error && (
-        <div style={{ padding: '12px', borderRadius: '8', background: '#fee', color: '#c33', fontSize: '14', marginBottom: '20px' }}>
+        <div style={{ padding: '12px', borderRadius: 8, background: '#fee', color: '#c33', fontSize: 14, marginBottom: '20px' }}>
           {error}
         </div>
       )}
@@ -98,7 +98,7 @@ export default function PaymentPage() {
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '16px 20px',
-              borderRadius: '12',
+              borderRadius: 12,
               border: `2px solid ${selectedPlan === plan.id ? 'var(--leaf)' : 'var(--line)'}`,
               background: selectedPlan === plan.id ? 'oklch(0.78 0.14 155 / 0.1)' : 'var(--card)',
               cursor: loading ? 'not-allowed' : 'pointer',
@@ -107,14 +107,14 @@ export default function PaymentPage() {
             }}
           >
             <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: '16', fontWeight: 600, marginBottom: '4px' }}>
+              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '4px' }}>
                 {plan.name}
               </div>
-              <div style={{ fontSize: '13', color: 'var(--ink-soft)' }}>
+              <div style={{ fontSize: 13, color: 'var(--ink-soft)' }}>
                 Billed {plan.interval === 'month' ? 'monthly' : 'yearly'}
               </div>
             </div>
-            <div style={{ fontSize: '20', fontWeight: 700, color: 'var(--leaf)' }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--leaf)' }}>
               ${(plan.amount / 100).toFixed(2)}
             </div>
           </button>
@@ -122,15 +122,15 @@ export default function PaymentPage() {
       </div>
 
       {/* Features */}
-      <div style={{ marginBottom: '24px', padding: '16px', background: 'var(--card)', borderRadius: '12', border: '1px solid var(--line)' }}>
-        <h3 style={{ fontSize: '15', fontWeight: 600, marginBottom: '12px', margin: 0 }}>
+      <div style={{ marginBottom: '24px', padding: '16px', background: 'var(--card)', borderRadius: 12, border: '1px solid var(--line)' }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: '12px', margin: 0 }}>
           What you'll get:
         </h3>
-        <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '14', lineHeight: '1.6', color: 'var(--ink-2)' }}>
+        <ul style={{ margin: 0, paddingLeft: '20px', fontSize: 14, lineHeight: 1.6, color: 'var(--ink-2)' }}>
           <li style={{ marginBottom: '8px' }}>Daily SMS with specific wins from each reading session</li>
           <li style={{ marginBottom: '8px' }}>Progress tracking across all chapters</li>
           <li style={{ marginBottom: '8px' }}>In-app message history</li>
-          <li style={{ marginBottom: '0' }}>Cancel anytime</li>
+          <li style={{ marginBottom: 0 }}>Cancel anytime</li>
         </ul>
       </div>
 
@@ -142,9 +142,9 @@ export default function PaymentPage() {
         style={{
           width: '100%',
           padding: '16px',
-          fontSize: '16',
+          fontSize: 16,
           fontWeight: 600,
-          borderRadius: '12',
+          borderRadius: 12,
           border: 0,
           background: 'var(--leaf)',
           color: '#fff',
@@ -155,7 +155,7 @@ export default function PaymentPage() {
         {loading ? 'Processing...' : `Subscribe to ${selectedPlanData?.name} Plan`}
       </button>
 
-      <p style={{ textAlign: 'center', fontSize: '12', color: 'var(--ink-soft)', marginTop: '16px' }}>
+      <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--ink-soft)', marginTop: '16px' }}>
         Secure payment powered by Stripe
       </p>
 
@@ -164,9 +164,9 @@ export default function PaymentPage() {
         style={{
           width: '100%',
           padding: '12px',
-          fontSize: '14',
+          fontSize: 14,
           marginTop: '12px',
-          borderRadius: '12',
+          borderRadius: 12,
           border: 0,
           background: 'transparent',
           color: 'var(--ink-soft)',

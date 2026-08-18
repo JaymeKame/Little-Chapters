@@ -217,7 +217,11 @@ export default function ChildHomePage() {
           </button>
 
           {/* Momo: small, secondary, delayed entrance — never competes with Play. */}
-          <div className="lc-momo-compact" style={{ width: '100%', maxWidth: 210, marginTop: 10 }}>
+          {/* 210px left only ~86px for the message text, wrapping Momo's
+              greeting to five lines. Momo stays visually secondary via
+              .lc-momo-compact's smaller type — it does not need a hard cap
+              this tight. */}
+          <div className="lc-momo-compact" style={{ width: '100%', maxWidth: 320, marginTop: 10 }}>
             <PetCompanion pet={pet} variant="child" />
           </div>
         </main>
