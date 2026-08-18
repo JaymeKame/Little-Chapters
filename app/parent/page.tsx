@@ -49,7 +49,20 @@ export default function ParentMessagePage() {
         <button
           onClick={() => router.push('/home')}
           aria-label="Back"
-          style={{ border: 0, background: 'none', fontSize: 20, color: 'var(--ink-soft)', padding: 4 }}
+          // 44px hit area — see the matching note on the setup screen.
+          style={{
+            border: 0,
+            background: 'none',
+            fontSize: 20,
+            color: 'var(--ink-soft)',
+            width: 44,
+            height: 44,
+            padding: 0,
+            marginLeft: -10,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
         >
           ‹
         </button>

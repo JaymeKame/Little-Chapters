@@ -91,16 +91,6 @@ a {
   }
 }
 
-/* Screen 4 on landscape tablets: the reading card floats to one side over
- * full-bleed artwork ("picture book"), instead of centering a narrow phone
- * column on a wide canvas. */
-@media (min-width: 1024px) and (orientation: landscape) {
-  .lc-reading-scene > .screen {
-    margin: 24px 6vw 24px auto;
-    max-width: 460px;
-  }
-}
-
 /* Full-bleed scene wrapper (reading + chapter end): the storybook gradient
  * fills the whole viewport; the content column floats transparent inside. */
 .scene {
@@ -122,6 +112,20 @@ a {
     border-radius: 0;
     box-shadow: none;
     max-width: 560px;
+  }
+}
+
+/* Screen 4 on landscape tablets: the reading card floats to one side over
+ * full-bleed artwork ("picture book"), instead of centering a narrow phone
+ * column on a wide canvas — which would park the card over the character.
+ * MUST out-specify `.scene > .screen` above (same specificity, later in the
+ * file), hence the doubled class; and min-height has to lose the vertical
+ * margins or the page gains a scrollbar it never needed. */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .scene.lc-reading-scene > .screen {
+    margin: 24px 6vw 24px auto;
+    min-height: calc(100dvh - 48px);
+    max-width: 460px;
   }
 }
 

@@ -36,7 +36,21 @@ export default function SetupPage() {
         <button
           onClick={() => router.push('/')}
           aria-label="Back"
-          style={{ border: 0, background: 'none', fontSize: 20, color: 'var(--ink-soft)', padding: 4 }}
+          // 44px hit area (the glyph alone was 13px wide); negative margin
+          // keeps the chevron optically where it was.
+          style={{
+            border: 0,
+            background: 'none',
+            fontSize: 20,
+            color: 'var(--ink-soft)',
+            width: 44,
+            height: 44,
+            padding: 0,
+            marginLeft: -12,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
         >
           ‹
         </button>
