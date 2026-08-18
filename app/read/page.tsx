@@ -148,7 +148,7 @@ function PageText({
 export default function ReadPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
-  const pet = usePet(user?.uid ?? null);
+  const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [pageIdx, setPageIdx] = useState(0);

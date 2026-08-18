@@ -33,8 +33,8 @@ import { playHomeSound, playTheme, prepareStoryAudio, speakPrompt, stopAmbience,
 
 export default function ChildHomePage() {
   const router = useRouter();
-  const { user } = useAuth();
-  const pet = usePet(user?.uid ?? null);
+  const { user, loading: authLoading } = useAuth();
+  const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [leaving, setLeaving] = useState(false);

@@ -62,8 +62,8 @@ function ScoreTile({ label, value }: { label: string; value: number | null }) {
 }
 
 export default function ReadingPage() {
-  const { user } = useAuth();
-  const pet = usePet(user?.uid ?? null);
+  const { user, loading: authLoading } = useAuth();
+  const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
   const [referenceText, setReferenceText] = useState(DEFAULT_TEXT);
   const [status, setStatus] = useState<ReadingSessionStatus | 'idle'>('idle');
   const [partial, setPartial] = useState('');
@@ -128,6 +128,9 @@ export default function ReadingPage() {
     setLiveWords([]);
     setAudioUrl(null);
     try {
+      // Don't mint a session before auth resolves — the request would go out
+      // unauthenticated and 401 in any environment with admin credentials.
+      if (authLoading) return;
       const authToken = user ? await user.getIdToken() : null;
       const session = await startReadingSession({
         referenceText,

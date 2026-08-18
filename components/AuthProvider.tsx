@@ -12,6 +12,7 @@ import {
   signInAnonymously,
   signInWithCustomToken,
   signInWithPopup,
+  linkWithPopup,
   signOut as fbSignOut,
   updateProfile,
   type User,
@@ -31,6 +32,32 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/* Registering must UPGRADE the anonymous visitor, not replace them.
+ * signInWithPopup on an anonymous user issues a brand-new uid and abandons the
+ * old one — and everything the child earned is keyed by uid, so Momo's XP and
+ * streak vanished at the exact moment the parent signed up. Linking keeps the
+ * uid, so nothing has to move. If the Google account was already linked to a
+ * different Firebase user, linking is impossible and we fall back to a plain
+ * sign-in (that existing account is the one the parent means). */
+async function upgradeOrSignIn(provider: GoogleAuthProvider | OAuthProvider): Promise<void> {
+  const auth = getFirebaseAuth();
+  const current = auth.currentUser;
+  if (current?.isAnonymous) {
+    try {
+      await linkWithPopup(current, provider);
+      return;
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      const recoverable =
+        code === 'auth/credential-already-in-use' ||
+        code === 'auth/email-already-in-use' ||
+        code === 'auth/provider-already-linked';
+      if (!recoverable) throw err;
+    }
+  }
+  await signInWithPopup(auth, provider);
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -79,17 +106,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated: Boolean(user && !user.isAnonymous),
       configError,
       async signInWithGoogle() {
-        const auth = getFirebaseAuth();
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({ prompt: 'select_account' });
-        await signInWithPopup(auth, provider);
+        await upgradeOrSignIn(provider);
       },
       async signInWithApple() {
-        const auth = getFirebaseAuth();
         const provider = new OAuthProvider('apple.com');
         provider.addScope('email');
         provider.addScope('name');
-        await signInWithPopup(auth, provider);
+        await upgradeOrSignIn(provider);
       },
       async signOut() {
         await fbSignOut(getFirebaseAuth());

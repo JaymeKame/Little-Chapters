@@ -18,12 +18,22 @@ interface Message {
 }
 
 export function ParentMessages() {
-  const { user } = useAuth();
+  const { user, loading: authLoading, isAuthenticated } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
+    // `loading` starts true and only ever cleared inside the snapshot
+    // callback, so any early return left the panel on "Loading messages…"
+    // forever. Resolve the two not-subscribing cases explicitly instead.
+    if (authLoading) return;
+    if (!user || !isAuthenticated) {
+      // Messages belong to a registered parent; an anonymous visitor has none
+      // to fetch, and subscribing under a throwaway uid just burns a read.
+      setMessages([]);
+      setLoading(false);
+      return;
+    }
 
     const db = getDb();
     const messagesRef = collection(db, 'parents', user.uid, 'messages');
@@ -42,7 +52,7 @@ export function ParentMessages() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [authLoading, isAuthenticated, user]);
 
   async function markAsRead(messageId: string) {
     if (!user) return;

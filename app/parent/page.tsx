@@ -15,8 +15,8 @@ const PRACTICE_ICONS = ['🌱', '✨', '🪄'];
 
 export default function ParentMessagePage() {
   const router = useRouter();
-  const { user } = useAuth();
-  const pet = usePet(user?.uid ?? null);
+  const { user, loading: authLoading } = useAuth();
+  const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [report, setReport] = useState<SessionReport | null>(null);
   const [now, setNow] = useState('');
