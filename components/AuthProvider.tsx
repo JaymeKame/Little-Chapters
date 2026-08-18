@@ -13,6 +13,8 @@ import {
   signInWithCustomToken,
   signInWithPopup,
   linkWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut as fbSignOut,
   updateProfile,
   type User,
@@ -41,28 +43,65 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  * uid, so nothing has to move. If the Google account was already linked to a
  * different Firebase user, linking is impossible and we fall back to a plain
  * sign-in (that existing account is the one the parent means). */
+const PENDING_ANON_UID = 'little-chapters-pending-anon-uid';
+
 async function upgradeOrSignIn(provider: GoogleAuthProvider | OAuthProvider): Promise<void> {
   const auth = getFirebaseAuth();
   const current = auth.currentUser;
   const outgoingAnonUid = current?.isAnonymous ? current.uid : null;
+
+  /* A popup may only be opened while the browser still considers the click
+   * "user-activated" — which expires at the first await. So exactly ONE popup
+   * call is allowed per tap, and anything after it must redirect instead.
+   * Getting this wrong blocked the popup at the Create-Free-Account moment. */
+  const redirect = async () => {
+    // Survives the full page reload a redirect causes.
+    if (outgoingAnonUid) sessionStorage.setItem(PENDING_ANON_UID, outgoingAnonUid);
+    await signInWithRedirect(auth, provider);
+  };
+
   if (current?.isAnonymous) {
     try {
       await linkWithPopup(current, provider);
       return;
     } catch (err) {
       const code = (err as { code?: string })?.code;
+      if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
+        return redirect();
+      }
       const recoverable =
         code === 'auth/credential-already-in-use' ||
         code === 'auth/email-already-in-use' ||
         code === 'auth/provider-already-linked';
       if (!recoverable) throw err;
+      // Linking is impossible: this account already belongs to another user.
+      // The activation is spent, so a second popup would be blocked — redirect.
+      return redirect();
     }
   }
-  const cred = await signInWithPopup(auth, provider);
-  // Linking was impossible (this Google account already belongs to another
-  // Firebase user), so the uid changed after all. Carry the pet across, but
-  // only into an account that has none — never merge two real histories.
-  if (outgoingAnonUid) claimPetFromAnonymousUid(cred.user.uid, outgoingAnonUid);
+
+  try {
+    const cred = await signInWithPopup(auth, provider);
+    if (outgoingAnonUid) claimPetFromAnonymousUid(cred.user.uid, outgoingAnonUid);
+  } catch (err) {
+    if ((err as { code?: string })?.code === 'auth/popup-blocked') return redirect();
+    throw err;
+  }
+}
+
+/** Completes a redirect sign-in after the page reloads. */
+async function finishRedirectSignIn(auth: ReturnType<typeof getFirebaseAuth>): Promise<void> {
+  try {
+    const result = await getRedirectResult(auth);
+    if (!result) return;
+    const pending = sessionStorage.getItem(PENDING_ANON_UID);
+    if (pending) {
+      claimPetFromAnonymousUid(result.user.uid, pending);
+      sessionStorage.removeItem(PENDING_ANON_UID);
+    }
+  } catch {
+    /* nothing pending, or the redirect was abandoned */
+  }
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -84,6 +123,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         (window as unknown as Record<string, unknown>).__lcSignInWithCustomToken =
           (t: string) => signInWithCustomToken(auth, t);
       }
+
+      void finishRedirectSignIn(auth);
 
       unsub = onAuthStateChanged(auth, async (u) => {
         if (!u) {

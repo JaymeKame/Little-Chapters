@@ -22,8 +22,17 @@ export default function RegisterPage() {
       if (provider === 'google') await signInWithGoogle();
       else await signInWithApple();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Sign-in failed.';
-      if (!msg.includes('popup-closed-by-user')) setError(msg);
+      // Raw Firebase codes are meaningless to a parent — say what to do.
+      const code = (e as { code?: string })?.code ?? '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        /* they closed it themselves — not an error worth showing */
+      } else if (code === 'auth/popup-blocked') {
+        setError('Your browser blocked the sign-in window. Allow pop-ups for this site, or tap the button again.');
+      } else if (code === 'auth/network-request-failed') {
+        setError('We could not reach the network. Check your connection and try again.');
+      } else {
+        setError(e instanceof Error ? e.message : 'Sign-in failed.');
+      }
     } finally {
       setBusy(null);
     }
