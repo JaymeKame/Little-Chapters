@@ -283,6 +283,17 @@ a {
   animation: none;
 }
 
+/* Screen 4's "tap to read" invite: same breathing language as the Home play
+ * button, on a plain emoji instead of a second custom icon — a pre-reader
+ * needs a "press here" cue that doesn't depend on reading the button's own
+ * label to understand it. */
+.lc-mic-invite {
+  display: block;
+  font-size: 34px;
+  line-height: 1;
+  animation: lc-breathe 3.2s ease-in-out infinite;
+}
+
 @keyframes lc-fade-up {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
@@ -487,7 +498,8 @@ a {
   .lc-cliff-continue,
   .lc-top-controls,
   .lc-help-pulse,
-  .lc-listen-bars span {
+  .lc-listen-bars span,
+  .lc-mic-invite {
     animation: none !important;
   }
   .lc-leaving .lc-scene-bg img,

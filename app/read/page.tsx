@@ -799,8 +799,11 @@ export default function ReadPage() {
               lineHeight: 1.7,
             }}
           >
+            {phase === 'ready' && (
+              <span aria-hidden className="lc-mic-invite">🎙️</span>
+            )}
             <ListenBars active={phase === 'listening'} />
-            {phase === 'ready' && 'Tap, then read the page out loud!'}
+            {phase === 'ready' && 'Tap to read out loud!'}
             {phase === 'listening' && 'I’m listening…'}
             {phase === 'scoring' && 'One moment…'}
           </button>
