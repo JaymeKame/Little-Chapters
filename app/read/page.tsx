@@ -673,12 +673,12 @@ export default function ReadPage() {
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '4px 22px 26px' }}>
         <div
-          className={`lc-reading-card-in${phase === 'celebrate' ? ' lc-section-success' : ''}`}
+          className="lc-reading-card-in"
           style={{
             background: '#fffdf8',
             borderRadius: 18,
             padding: '26px 24px 18px',
-            boxShadow: '0 6px 20px rgba(43,43,43,0.16)',
+            boxShadow: '0 4px 14px rgba(43,43,43,0.12)',
           }}
         >
           {/* Keep the big word visible through the retry's listening/scoring —

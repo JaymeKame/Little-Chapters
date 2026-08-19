@@ -27,7 +27,7 @@ import { useEffect, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
-import { avatarEmoji, loadProfile, type ChildProfile } from '@/lib/profile';
+import { avatarEmoji, avatarImageSrc, loadProfile, type ChildProfile } from '@/lib/profile';
 import { chapterFor, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { playHomeSound, playTheme, prepareStoryAudio, speakPrompt, stopAmbience, stopTheme, themeAssetFor, welcomeLine } from '@/lib/audio';
 
@@ -113,9 +113,14 @@ export default function ChildHomePage() {
                 fontSize: 20,
                 border: '2px solid #fff',
                 boxShadow: '0 1px 4px rgba(43,43,43,0.12)',
+                overflow: 'hidden',
               }}
             >
-              {avatarEmoji(profile.avatar)}
+              {avatarImageSrc(profile.avatar) ? (
+                <img src={avatarImageSrc(profile.avatar)!} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : (
+                avatarEmoji(profile.avatar)
+              )}
             </span>
             {profile.childName}
           </span>
@@ -125,55 +130,39 @@ export default function ChildHomePage() {
         </header>
 
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '4px 24px 0' }}>
-          {/* Book cover — parchment double gold border, per the handoff */}
+          {/* Lightweight translucent title card — the environmental scene
+              behind it already carries the story art, so this is a label,
+              not a second illustration. Play intentionally overlaps its
+              lower edge (negative margin on the button below). */}
           <div
-            className="lc-card-in lc-storybook"
+            className="lc-card-in"
             style={{
-              width: '78%',
-              maxWidth: 290,
-              aspectRatio: '0.72',
-              border: '4px double #c69b4c',
-              background: '#fff2ce',
-              borderRadius: 8,
-              boxShadow: '10px 12px #4b663855',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
+              background: 'rgba(255,253,248,0.88)',
+              borderRadius: 20,
+              padding: '20px 30px 26px',
+              marginTop: 30,
+              boxShadow: '0 4px 16px rgba(43,43,43,0.14)',
               textAlign: 'center',
-              padding: '22px 16px 14px',
-              marginTop: 14,
             }}
           >
-            <span style={{ fontFamily: 'var(--serif)', fontWeight: 700, fontSize: 30, color: 'var(--dark)', lineHeight: 1.2 }}>
-              Today&rsquo;s
-              <br />
-              Chapter
+            <span style={{ fontFamily: 'var(--serif)', fontWeight: 700, fontSize: 26, color: 'var(--dark)', lineHeight: 1.25 }}>
+              Today&rsquo;s Chapter
             </span>
-            <div
-              aria-hidden
-              style={{
-                width: '100%',
-                flex: 1,
-                minHeight: 100,
-                marginTop: 16,
-                borderRadius: 4,
-                backgroundImage: `linear-gradient(rgba(255,242,206,0.12), rgba(20,92,58,0.2)), url(${backgroundUrl})`,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-                boxShadow: 'inset 0 0 0 1px rgba(126,92,37,0.18)',
-              }}
-            />
           </div>
 
           {/* The one big button — the illustrated asset carries its own
               circle, shadow, and leaf motif, so the button itself stays
-              transparent (no extra background/shadow to fight it). */}
+              transparent (no extra background/shadow to fight it). Overlaps
+              the card's lower edge on purpose, per the design reference.
+              Sequenced: fades in only once the card has mostly settled, and
+              only starts its idle breathing once IT has settled in turn —
+              never both firing from the moment the screen mounts. */}
           <button
             className="lc-play-btn"
             onClick={startChapter}
             aria-label="Start today's chapter"
             style={{
-              marginTop: 26,
+              marginTop: -32,
               width: 85,
               height: 85,
               borderRadius: 999,
@@ -188,7 +177,7 @@ export default function ChildHomePage() {
           </button>
 
           <button
-            className="lc-fade-up--delay lc-voice-prompt"
+            className="lc-fade-up lc-voice-prompt"
             onClick={replayWelcome}
             aria-label="Replay welcome message"
             style={{
@@ -204,18 +193,16 @@ export default function ChildHomePage() {
               gap: 6,
               boxShadow: '0 2px 8px rgba(43,43,43,0.08)',
               cursor: 'pointer',
+              animationDelay: '800ms',
             }}
           >
             There&rsquo;s a new chapter ready for you!
             <img src="/icons/speaker-audio.png" alt="" style={{ height: 16, width: 'auto' }} />
           </button>
 
-          {/* Momo: small, secondary, delayed entrance — never competes with Play. */}
-          {/* 210px left only ~86px for the message text, wrapping Momo's
-              greeting to five lines. Momo stays visually secondary via
-              .lc-momo-compact's smaller type — it does not need a hard cap
-              this tight. */}
-          <div className="lc-momo-compact" style={{ width: '100%', maxWidth: 320, marginTop: 10 }}>
+          {/* Momo: small, secondary, last to arrive — never competes with
+              Play or the invitation above it. */}
+          <div className="lc-momo-compact" style={{ width: '100%', maxWidth: 250, marginTop: 20 }}>
             <PetCompanion pet={pet} variant="child" />
           </div>
         </main>

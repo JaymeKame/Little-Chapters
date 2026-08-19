@@ -7,7 +7,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { AVATARS, INTERESTS, avatarEmoji, saveProfile, type AvatarId, type InterestId } from '@/lib/profile';
+import { AVATARS, INTERESTS, avatarEmoji, avatarImageSrc, interestImageSrc, saveProfile, type AvatarId, type InterestId } from '@/lib/profile';
 
 export default function SetupPage() {
   const router = useRouter();
@@ -86,9 +86,14 @@ export default function SetupPage() {
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: 46,
+            overflow: 'hidden',
           }}
         >
-          {avatarEmoji(avatar)}
+          {avatarImageSrc(avatar) ? (
+            <img src={avatarImageSrc(avatar)!} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          ) : (
+            avatarEmoji(avatar)
+          )}
         </div>
 
         <div role="group" aria-label="Choose their picture" style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 24 }}>
@@ -106,13 +111,11 @@ export default function SetupPage() {
                   borderRadius: 999,
                   border: `2px solid ${on ? 'var(--leaf)' : 'var(--line)'}`,
                   background: on ? '#f2f9f5' : 'var(--card)',
-                  fontSize: 24,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
+                  overflow: 'hidden',
+                  padding: 0,
                 }}
               >
-                {a.emoji}
+                <img src={avatarImageSrc(a.id)!} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </button>
             );
           })}
@@ -215,7 +218,11 @@ export default function SetupPage() {
                     ✓
                   </span>
                 )}
-                <div style={{ fontSize: 28, marginBottom: 6 }}>{it.emoji}</div>
+                <img
+                  src={interestImageSrc(it.id)}
+                  alt=""
+                  style={{ width: 36, height: 36, borderRadius: 999, objectFit: 'cover', marginBottom: 6 }}
+                />
                 {it.label}
               </button>
             );
