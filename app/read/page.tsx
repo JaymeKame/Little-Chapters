@@ -408,6 +408,11 @@ export default function ReadPage() {
   }
 
   function celebrateAndAdvance(p: string, cue = true) {
+    // Clear the correction card immediately — otherwise it lingers behind
+    // the celebrate star/text until advance() fires 1600ms later, showing
+    // two states' UI at once (the correction card was only ever meant to
+    // survive through the RETRY's listening/scoring, not into celebrate).
+    setTricky(null);
     setPraise(p);
     if (cue) playReadingCue('section-success.mp3');
     setPhase('celebrate');
