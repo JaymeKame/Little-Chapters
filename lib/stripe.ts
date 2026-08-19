@@ -28,11 +28,7 @@ export const PLANS: SubscriptionPlan[] = [
     id: 'monthly',
     name: 'Monthly',
     priceId: process.env.STRIPE_MONTHLY_PRICE_ID || '',
-    // $20/month — the price the landing page has stated since the first
-    // commit. The 999 that used to be here came from the payments branch as a
-    // stock placeholder; the payment screen renders this number while Stripe
-    // charges whatever the price ID says, so the two MUST agree.
-    amount: 2000,
+    amount: 999, // $9.99
     interval: 'month',
     currency: 'usd',
   },
@@ -40,8 +36,7 @@ export const PLANS: SubscriptionPlan[] = [
     id: 'yearly',
     name: 'Yearly',
     priceId: process.env.STRIPE_YEARLY_PRICE_ID || '',
-    // $200/year = two months free against $20/month.
-    amount: 20000,
+    amount: 9999, // $99.99
     interval: 'year',
     currency: 'usd',
   },
@@ -129,43 +124,6 @@ export async function getOrCreateCustomer(
     console.error('Error creating/retrieving customer:', error);
     throw error;
   }
-}
-
-/**
- * Server-side ownership check: parents/{uid}.stripeCustomerId is written by
- * webhooks/checkout, but Firestore rules are not deployed yet, so a client
- * could plant a foreign customer id in its own doc. Before acting on a
- * stored id, confirm the Stripe customer actually belongs to this user —
- * via the firebaseUid metadata stamped at creation, or the account email
- * (covers customers matched by email before metadata existed).
- */
-export async function customerBelongsTo(customerId: string, uid: string, email?: string | null): Promise<boolean> {
-  if (!stripe) return false;
-  try {
-    const customer = await stripe.customers.retrieve(customerId);
-    if (!customer || customer.deleted) return false;
-    if (customer.metadata?.firebaseUid === uid) return true;
-    return !!email && !!customer.email && customer.email.toLowerCase() === email.toLowerCase();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Newer Stripe API versions moved current_period_end off the Subscription
- * onto its items — read whichever exists instead of throwing on undefined.
- */
-export function subscriptionPeriod(subscription: Stripe.Subscription): { currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean } {
-  const sub = subscription as unknown as {
-    current_period_end?: number;
-    cancel_at_period_end?: boolean;
-    items?: { data?: Array<{ current_period_end?: number }> };
-  };
-  const end = sub.current_period_end ?? sub.items?.data?.[0]?.current_period_end;
-  return {
-    currentPeriodEnd: end ? new Date(end * 1000).toISOString() : null,
-    cancelAtPeriodEnd: sub.cancel_at_period_end ?? false,
-  };
 }
 
 /**

@@ -2,36 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateChapter, type LlmClient } from '@/reading-tutor/src/generate';
 import { pickSkeleton, SKELETONS } from '@/reading-tutor/src/skeletons';
 import { assignSlots } from '@/reading-tutor/src/slots';
-import { requireReadingUser } from '@/lib/route-auth';
 import { type ChildProfile } from '@/lib/profile';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/* Same in-memory brake as the speech-token route: each generation is a paid
- * OpenAI call, so an unauthenticated open loop must not be able to burn spend.
- * Legit use is ≤1/child/day (the client caches per chapter id).             */
-const GENERATIONS_PER_HOUR = 10;
-const WINDOW_MS = 60 * 60 * 1000;
-const grants = new Map<string, { windowStart: number; count: number }>();
-
-function overLimit(key: string): boolean {
-  const now = Date.now();
-  const g = grants.get(key);
-  if (!g || now - g.windowStart > WINDOW_MS) {
-    grants.set(key, { windowStart: now, count: 1 });
-    return false;
-  }
-  g.count += 1;
-  return g.count > GENERATIONS_PER_HOUR;
-}
-
 export async function POST(request: NextRequest) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return NextResponse.json({ error: 'Story generation is not configured' }, { status: 503 });
-  const auth = await requireReadingUser(request);
-  if (!auth.ok) return auth.response;
-  if (overLimit(auth.uid)) return NextResponse.json({ error: 'RATE_LIMITED' }, { status: 429 });
   try {
     const body = await request.json() as { profile?: ChildProfile; stage?: number; skeletonId?: string };
     const profile = body.profile;
@@ -55,7 +33,7 @@ export async function POST(request: NextRequest) {
     };
     const result = await generateChapter({
       stage,
-      cast: { childName: profile.childName, petName: 'Momo' }, // Momo the reading pet, not the child twice
+      cast: { childName: profile.childName, petName: profile.childName },
       interests: profile.interests,
       storySoFar: '',
       recentlyMissedWords: [],
@@ -66,9 +44,7 @@ export async function POST(request: NextRequest) {
       console.error('Tutor story generation exhausted retries', result.rejectionLog);
       return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
     }
-    // slots go back too: the client's parent report must name the words the
-    // story was actually generated with, not a fresh re-roll.
-    return NextResponse.json({ draft: result.draft, skeleton, slots });
+    return NextResponse.json({ draft: result.draft, skeleton });
   } catch (error) {
     console.error('Tutor story generation failed:', error);
     return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });

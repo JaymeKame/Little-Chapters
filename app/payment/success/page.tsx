@@ -6,20 +6,13 @@ import { useAuth } from '@/components/AuthProvider';
 
 export default function PaymentSuccessPage() {
   const router = useRouter();
-  const { user, isAuthenticated, loading: authLoading } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const [message, setMessage] = useState('Confirming your subscription...');
 
   useEffect(() => {
     let cancelled = false;
     async function verify() {
-      // Stripe returns here as a FULL page load, so auth is still resolving
-      // on the first pass. Returning early without waiting meant the
-      // verification call never fired at all.
-      if (authLoading) return;
-      if (!user || !isAuthenticated) {
-        setMessage('Please sign in again so we can confirm your payment.');
-        return;
-      }
+      if (!user || !isAuthenticated) return;
       const sessionId = new URLSearchParams(window.location.search).get('session_id');
       if (!sessionId) { setMessage('This payment link is missing its session.'); return; }
       try {
@@ -34,7 +27,7 @@ export default function PaymentSuccessPage() {
     }
     void verify();
     return () => { cancelled = true; };
-  }, [authLoading, isAuthenticated, router, user]);
+  }, [isAuthenticated, router, user]);
 
   return <main className="screen" style={{ padding: 24, textAlign: 'center' }}><h1>Almost there</h1><p>{message}</p></main>;
 }

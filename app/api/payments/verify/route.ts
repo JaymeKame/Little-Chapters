@@ -1,16 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
-import { adminUnconfiguredResponse } from '@/lib/route-auth';
-import { retrieveCheckoutSession, retrieveSubscription, subscriptionPeriod } from '@/lib/stripe';
+import { retrieveCheckoutSession, retrieveSubscription } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
-    const unconfigured = adminUnconfiguredResponse();
-    if (unconfigured) return unconfigured;
-
     const authHeader = request.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Missing authorization header' }, { status: 401 });
@@ -30,26 +26,22 @@ export async function GET(request: NextRequest) {
     if (!customerId || customerId !== expectedCustomerId || session.metadata?.firebaseUid !== decoded.uid) {
       return NextResponse.json({ error: 'Checkout session does not belong to this account' }, { status: 403 });
     }
-    // retrieveCheckoutSession expands the subscription, so it arrives as an
-    // OBJECT here — a typeof-string check would reject every paid session.
-    const rawSub = session.subscription as string | { id: string } | null;
-    const subscriptionId = typeof rawSub === 'string' ? rawSub : rawSub?.id;
-    if (session.payment_status !== 'paid' || !subscriptionId) {
+    if (session.payment_status !== 'paid' || typeof session.subscription !== 'string') {
       return NextResponse.json({ error: 'Payment has not completed' }, { status: 409 });
     }
 
-    const subscription = await retrieveSubscription(subscriptionId);
+    const subscription = await retrieveSubscription(session.subscription);
     if (!['active', 'trialing'].includes(subscription.status)) {
       return NextResponse.json({ error: 'Subscription is not active' }, { status: 409 });
     }
 
-    const period = subscriptionPeriod(subscription);
+    const subscriptionData = subscription as unknown as { current_period_end: number; cancel_at_period_end: boolean };
 
     await parentRef.set({
       subscriptionStatus: subscription.status,
       stripeSubscriptionId: subscription.id,
-      currentPeriodEnd: period.currentPeriodEnd,
-      cancelAtPeriodEnd: period.cancelAtPeriodEnd,
+      currentPeriodEnd: new Date(subscriptionData.current_period_end * 1000).toISOString(),
+      cancelAtPeriodEnd: subscriptionData.cancel_at_period_end,
       updatedAt: new Date().toISOString(),
     }, { merge: true });
 

@@ -15,8 +15,8 @@ const PRACTICE_ICONS = ['🌱', '✨', '🪄'];
 
 export default function ParentMessagePage() {
   const router = useRouter();
-  const { user, loading: authLoading } = useAuth();
-  const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
+  const { user } = useAuth();
+  const pet = usePet(user?.uid ?? null);
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [report, setReport] = useState<SessionReport | null>(null);
   const [now, setNow] = useState('');
@@ -49,20 +49,7 @@ export default function ParentMessagePage() {
         <button
           onClick={() => router.push('/home')}
           aria-label="Back"
-          // 44px hit area — see the matching note on the setup screen.
-          style={{
-            border: 0,
-            background: 'none',
-            fontSize: 20,
-            color: 'var(--ink-soft)',
-            width: 44,
-            height: 44,
-            padding: 0,
-            marginLeft: -10,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
+          style={{ border: 0, background: 'none', fontSize: 20, color: 'var(--ink-soft)', padding: 4 }}
         >
           ‹
         </button>

@@ -1,6 +1,4 @@
-/* Today's chapter — the built-in demo arc, plus the reading-tutor path
- * (skeleton + stage-matched generation via /api/chapters/story with an
- * explicit fallback to the demo arc).
+/* Today's chapter — demo content until the AI chapter-writer exists.
  *
  * One five-page story arc, personalized by the child's top interest: the
  * companion character and scenery change, the phonics shape stays (short
@@ -8,13 +6,16 @@
  * "Only one or two sentences at a time"). Each page lists focus words that
  * get highlighted in the reader and reported to the parent.                  */
 
-import type { ChildProfile, InterestId } from './profile';
+import type { InterestId } from './profile';
+import type { ChildProfile } from './profile';
 import { pickSkeleton, type Skeleton } from '../reading-tutor/src/skeletons';
 import { assignSlots } from '../reading-tutor/src/slots';
 import type { StoryDraft } from '../reading-tutor/src/validators';
 
 export interface ChapterPage {
+  /** 1–2 short sentences; the exact reference text the child reads. */
   text: string;
+  /** Words highlighted in the reader (blue = character, green = new word). */
   focusWords: string[];
 }
 
@@ -31,8 +32,11 @@ export interface Chapter {
   /** Ambience identity for playStoryAmbience() (see lib/audio.ts). */
   ambience: 'farm' | 'space' | 'jungle' | 'countryside' | 'fantasy' | 'ocean';
   pages: ChapterPage[];
+  /** Chapter-end cliffhanger lines (mockup screen 5). */
   cliffhanger: [string, string];
+  /** Teaser for the parent message (mockup screen 6). */
   teaser: string;
+  /** Phonics the chapter practices, for the parent report. */
   phonics: { hint: string; words: string[] }[];
 }
 
@@ -74,11 +78,11 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
       { text: 'The door began to open. Something was inside!', focusWords: ['open', 'inside'] },
     ],
     cliffhanger: ['The door opened... and something amazing was waiting inside.', 'To be continued tomorrow...'],
-    teaser: `${s.character} finds out what was behind the door...`,
+    teaser: `${s.character} finds out what was behind the door... 🐾`,
     phonics: [
-      { hint: 'sh in shiny', words: ['shiny'] },
-      { hint: 'short vowels', words: ['path', 'fit', 'hill'] },
-      { hint: 'blends', words: ['click', 'raced'] },
+      { hint: 'sh in “shiny”', words: ['shiny'] },
+      { hint: 'short vowels (a, i)', words: ['path', 'fit', 'hill'] },
+      { hint: 'blends (cl, cr)', words: ['click', 'raced'] },
     ],
   };
 }
@@ -217,12 +221,13 @@ export function storySceneUrl(interest: InterestId | undefined, variant: number)
  * named/organized for this use. Inventoried by hand (dimensions + intent),
  * excluding the landing hero photo, the three tiny landing benefit icons,
  * and the setup-icons sprite sheet:
- *   dinosaurs-01.png, dinosaurs-02.png, ocean-01.png,
+ *   dinosaurs-01.png, dinosaurs-02.png (note: on-disk name has a literal
+ *     space: "dinosaurs-02.png .png" — percent-encoded below), ocean-01.png,
  *     ocean-02.png, space-01.png, unicorns-01.png.
  * No scene currently exists for dogs/trains — best-effort matching falls
  * through to the general pool for those interests, per product decision. */
 const REAL_SCENE_POOL: Partial<Record<InterestId, string[]>> = {
-  dinosaurs: ['/images/landing/dinosaurs-01.png', '/images/landing/dinosaurs-02.png'],
+  dinosaurs: ['/images/landing/dinosaurs-01.png', '/images/landing/dinosaurs-02.png%20.png'],
   ocean: ['/images/landing/ocean-01.png', '/images/landing/ocean-02.png'],
   space: ['/images/landing/space-01.png'],
   unicorns: ['/images/landing/unicorns-01.png'],
@@ -257,144 +262,6 @@ export function loadCachedVisuals(chapterId: string): ChapterVisuals | null {
   try {
     const raw = JSON.parse(localStorage.getItem(VISUALS_CACHE_PREFIX + chapterId) ?? 'null') as ChapterVisuals | null;
     return raw && typeof raw.homeSceneUrl === 'string' ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-/* ── Reading-tutor story path (skeletons + stage-matched generation) ───── */
-
-function stageForAge(age: number): number {
-  return Math.min(10, Math.max(1, Math.round(age) - 4));
-}
-
-function stateKey(profile: ChildProfile): string {
-  return `little-chapters-story-state:${profile.childName.trim().toLowerCase()}`;
-}
-
-function recentSkeletons(profile: ChildProfile): string[] {
-  try {
-    return JSON.parse(localStorage.getItem(stateKey(profile)) ?? '[]') as string[];
-  } catch {
-    return [];
-  }
-}
-
-function rememberSkeleton(profile: ChildProfile, id: string): void {
-  try {
-    const recent = [id, ...recentSkeletons(profile).filter((item) => item !== id)].slice(0, 4);
-    localStorage.setItem(stateKey(profile), JSON.stringify(recent));
-  } catch {
-    /* best-effort rotation memory */
-  }
-}
-
-export function tutorStoryContext(profile: ChildProfile): { stage: number; skeleton: Skeleton } {
-  const stage = stageForAge(profile.age);
-  return { stage, skeleton: pickSkeleton(stage, recentSkeletons(profile)) };
-}
-
-export function adaptTutorDraft(
-  profile: ChildProfile,
-  draft: StoryDraft,
-  skeleton: Skeleton,
-  slots?: Record<string, string>,
-): Chapter | null {
-  if (!Array.isArray(draft.sentences) || draft.sentences.length === 0) return null; // a page-less chapter would crash the reader
-  const stage = stageForAge(profile.age);
-  rememberSkeleton(profile, skeleton.id);
-  const base = chapterFor(profile.interests[0], profile.childName);
-  // Practice words MUST be the slots the story was actually generated with
-  // (returned by the API) — re-rolling assignSlots here would report words
-  // the child never read. The re-roll stays only as a last-resort fallback.
-  const practiceWords = Object.values(slots ?? assignSlots(skeleton.beats, stage));
-  /* Whole-token match, NOT substring: the reader highlights whole tokens
-   * (app/read/page.tsx PageText), so a substring hit would claim a focus word
-   * that never lights up and never appears in the parent's "new words" — and
-   * the palettes are full of collisions ('hat' inside 'that', 'top' inside
-   * 'stop', 'pin' inside 'spin'). Tokenizing must mirror the reader exactly. */
-  const tokensOf = (sentence: string): Set<string> =>
-    new Set(
-      sentence
-        .split(/\s+/)
-        .map((t) => t.replace(/[’ʼ]/g, "'").toLowerCase().replace(/[^a-z0-9']/g, ''))
-        .filter(Boolean),
-    );
-  const focusFor = (sentence: string): string[] => {
-    const tokens = tokensOf(sentence);
-    return practiceWords.filter((w) => tokens.has(w.toLowerCase())).slice(0, 2);
-  };
-  return {
-    ...base,
-    pages: draft.sentences.map((text) => ({ text, focusWords: focusFor(text) })),
-    cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
-    teaser: draft.summaryLine || `${profile.childName} has more to discover tomorrow...`,
-    phonics: [{ hint: `Stage ${stage} practice`, words: practiceWords }],
-  };
-}
-
-const TUTOR_CACHE_PREFIX = 'little-chapters-tutor-chapter:';
-
-function loadCachedTutorChapter(id: string): Chapter | null {
-  try {
-    const raw = JSON.parse(localStorage.getItem(TUTOR_CACHE_PREFIX + id) ?? 'null') as Chapter | null;
-    return raw && Array.isArray(raw.pages) && raw.pages.length > 0 ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-/* In-flight generations, keyed by chapter id. Every generation is a paid
- * model call, and React StrictMode fires the mount effect twice in dev — so
- * without this, the first load of a day buys the same story twice. */
-const inFlight = new Map<string, Promise<Chapter | null>>();
-
-/** One generation per child per day: the tutor chapter is cached under the
- *  same stable per-day id the demo chapter uses, so a mid-day reload reads
- *  the SAME story instead of paying for (and waiting on) a new one. */
-export async function requestTutorChapter(profile: ChildProfile, authToken?: string | null): Promise<Chapter | null> {
-  // Stage is part of the cache key: same-named profile at a different age
-  // must not be served the wrong-stage story for the rest of the day.
-  const id = `${chapterIdFor(profile.interests[0], profile.childName)}:s${stageForAge(profile.age)}`;
-  const cached = loadCachedTutorChapter(id);
-  if (cached) return cached;
-  const pending = inFlight.get(id);
-  if (pending) return pending;
-  const run = generateTutorChapter(profile, id, authToken);
-  inFlight.set(id, run);
-  try {
-    return await run;
-  } finally {
-    inFlight.delete(id);
-  }
-}
-
-async function generateTutorChapter(
-  profile: ChildProfile,
-  id: string,
-  authToken?: string | null,
-): Promise<Chapter | null> {
-  const context = tutorStoryContext(profile);
-  try {
-    const response = await fetch('/api/chapters/story', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
-      body: JSON.stringify({ profile, stage: context.stage, skeletonId: context.skeleton.id }),
-    });
-    if (!response.ok) return null;
-    const data = await response.json() as { draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string> };
-    if (!data.draft || !data.skeleton) return null;
-    const chapter = adaptTutorDraft(profile, data.draft, data.skeleton, data.slots);
-    if (!chapter) return null;
-    try {
-      localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));
-    } catch {
-      /* best-effort cache */
-    }
-    return chapter;
   } catch {
     return null;
   }
@@ -448,3 +315,4 @@ export async function requestChapterVisuals(
 export function interestFallbackImage(interest: InterestId | undefined): string {
   return `/images/setup/interest-${interest ?? 'dogs'}.png`;
 }
+

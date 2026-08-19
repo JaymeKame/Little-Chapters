@@ -13,22 +13,10 @@ export const INTERESTS = [
 
 export type InterestId = (typeof INTERESTS)[number]['id'];
 
-export const AVATARS = [
-  { id: 'boy', label: 'Boy', emoji: '👦' },
-  { id: 'girl', label: 'Girl', emoji: '👧' },
-] as const;
-
-export type AvatarId = (typeof AVATARS)[number]['id'];
-
-export function avatarEmoji(id: AvatarId | undefined): string {
-  return AVATARS.find((a) => a.id === id)?.emoji ?? '🧒';
-}
-
 export interface ChildProfile {
   childName: string;
   age: number;
   interests: InterestId[];
-  avatar?: AvatarId;
   createdAt: number;
 }
 
@@ -44,7 +32,6 @@ export function loadProfile(): ChildProfile | null {
       childName: raw.childName.slice(0, 40),
       age: typeof raw.age === 'number' && Number.isFinite(raw.age) ? Math.min(12, Math.max(3, Math.round(raw.age))) : 6,
       interests: raw.interests.filter((i): i is InterestId => INTERESTS.some((x) => x.id === i)).slice(0, 3),
-      avatar: AVATARS.some((a) => a.id === raw.avatar) ? (raw.avatar as AvatarId) : undefined,
       createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
     };
   } catch {

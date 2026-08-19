@@ -42,26 +42,3 @@ export async function requireReadingUser(req: NextRequest): Promise<RouteAuth> {
   }
   return { ok: true, uid: 'anonymous' };
 }
-
-/* Fail fast and honestly when the Admin SDK has no credentials.
- *
- * Every route below used to call adminAuth()/adminDb() straight away. With
- * FIREBASE_SERVICE_ACCOUNT unset, initializeApp falls back to
- * applicationDefault(), which SUCCEEDS, then stalls ~2.5s probing the GCE
- * metadata server before throwing "Unable to detect a Project Id". The
- * routes' own catch turned that into 401 "Invalid token" — telling a parent
- * their perfectly good login was rejected, after a two-second wait, when the
- * real fault was server configuration.
- *
- * Returns a response to send, or null when it is safe to proceed.
- */
-export function adminUnconfiguredResponse(): NextResponse | null {
-  if (adminCredentialsConfigured()) return null;
-  return NextResponse.json(
-    {
-      error: 'ADMIN_NOT_CONFIGURED',
-      hint: 'Set FIREBASE_SERVICE_ACCOUNT so this route can verify accounts.',
-    },
-    { status: 503 },
-  );
-}
