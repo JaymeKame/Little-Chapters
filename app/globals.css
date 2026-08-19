@@ -471,6 +471,40 @@ a {
   animation: lc-fade-in 300ms ease both;
 }
 
+/* Ready-state invite: a single pulse on the mic icon draws the eye to the
+ * one action available — never a loop, so it never nags. Re-fires on its
+ * own because the button (and this icon) remounts fresh each time the
+ * child lands back in the ready state. */
+@keyframes lc-invite-pulse {
+  0% { transform: scale(1); opacity: 0.85; }
+  40% { transform: scale(1.18); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.lc-invite-pulse {
+  display: inline-block;
+  animation: lc-invite-pulse 700ms ease-out 200ms both;
+}
+
+/* System-speaking (TTS replay) cue: sky blue and its own steady pulse so a
+ * child can never mistake "the app is talking" for "the app is listening"
+ * (that's the green .lc-listen-bars, a different color in a different spot). */
+@keyframes lc-speak-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(126, 183, 230, 0.55); }
+  50% { box-shadow: 0 0 0 5px rgba(126, 183, 230, 0.25); }
+}
+
+.lc-speaking-active {
+  animation: lc-speak-pulse 900ms ease-in-out infinite;
+  border-radius: 999px;
+}
+
+/* While the mic is actively listening, decorative background motion stops —
+ * nothing should compete for attention with reading + the listening cue. */
+.lc-listening .lc-scene-bg img {
+  animation-play-state: paused;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lc-scene-bg img,
   .lc-play-btn,
@@ -487,7 +521,9 @@ a {
   .lc-cliff-continue,
   .lc-top-controls,
   .lc-help-pulse,
-  .lc-listen-bars span {
+  .lc-listen-bars span,
+  .lc-invite-pulse,
+  .lc-speaking-active {
     animation: none !important;
   }
   .lc-leaving .lc-scene-bg img,

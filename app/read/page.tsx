@@ -529,12 +529,9 @@ export default function ReadPage() {
       <div className="scene lc-cliff" style={{ position: 'relative' }}>
       <SceneBackground src={sceneBg} cliff />
       <div className="screen lc-scene-content">
-        <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
+        <header className="lc-top-controls" style={{ display: 'flex', padding: '16px 18px' }}>
           <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
             🏠
-          </button>
-          <button className="icon-btn" aria-label="Read aloud">
-            🔊
           </button>
         </header>
         <main
@@ -636,7 +633,7 @@ export default function ReadPage() {
 
   /* ── Screen 4: reading ── */
   return (
-    <div className="scene lc-scenic lc-reading-scene" style={{ position: 'relative' }}>
+    <div className={`scene lc-scenic lc-reading-scene${phase === 'listening' ? ' lc-listening' : ''}`} style={{ position: 'relative' }}>
     <SceneBackground src={sceneBg} />
     <div className="screen lc-scene-content">
       <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
@@ -657,7 +654,7 @@ export default function ReadPage() {
           ✕
         </button>
         <button
-          className="icon-btn"
+          className={`icon-btn${speaking ? ' lc-speaking-active' : ''}`}
           aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'}
           disabled={phase === 'listening' || phase === 'scoring'}
           style={phase === 'listening' || phase === 'scoring' ? { opacity: 0.45, cursor: 'default' } : undefined}
@@ -744,10 +741,10 @@ export default function ReadPage() {
             </div>
           </div>
         ) : phase === 'correction' && tricky ? (
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
             <button
-              className="btn-primary"
-              style={{ background: 'var(--blue)', boxShadow: '0 3px 0 #054a8a', flex: 1 }}
+              className="btn-primary lc-help-pulse"
+              style={{ background: 'var(--blue)', boxShadow: '0 3px 0 #054a8a', width: '100%' }}
               onClick={() => {
                 setPhase('scoring');
                 void beginListening(tricky);
@@ -756,9 +753,17 @@ export default function ReadPage() {
               🎙️ Try the word
             </button>
             <button
-              className="btn-primary"
-              style={{ flex: 1 }}
               onClick={() => celebrateAndAdvance('On we go!', false)}
+              style={{
+                border: 0,
+                background: 'rgba(255,253,248,0.85)',
+                borderRadius: 999,
+                boxShadow: '0 1px 4px rgba(43,43,43,0.12)',
+                color: 'var(--ink-soft)',
+                fontSize: 13.5,
+                padding: '7px 16px',
+                cursor: 'pointer',
+              }}
             >
               Keep going →
             </button>
@@ -792,7 +797,13 @@ export default function ReadPage() {
               lineHeight: 1.7,
             }}
           >
-            <ListenBars active={phase === 'listening'} />
+            {phase === 'ready' ? (
+              <span aria-hidden className="lc-invite-pulse" style={{ fontSize: 22 }}>
+                🎙️
+              </span>
+            ) : (
+              <ListenBars active={phase === 'listening'} />
+            )}
             {phase === 'ready' && 'Tap, then read the page out loud!'}
             {phase === 'listening' && 'I’m listening…'}
             {phase === 'scoring' && 'One moment…'}
