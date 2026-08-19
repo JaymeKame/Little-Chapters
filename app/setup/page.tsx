@@ -7,7 +7,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { AVATARS, INTERESTS, avatarEmoji, saveProfile, type AvatarId, type InterestId } from '@/lib/profile';
+import { AVATARS, INTERESTS, avatarEmoji, avatarImageSrc, interestImageSrc, saveProfile, type AvatarId, type InterestId } from '@/lib/profile';
 
 export default function SetupPage() {
   const router = useRouter();
@@ -86,12 +86,18 @@ export default function SetupPage() {
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: 46,
+            overflow: 'hidden',
           }}
         >
-          {avatarEmoji(avatar)}
+          {avatarImageSrc(avatar) ? (
+            <img src={avatarImageSrc(avatar)!} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          ) : (
+            avatarEmoji(avatar)
+          )}
         </div>
 
-        <div role="group" aria-label="Choose their picture" style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 24 }}>
+        <p style={{ fontSize: 11.5, color: 'var(--ink-soft)', margin: '0 0 8px' }}>Pick their look</p>
+        <div role="group" aria-label="Choose their picture" style={{ display: 'flex', justifyContent: 'center', gap: 14, marginBottom: 24 }}>
           {AVATARS.map((a) => {
             const on = avatar === a.id;
             return (
@@ -101,18 +107,19 @@ export default function SetupPage() {
                 aria-pressed={on}
                 aria-label={a.label}
                 style={{
-                  width: 48,
-                  height: 48,
+                  width: 52,
+                  height: 52,
                   borderRadius: 999,
-                  border: `2px solid ${on ? 'var(--leaf)' : 'var(--line)'}`,
-                  background: on ? '#f2f9f5' : 'var(--card)',
-                  fontSize: 24,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
+                  border: `2.5px solid ${on ? 'var(--leaf)' : 'transparent'}`,
+                  background: 'var(--card)',
+                  boxShadow: on ? 'none' : '0 1px 4px rgba(43,43,43,0.12)',
+                  overflow: 'hidden',
+                  padding: 0,
+                  opacity: on ? 1 : 0.75,
+                  transition: 'opacity 150ms ease, border-color 150ms ease',
                 }}
               >
-                {a.emoji}
+                <img src={avatarImageSrc(a.id)!} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </button>
             );
           })}
@@ -177,7 +184,7 @@ export default function SetupPage() {
         <label style={{ display: 'block', textAlign: 'left', fontSize: 13.5, fontWeight: 600, marginBottom: 10 }}>
           What do they love? <span style={{ color: 'var(--ink-soft)', fontWeight: 400 }}>Pick 3</span>
         </label>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 26 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '18px 8px', marginBottom: 26 }}>
           {INTERESTS.map((it) => {
             const on = picked.includes(it.id);
             return (
@@ -186,37 +193,57 @@ export default function SetupPage() {
                 onClick={() => toggle(it.id)}
                 aria-pressed={on}
                 style={{
-                  position: 'relative',
-                  border: `1.5px solid ${on ? 'var(--leaf)' : 'var(--line)'}`,
-                  background: on ? '#f2f9f5' : 'var(--card)',
-                  borderRadius: 14,
-                  padding: '14px 6px 10px',
+                  border: 0,
+                  background: 'transparent',
+                  padding: 0,
                   fontSize: 12.5,
-                  color: 'var(--ink)',
+                  fontWeight: on ? 600 : 400,
+                  color: on ? 'var(--leaf)' : 'var(--ink)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
                 }}
               >
-                {on && (
-                  <span
+                {/* The illustration itself is the selectable object — a ring
+                    on the circle, not a bounding card, matches the reference. */}
+                <span style={{ position: 'relative' }}>
+                  <img
+                    src={interestImageSrc(it.id)}
+                    alt=""
                     style={{
-                      position: 'absolute',
-                      top: -7,
-                      right: -7,
-                      width: 22,
-                      height: 22,
+                      width: 64,
+                      height: 64,
                       borderRadius: 999,
-                      background: 'var(--leaf)',
-                      color: '#fff',
-                      fontSize: 12,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
+                      objectFit: 'cover',
+                      border: `3px solid ${on ? 'var(--leaf)' : 'transparent'}`,
+                      boxShadow: '0 2px 6px rgba(43,43,43,0.14)',
+                      opacity: on ? 1 : 0.85,
+                      transition: 'opacity 150ms ease, border-color 150ms ease',
                     }}
-                  >
-                    ✓
-                  </span>
-                )}
-                <div style={{ fontSize: 28, marginBottom: 6 }}>{it.emoji}</div>
-                {it.label}
+                  />
+                  {on && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        bottom: -2,
+                        right: -2,
+                        width: 20,
+                        height: 20,
+                        borderRadius: 999,
+                        background: 'var(--leaf)',
+                        color: '#fff',
+                        fontSize: 11,
+                        border: '2px solid var(--paper)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      ✓
+                    </span>
+                  )}
+                </span>
+                <span style={{ marginTop: 7 }}>{it.label}</span>
               </button>
             );
           })}

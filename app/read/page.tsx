@@ -409,6 +409,11 @@ export default function ReadPage() {
   }
 
   function celebrateAndAdvance(p: string, cue = true) {
+    // Clear the correction card immediately — otherwise it lingers behind
+    // the celebrate star/text until advance() fires 1600ms later, showing
+    // two states' UI at once (the correction card was only ever meant to
+    // survive through the RETRY's listening/scoring, not into celebrate).
+    setTricky(null);
     setPraise(p);
     if (cue) playReadingCue('section-success.mp3');
     setPhase('celebrate');
@@ -530,12 +535,9 @@ export default function ReadPage() {
       <div className="scene lc-cliff" style={{ position: 'relative' }}>
       <SceneBackground src={sceneBg} cliff />
       <div className="screen lc-scene-content">
-        <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
+        <header className="lc-top-controls" style={{ display: 'flex', padding: '16px 18px' }}>
           <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
-            🏠
-          </button>
-          <button className="icon-btn" aria-label="Read aloud">
-            🔊
+            <img src="/icons/home.png" alt="" style={{ height: 24, width: 'auto' }} />
           </button>
         </header>
         <main
@@ -637,13 +639,16 @@ export default function ReadPage() {
 
   /* ── Screen 4: reading ── */
   return (
-    <div className="scene lc-scenic lc-reading-scene" style={{ position: 'relative' }}>
+    <div className={`scene lc-scenic lc-reading-scene${phase === 'listening' ? ' lc-listening' : ''}`} style={{ position: 'relative' }}>
     <SceneBackground src={sceneBg} />
     <div className="screen lc-scene-content">
       <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
         <button
           className="icon-btn"
           aria-label="Close"
+          // close.png already carries its own cream circle + shadow, so the
+          // button's CSS background is dropped here to avoid a double ring.
+          style={{ background: 'transparent', boxShadow: 'none' }}
           onClick={() => {
             // Full teardown BEFORE navigating: a still-resolving session or a
             // pending silence timer must not resurrect the flow mid-exit.
@@ -655,10 +660,10 @@ export default function ReadPage() {
             router.push('/home');
           }}
         >
-          ✕
+          <img src="/icons/close.png" alt="" style={{ width: '112%', height: '112%', objectFit: 'contain' }} />
         </button>
         <button
-          className="icon-btn"
+          className={`icon-btn${speaking ? ' lc-speaking-active' : ''}`}
           aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'}
           disabled={phase === 'listening' || phase === 'scoring'}
           style={phase === 'listening' || phase === 'scoring' ? { opacity: 0.45, cursor: 'default' } : undefined}
@@ -668,18 +673,18 @@ export default function ReadPage() {
             replayCurrentSentence();
           }}
         >
-          {speaking ? '🔇' : '🔊'}
+          <img src="/icons/speaker-audio.png" alt="" style={{ height: 22, width: 'auto' }} />
         </button>
       </header>
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '4px 22px 26px' }}>
         <div
-          className={`lc-reading-card-in${phase === 'celebrate' ? ' lc-section-success' : ''}`}
+          className="lc-reading-card-in"
           style={{
             background: '#fffdf8',
             borderRadius: 18,
             padding: '26px 24px 18px',
-            boxShadow: '0 6px 20px rgba(43,43,43,0.16)',
+            boxShadow: '0 4px 14px rgba(43,43,43,0.12)',
           }}
         >
           {/* Keep the big word visible through the retry's listening/scoring —
@@ -728,9 +733,9 @@ export default function ReadPage() {
 
         {phase === 'celebrate' ? (
           <div role="status" className="lc-fade-up" style={{ textAlign: 'center' }}>
-            <div aria-hidden style={{ fontSize: 36 }}>
-              🎉
-            </div>
+            <span aria-hidden className="lc-success-pop" style={{ display: 'inline-block' }}>
+              <img src="/icons/success-star.png" alt="" style={{ height: 40, width: 'auto' }} />
+            </span>
             <div
               style={{
                 fontFamily: 'var(--serif)',
@@ -745,21 +750,38 @@ export default function ReadPage() {
             </div>
           </div>
         ) : phase === 'correction' && tricky ? (
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
             <button
-              className="btn-primary"
-              style={{ background: 'var(--blue)', boxShadow: '0 3px 0 #054a8a', flex: 1 }}
+              className="btn-primary lc-help-pulse"
+              style={{
+                background: 'var(--blue)',
+                boxShadow: '0 3px 0 #054a8a',
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+              }}
               onClick={() => {
                 setPhase('scoring');
                 void beginListening(tricky);
               }}
             >
-              🎙️ Try the word
+              <img src="/icons/mic-listening.png" alt="" style={{ height: 20, width: 'auto' }} />
+              Try the word
             </button>
             <button
-              className="btn-primary"
-              style={{ flex: 1 }}
               onClick={() => celebrateAndAdvance('On we go!', false)}
+              style={{
+                border: 0,
+                background: 'rgba(255,253,248,0.85)',
+                borderRadius: 999,
+                boxShadow: '0 1px 4px rgba(43,43,43,0.12)',
+                color: 'var(--ink-soft)',
+                fontSize: 13.5,
+                padding: '7px 16px',
+                cursor: 'pointer',
+              }}
             >
               Keep going →
             </button>
@@ -793,7 +815,17 @@ export default function ReadPage() {
               lineHeight: 1.7,
             }}
           >
-            <ListenBars active={phase === 'listening'} />
+            {phase === 'ready' ? (
+              <span aria-hidden className="lc-invite-pulse" style={{ display: 'inline-block' }}>
+                <img src="/icons/mic-listening.png" alt="" style={{ height: 28, width: 'auto' }} />
+              </span>
+            ) : phase === 'scoring' ? (
+              <span aria-hidden className="lc-processing-spin" style={{ display: 'inline-block' }}>
+                <img src="/icons/processing.png" alt="" style={{ height: 24, width: 'auto' }} />
+              </span>
+            ) : (
+              <ListenBars active={phase === 'listening'} />
+            )}
             {phase === 'ready' && 'Tap, then read the page out loud!'}
             {phase === 'listening' && 'I’m listening…'}
             {phase === 'scoring' && 'One moment…'}

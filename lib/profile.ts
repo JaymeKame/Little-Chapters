@@ -24,6 +24,17 @@ export function avatarEmoji(id: AvatarId | undefined): string {
   return AVATARS.find((a) => a.id === id)?.emoji ?? '🧒';
 }
 
+/** Illustrated avatar asset — null only when no avatar has been chosen yet
+ *  (avatar is optional at setup), in which case callers fall back to the
+ *  emoji above. */
+export function avatarImageSrc(id: AvatarId | undefined): string | null {
+  return id ? `/images/setup/avatar-${id}.png` : null;
+}
+
+export function interestImageSrc(id: InterestId): string {
+  return `/images/setup/interest-${id}.png`;
+}
+
 export interface ChildProfile {
   childName: string;
   age: number;
