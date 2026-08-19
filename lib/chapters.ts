@@ -48,6 +48,154 @@ const SETTINGS: Record<
   ocean: { character: 'Finn', place: 'reef', spot: 'shell', setting: 'a sunlit coral reef under calm turquoise water', ambience: 'ocean' },
 };
 
+/* ── Built-in story skeletons (demo/fallback path) ───────────────────────
+ * Same design as reading-tutor/src/skeletons.ts: beats fixed, nouns
+ * variable, and every arc ends on an INTERRUPTION (unopened / unseen /
+ * unfinished) — never a resolution. Unlike the tutor skeletons these are
+ * already child-readable sentences, not model instructions, because this
+ * path has no model. Slots ({character}/{place}/{spot} from SETTINGS plus
+ * per-skeleton pools below) are filled by code, deterministically seeded
+ * by chapter.id, so the same day always renders the same story and
+ * rotation comes from the date changing.                                 */
+
+interface StorySkeletonPage {
+  /** Template with {slot} blanks; 1–2 short sentences once filled. */
+  text: string;
+  /** Focus-word templates — same tagging contract as before (highlighted
+   *  in the reader and reported to the parent). */
+  focus: string[];
+}
+
+interface StorySkeleton {
+  id: string;
+  engine: 'unopened' | 'unseen' | 'unfinished';
+  /** Per-skeleton noun pools; one word per slot is picked by the seed. */
+  slots?: Record<string, string[]>;
+  pages: StorySkeletonPage[];
+  cliffhanger: [string, string];
+  teaser: string;
+}
+
+const STORY_SKELETONS: StorySkeleton[] = [
+  {
+    id: 'the-shiny-thing',
+    engine: 'unopened',
+    slots: { adj: ['gold', 'old', 'tiny'] },
+    pages: [
+      { text: '{character} raced across the {place}. Something shiny sat under the {spot}.', focus: ['{character}', '{spot}'] },
+      { text: 'It was a little {adj} key. Who lost it?', focus: ['{adj}', 'key'] },
+      { text: '{character} looked and looked. A tiny path went up the hill.', focus: ['path', 'hill'] },
+      { text: 'At the top was a red door with a lock. The key fit! Click!', focus: ['door', 'lock'] },
+      { text: 'The door began to open. Something was inside!', focus: ['open', 'inside'] },
+    ],
+    cliffhanger: ['The door opened... and something amazing was waiting inside.', 'To be continued tomorrow...'],
+    teaser: '{character} finds out what was behind the door...',
+  },
+  {
+    id: 'the-sound-from-the-spot',
+    engine: 'unseen',
+    slots: { sound: ['tap', 'hum', 'thump'] },
+    pages: [
+      { text: '{character} sat down by the {spot}. The {place} was still and calm.', focus: ['{character}', 'calm'] },
+      { text: 'Then... {sound}, {sound}, {sound}! A soft sound came from the {spot}.', focus: ['{sound}', 'soft'] },
+      { text: '{character} kept very still. What could it be?', focus: ['still', 'kept'] },
+      { text: 'The {sound} came back. It was big and loud this time!', focus: ['{sound}', 'loud'] },
+      { text: 'Something behind the {spot} began to move!', focus: ['behind', 'move'] },
+    ],
+    cliffhanger: ['Something was moving behind the {spot}... but what?', 'To be continued tomorrow...'],
+    teaser: '{character} finds out what was making the {sound}...',
+  },
+  {
+    id: 'the-one-that-follows',
+    engine: 'unfinished',
+    slots: { shape: ['shadow', 'shape'] },
+    pages: [
+      { text: '{character} set off across the {place}. The sun was big and bright.', focus: ['sun', 'bright'] },
+      { text: 'A small {shape} slid past the {spot}. It kept low.', focus: ['{shape}', '{spot}'] },
+      { text: '{character} stopped. The {shape} stopped too.', focus: ['{shape}', 'stopped'] },
+      { text: '{character} went fast. The {shape} went fast too!', focus: ['fast', 'went'] },
+      { text: 'Then the {shape} said, "Wait for me!"', focus: ['said', 'wait'] },
+    ],
+    cliffhanger: ['The {shape} could talk... but who was it?', 'To be continued tomorrow...'],
+    teaser: '{character} finds out who was following...',
+  },
+  {
+    id: 'the-way-in',
+    engine: 'unopened',
+    slots: { glow: ['glow', 'shine'] },
+    pages: [
+      { text: '{character} played by the {spot}. It was a fine day at the {place}.', focus: ['{character}', '{place}'] },
+      { text: 'There was a gap by the {spot}. It was not there before!', focus: ['gap', 'before'] },
+      { text: '{character} peeked in. It was dim and deep.', focus: ['peeked', 'deep'] },
+      { text: 'A soft {glow} lit up far, far inside.', focus: ['{glow}', 'inside'] },
+      { text: '{character} took one step in. Then one more!', focus: ['step', 'more'] },
+    ],
+    cliffhanger: ['One more step... and {character} was all the way in.', 'To be continued tomorrow...'],
+    teaser: '{character} finds out what makes the {glow}...',
+  },
+  {
+    id: 'the-left-thing',
+    engine: 'unopened',
+    slots: { adj: ['red', 'blue', 'small'], thing: ['box', 'tin', 'bag'] },
+    pages: [
+      { text: '{character} found a {adj} {thing} by the {spot}. It sat there all alone.', focus: ['{adj}', '{thing}'] },
+      { text: 'The {thing} was shut tight. A star mark was on top.', focus: ['shut', 'mark'] },
+      { text: 'Was it left just for {character}? It had to be!', focus: ['left', 'just'] },
+      { text: '{character} tugged at the top. It came up a tiny bit.', focus: ['tugged', 'tiny'] },
+      { text: 'A soft light spilled out of the {thing}!', focus: ['light', 'spilled'] },
+    ],
+    cliffhanger: ['Light spilled from the {thing}... what was inside?', 'To be continued tomorrow...'],
+    teaser: '{character} opens the {thing} at last...',
+  },
+];
+
+function fillTemplate(text: string, vars: Record<string, string>): string {
+  return text.replace(/\{(\w+)\}/g, (match, key: string) => vars[key] ?? match);
+}
+
+/** Seeded LCG so skeleton + slot picks are stable per chapter.id. */
+function stableRandom(seed: string): () => number {
+  let value = stableHash(seed);
+  return () => {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    return value / 0x100000000;
+  };
+}
+
+/* ── Phonics tagging (derived, not hard-coded) ───────────────────────────
+ * Scans the rendered pages for the same three hint families the old demo
+ * chapter reported (digraphs, short vowels, blends), so the parent report
+ * always describes the words the child actually read.                    */
+
+const DIGRAPHS = ['sh', 'ch', 'th', 'wh'];
+const BLENDS = ['bl', 'br', 'cl', 'cr', 'dr', 'fl', 'fr', 'gl', 'gr', 'pl', 'pr', 'sk', 'sl', 'sm', 'sn', 'sp', 'st', 'sw', 'tr', 'tw'];
+const PHONICS_STOP_WORDS = new Set([
+  'the', 'was', 'and', 'who', 'for', 'one', 'out', 'all', 'are', 'were',
+  'there', 'what', 'could', 'this', 'then', 'with', 'said', 'very',
+]);
+
+function derivePhonics(pages: ChapterPage[], excludeWords: string[]): Chapter['phonics'] {
+  const exclude = new Set(excludeWords.map((w) => w.toLowerCase()));
+  const words = [...new Set(pages.flatMap((p) => p.text.toLowerCase().match(/[a-z]+/g) ?? []))]
+    .filter((w) => w.length >= 3 && !PHONICS_STOP_WORDS.has(w) && !exclude.has(w));
+
+  const hints: Chapter['phonics'] = [];
+  const digraphWords = words.filter((w) => DIGRAPHS.some((d) => w.includes(d)));
+  if (digraphWords.length) {
+    const d = DIGRAPHS.find((d) => digraphWords[0].includes(d))!;
+    hints.push({ hint: `${d} in ${digraphWords[0]}`, words: digraphWords.slice(0, 4) });
+  }
+  const cvcWords = words.filter((w) => /^[b-df-hj-np-tv-z][aeiou][b-df-hj-np-tv-z]{1,2}$/.test(w));
+  if (cvcWords.length) {
+    hints.push({ hint: 'short vowels', words: cvcWords.slice(0, 4) });
+  }
+  const blendWords = words.filter((w) => BLENDS.some((b) => w.startsWith(b)));
+  if (blendWords.length) {
+    hints.push({ hint: 'blends', words: blendWords.slice(0, 4) });
+  }
+  return hints.length ? hints : [{ hint: 'story words', words: words.slice(0, 4) }];
+}
+
 /** Deterministic per-day id: same profile + calendar day → same id, so the
  *  generated visual pack is created once and reused all day instead of
  *  drifting per session or per page load. */
@@ -59,113 +207,38 @@ export function chapterIdFor(interest: InterestId | undefined, childName: string
 
 export function chapterFor(interest: InterestId | undefined, childName = 'reader'): Chapter {
   const s = SETTINGS[interest ?? 'dogs'];
+  const id = chapterIdFor(interest, childName);
+
+  // Deterministic per chapter.id: same child + interest + day always renders
+  // the same skeleton and the same slot picks (rotation comes from the day).
+  const rand = stableRandom(id);
+  const skeleton = STORY_SKELETONS[Math.floor(rand() * STORY_SKELETONS.length)];
+  const vars: Record<string, string> = {
+    character: s.character,
+    place: s.place,
+    spot: s.spot,
+  };
+  for (const [slot, pool] of Object.entries(skeleton.slots ?? {})) {
+    vars[slot] = pool[Math.floor(rand() * pool.length)];
+  }
+
+  const pages = skeleton.pages.map((page) => ({
+    text: fillTemplate(page.text, vars),
+    focusWords: page.focus.map((word) => fillTemplate(word, vars)),
+  }));
+
   return {
-    id: chapterIdFor(interest, childName),
+    id,
     title: "Today's Chapter",
     character: s.character,
     companion: s.character,
     setting: s.setting,
     ambience: s.ambience,
-    pages: [
-      { text: `${s.character} raced across the ${s.place}. He saw something shiny under the ${s.spot}.`, focusWords: [s.character, s.spot] },
-      { text: 'It was a little gold key. Who lost it?', focusWords: ['gold', 'key'] },
-      { text: `${s.character} looked and looked. A tiny path went up the hill.`, focusWords: ['path', 'hill'] },
-      { text: 'At the top was a red door. The key fit the lock. Click!', focusWords: ['door', 'lock'] },
-      { text: 'The door began to open. Something was inside!', focusWords: ['open', 'inside'] },
-    ],
-    cliffhanger: ['The door opened... and something amazing was waiting inside.', 'To be continued tomorrow...'],
-    teaser: `${s.character} finds out what was behind the door...`,
-    phonics: [
-      { hint: 'sh in shiny', words: ['shiny'] },
-      { hint: 'short vowels', words: ['path', 'fit', 'hill'] },
-      { hint: 'blends', words: ['click', 'raced'] },
-    ],
-  };
-}
-
-function stageForAge(age: number): number {
-  return Math.min(10, Math.max(1, Math.round(age) - 4));
-}
-
-function stableRandom(seed: string): () => number {
-  let value = 0;
-  for (const char of seed) value = (value * 31 + char.charCodeAt(0)) >>> 0;
-  return () => {
-    value = (value * 1664525 + 1013904223) >>> 0;
-    return value / 0x100000000;
-  };
-}
-
-function storyStateKey(profile: ChildProfile): string {
-  const slug = profile.childName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'reader';
-  return `little-chapters-story-state:${slug}`;
-}
-
-function loadStoryState(profile: ChildProfile): { chapterId: string; recentSkeletonIds: string[] } | null {
-  try {
-    return JSON.parse(localStorage.getItem(storyStateKey(profile)) ?? 'null') as { chapterId: string; recentSkeletonIds: string[] } | null;
-  } catch {
-    return null;
-  }
-}
-
-function rememberSkeleton(profile: ChildProfile, chapterId: string, skeletonId: string): void {
-  try {
-    const current = loadStoryState(profile);
-    const recent = current?.chapterId === chapterId ? current.recentSkeletonIds : current?.recentSkeletonIds ?? [];
-    localStorage.setItem(storyStateKey(profile), JSON.stringify({
-      chapterId,
-      recentSkeletonIds: [skeletonId, ...recent.filter((id) => id !== skeletonId)].slice(0, 4),
-    }));
-  } catch {
-    /* best-effort rotation memory */
-  }
-}
-
-export function tutorStoryContext(profile: ChildProfile): { stage: number; skeleton: Skeleton } {
-  const chapterId = chapterIdFor(profile.interests[0], profile.childName);
-  const state = loadStoryState(profile);
-  const skeleton = pickSkeleton(stageForAge(profile.age), state?.recentSkeletonIds ?? [], stableRandom(chapterId));
-  return { stage: stageForAge(profile.age), skeleton };
-}
-
-export function adaptTutorDraft(
-  profile: ChildProfile,
-  draft: StoryDraft,
-  skeleton: Skeleton,
-): Chapter {
-  const interest = profile.interests[0];
-  const base = chapterFor(interest, profile.childName);
-  const chapterId = chapterIdFor(interest, profile.childName);
-  rememberSkeleton(profile, chapterId, skeleton.id);
-  const pages = draft.sentences.map((text, index) => ({
-    text,
-    focusWords: index === draft.sentences.length - 1 ? [skeleton.engine] : [],
-  }));
-  return {
-    ...base,
-    id: chapterId,
     pages,
-    cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
-    teaser: draft.summaryLine || `${profile.childName} has more to discover tomorrow...`,
-    phonics: [{ hint: `Stage ${tutorStoryContext(profile).stage} practice`, words: Object.values(assignSlots(skeleton.beats, tutorStoryContext(profile).stage)) }],
+    cliffhanger: [fillTemplate(skeleton.cliffhanger[0], vars), skeleton.cliffhanger[1]],
+    teaser: fillTemplate(skeleton.teaser, vars),
+    phonics: derivePhonics(pages, [s.character]),
   };
-}
-
-export async function requestTutorChapter(profile: ChildProfile): Promise<Chapter | null> {
-  const context = tutorStoryContext(profile);
-  try {
-    const response = await fetch('/api/chapters/story', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile, stage: context.stage, skeletonId: context.skeleton.id }),
-    });
-    if (!response.ok) return null;
-    const data = await response.json() as { draft?: StoryDraft; skeleton?: Skeleton };
-    return data.draft && data.skeleton ? adaptTutorDraft(profile, data.draft, data.skeleton) : null;
-  } catch {
-    return null;
-  }
 }
 
 /* ── Story scenes (client side) ──────────────────────────────────────────
