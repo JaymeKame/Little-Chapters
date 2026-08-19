@@ -27,14 +27,14 @@ import { useEffect, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
-import { avatarEmoji, loadProfile, type ChildProfile } from '@/lib/profile';
-import { chapterFor, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { loadProfile, type ChildProfile } from '@/lib/profile';
+import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { playHomeSound, playTheme, prepareStoryAudio, speakPrompt, stopAmbience, stopTheme, themeAssetFor, welcomeLine } from '@/lib/audio';
 
 export default function ChildHomePage() {
   const router = useRouter();
-  const { user, loading: authLoading } = useAuth();
-  const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
+  const { user } = useAuth();
+  const pet = usePet(user?.uid ?? null);
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [leaving, setLeaving] = useState(false);
@@ -86,21 +86,7 @@ export default function ChildHomePage() {
           className="lc-fade-in"
           style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 18px' }}
         >
-          {/* Translucent chip keeps the name readable over busy story art. */}
-          <span
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              fontSize: 15,
-              fontWeight: 600,
-              fontFamily: 'var(--serif)',
-              background: 'rgba(255,253,248,0.85)',
-              borderRadius: 999,
-              padding: '3px 14px 3px 3px',
-              boxShadow: '0 1px 4px rgba(43,43,43,0.12)',
-            }}
-          >
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 600, fontFamily: 'var(--serif)' }}>
             <span
               aria-hidden
               style={{
@@ -116,7 +102,7 @@ export default function ChildHomePage() {
                 boxShadow: '0 1px 4px rgba(43,43,43,0.12)',
               }}
             >
-              {avatarEmoji(profile.avatar)}
+              🧒
             </span>
             {profile.childName}
           </span>
@@ -218,11 +204,7 @@ export default function ChildHomePage() {
           </button>
 
           {/* Momo: small, secondary, delayed entrance — never competes with Play. */}
-          {/* 210px left only ~86px for the message text, wrapping Momo's
-              greeting to five lines. Momo stays visually secondary via
-              .lc-momo-compact's smaller type — it does not need a hard cap
-              this tight. */}
-          <div className="lc-momo-compact" style={{ width: '100%', maxWidth: 320, marginTop: 10 }}>
+          <div className="lc-momo-compact" style={{ width: '100%', maxWidth: 210, marginTop: 10 }}>
             <PetCompanion pet={pet} variant="child" />
           </div>
         </main>

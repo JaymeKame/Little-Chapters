@@ -2,17 +2,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
-import { adminUnconfiguredResponse } from '@/lib/route-auth';
-import { createPortalSession, customerBelongsTo } from '@/lib/stripe';
+import { createPortalSession } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
   try {
-    const unconfigured = adminUnconfiguredResponse();
-    if (unconfigured) return unconfigured;
-
     const auth = adminAuth();
     const db = adminDb();
 
@@ -39,12 +35,6 @@ export async function POST(request: NextRequest) {
 
     if (!customerId) {
       return NextResponse.json({ error: 'No Stripe customer found' }, { status: 404 });
-    }
-
-    // The stored id is client-writable until Firestore rules land — confirm
-    // the customer really belongs to this account before opening its portal.
-    if (!(await customerBelongsTo(customerId, uid, decodedToken.email ?? null))) {
-      return NextResponse.json({ error: 'Customer does not belong to this account' }, { status: 403 });
     }
 
     // Create portal session

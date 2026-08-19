@@ -1,20 +1,19 @@
 import Stripe from 'stripe';
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
-import { adminUnconfiguredResponse } from '@/lib/route-auth';
-import { retrieveSubscription, subscriptionPeriod } from '@/lib/stripe';
+import { retrieveSubscription } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 async function persistSubscription(uid: string, subscription: Stripe.Subscription) {
-  const period = subscriptionPeriod(subscription);
+  const subscriptionData = subscription as unknown as { current_period_end: number; cancel_at_period_end: boolean };
   await adminDb().collection('parents').doc(uid).set({
     stripeCustomerId: typeof subscription.customer === 'string' ? subscription.customer : subscription.customer.id,
     stripeSubscriptionId: subscription.id,
     subscriptionStatus: subscription.status,
-    currentPeriodEnd: period.currentPeriodEnd,
-    cancelAtPeriodEnd: period.cancelAtPeriodEnd,
+    currentPeriodEnd: new Date(subscriptionData.current_period_end * 1000).toISOString(),
+    cancelAtPeriodEnd: subscriptionData.cancel_at_period_end,
     updatedAt: new Date().toISOString(),
   }, { merge: true });
 }
@@ -22,10 +21,6 @@ async function persistSubscription(uid: string, subscription: Stripe.Subscriptio
 export async function POST(request: NextRequest) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) return NextResponse.json({ error: 'Stripe webhook is not configured' }, { status: 503 });
-  // Stripe retries a 503, so refusing here is safe: nothing is lost, the
-  // event is redelivered once credentials exist.
-  const unconfigured = adminUnconfiguredResponse();
-  if (unconfigured) return unconfigured;
 
   try {
     const signature = request.headers.get('stripe-signature');

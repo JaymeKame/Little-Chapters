@@ -17,7 +17,6 @@ import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
-import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
   startReadingSession,
@@ -44,28 +43,6 @@ import {
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
-/* Live karaoke highlight: SHELVED for now — Azure partials trail real speech
- * by up to a second, which reads as lag rather than magic. The matcher still
- * runs headlessly (it powers the finished-page fast-stop below); flip this to
- * true to bring the visuals and the `sim: live` button back. */
-const LIVE_HIGHLIGHT = false;
-
-/* Graded praise for the celebrate beat — always warm, never a failure state;
- * only the intensity tracks the result. */
-const PRAISE = {
-  top: ['Awesome!', 'Amazing!', 'Fantastic!'],
-  great: ['Great job!', 'Great reading!'],
-  good: ['Good reading!', 'Nice work!'],
-} as const;
-
-const pick = (arr: readonly string[]) => arr[Math.floor(Math.random() * arr.length)];
-
-function praiseFor(accuracy: number, flaggedCount: number): string {
-  if (flaggedCount === 0 && accuracy >= 90) return pick(PRAISE.top);
-  if (flaggedCount === 0 && accuracy >= 75) return pick(PRAISE.great);
-  return pick(PRAISE.good);
-}
-
 /* Scene background: the SAME real curated story scene selection as Screen 3
  * (lib/chapters.ts selectStoryScene — interest-aware, stable per chapter.id)
  * → .lc-scenic/.lc-cliff gradient. The automatic AI-generation path remains
@@ -91,52 +68,22 @@ function ListenBars({ active }: { active: boolean }) {
 }
 
 /** Handoff spec: one sentence per line with breathing room; every focus word
- *  bold in the accessible reading blue (#075DAD).
- *
- *  While the mic is live, words light up karaoke-style as the child reads
- *  them: unread words sit dimmed, heard words return to full strength, and
- *  the most recent one glows sunshine. Lighting tracks position, never
- *  correctness — a misread word still lights when the child moves on.       */
-function PageText({
-  text,
-  focusWords,
-  live = false,
-  readCount = 0,
-}: {
-  text: string;
-  focusWords: string[];
-  live?: boolean;
-  readCount?: number;
-}) {
+ *  bold in the accessible reading blue (#075DAD). */
+function PageText({ text, focusWords }: { text: string; focusWords: string[] }) {
   const lower = focusWords.map((w) => w.toLowerCase());
   const sentences = text.split(/(?<=[.!?])\s+/);
-  let wordIdx = 0;
   return (
     <p className="lc-page-text">
       {sentences.map((sentence, si) => (
         <span key={si} className="lc-sentence">
           {sentence.split(/(\s+)/).map((tok, i) => {
-            // Word-counting MUST stay in lockstep with lib/live-progress.ts
-            // (fold curly apostrophes, keep digits) or the highlight drifts.
-            const clean = tok.replace(/[’ʼ]/g, "'").toLowerCase().replace(/[^a-z0-9']/g, '');
-            if (!clean) return <span key={i}>{tok}</span>;
-            const idx = wordIdx++;
-            const cls = [
-              'lc-word',
-              lower.includes(clean) ? 'lc-focus-word' : '',
-              // Strictly greater: the word the child is decoding RIGHT NOW
-              // (idx === readCount) stays at full strength — the highlight
-              // trails recognition, so dimming it would dim the very word
-              // being read.
-              live && idx > readCount ? 'lc-word-dim' : '',
-              live && idx === readCount - 1 ? 'lc-word-now' : '',
-            ]
-              .filter(Boolean)
-              .join(' ');
-            return (
-              <span key={i} className={cls}>
+            const clean = tok.toLowerCase().replace(/[^a-z']/g, '');
+            return clean && lower.includes(clean) ? (
+              <span key={i} className="lc-focus-word">
                 {tok}
               </span>
+            ) : (
+              <span key={i}>{tok}</span>
             );
           })}
         </span>
@@ -147,26 +94,21 @@ function PageText({
 
 export default function ReadPage() {
   const router = useRouter();
-  const { user, loading: authLoading } = useAuth();
-  const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
+  const { user } = useAuth();
+  const pet = usePet(user?.uid ?? null);
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [pageIdx, setPageIdx] = useState(0);
   const [phase, setPhase] = useState<Phase>('ready');
   const [tricky, setTricky] = useState<string | null>(null); // correction-state word
   const [error, setError] = useState<string | null>(null);
-  const [readCount, setReadCount] = useState(0); // live karaoke highlight cursor
-  const [praise, setPraise] = useState('Great reading!');
   const [speaking, setSpeaking] = useState(false); // TTS replay of the current sentence — distinct from mic-listening
   const [sentenceLeaving, setSentenceLeaving] = useState(false); // brief out-transition before the next sentence mounts
-  const liveRef = useRef<LiveProgress | null>(null);
   const listeningCuePlayedRef = useRef(false);
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptRef = useRef(0);
-  const awardedRef = useRef(false); // XP granted for the CURRENT page (survives retry-take errors)
   const practicedRef = useRef<Map<string, string>>(new Map());
-  const startedReadingRef = useRef(false); // once true, never swap the chapter text
   const disposedRef = useRef(false);
 
   useEffect(() => {
@@ -189,31 +131,6 @@ export default function ReadPage() {
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
     };
   }, [router]);
-
-  /* Upgrade the demo arc to a stage-matched reading-tutor chapter (cached from
-   * earlier today, or generated when OPENAI_API_KEY is set server-side).
-   *
-   * This MUST wait for auth to settle rather than ride the mount effect: the
-   * story route requires an ID token in production, and on a direct load of
-   * /read the anonymous sign-in is still in flight at mount — a request sent
-   * then gets a 401 that the client swallows, so generation would silently
-   * never happen and the demo arc would stay forever. Never swaps once the
-   * child has started reading; without a key the request 503s and the demo
-   * arc simply stays. */
-  useEffect(() => {
-    if (!profile || authLoading || startedReadingRef.current) return;
-    let cancelled = false;
-    void (async () => {
-      const authToken = user ? await user.getIdToken().catch(() => null) : null;
-      const tutorChapter = await requestTutorChapter(profile, authToken);
-      if (tutorChapter && !cancelled && !disposedRef.current && !startedReadingRef.current) {
-        setChapter(tutorChapter);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [profile, user, authLoading]);
 
   // Reuse the same flat story theme as Home; the controller prevents duplicate loops.
   useEffect(() => {
@@ -238,10 +155,6 @@ export default function ReadPage() {
   const sceneBg = selectStoryScene(chapter.id, profile.interests);
 
   function replayCurrentSentence() {
-    // Never speak the reference text while the mic is live — the recognizer
-    // would score the TTS voice as the child's reading (echo cancellation
-    // does not reliably remove OS-level TTS from the mic signal).
-    if (sessionRef.current || phase === 'listening' || phase === 'scoring') return;
     if (speaking) {
       stopSpeaking();
       setSpeaking(false);
@@ -251,39 +164,21 @@ export default function ReadPage() {
     speakPrompt(tricky ?? page.text, { onEnd: () => setSpeaking(false) });
   }
 
-  function armSilenceStop(ms = 3000) {
+  function armSilenceStop() {
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
-    // Default must exceed Azure's 2.2 s segmentation pause, and gets re-armed
-    // by every partial transcript — so it measures silence since the child
-    // last SPOKE, not since the last finalized segment. A 5-year-old's
-    // mid-page thinking pause must never cut the mic while they're still
-    // reading. Once the live matcher has seen the page's FINAL word, the
-    // grace drops to ~1 s: the page is done, so feedback should be quick.
-    silenceTimer.current = setTimeout(() => void finishListening(), ms);
+    // Must exceed Azure's 2.2 s segmentation pause, and gets re-armed by every
+    // partial transcript — so it measures silence since the child last SPOKE,
+    // not since the last finalized segment. A 5-year-old's mid-page thinking
+    // pause must never cut the mic while they're still reading.
+    silenceTimer.current = setTimeout(() => void finishListening(), 3000);
   }
 
   async function beginListening(referenceText: string) {
     setError(null);
-    startedReadingRef.current = true;
-    liveRef.current = createLiveProgress(referenceText);
-    setReadCount(0);
     stopSpeaking();
     setSpeaking(false);
     listeningCuePlayedRef.current = false;
     try {
-      // Setup watchdog: the token fetch / SDK load / mic prompt can hang on a
-      // bad network while the only button sits disabled on "One moment…" —
-      // never strand the child there.
-      let setupTimedOut = false;
-      const setupWatchdog = setTimeout(() => {
-        setupTimedOut = true;
-        if (!disposedRef.current && !sessionRef.current) {
-          setPhase('ready');
-          attemptRef.current = 0;
-          setTricky(null);
-          setError("That took too long to get ready — let's try again!");
-        }
-      }, 20_000);
       const authToken = user ? await user.getIdToken() : null;
       const session = await startReadingSession({
         referenceText,
@@ -299,22 +194,10 @@ export default function ReadPage() {
           }
           if (s === 'error' && sessionRef.current) void finishListening();
         },
-        onPartialTranscript: (text) => {
-          // Active speech keeps postponing the stop — and moves the cursor.
-          if (disposedRef.current) return;
-          const n = liveRef.current ? liveRef.current.partial(text) : 0;
-          if (LIVE_HIGHLIGHT) setReadCount(n);
-          armSilenceStop(liveRef.current?.isComplete() ? 1000 : 3000);
-        },
-        onSegment: (words) => {
-          if (disposedRef.current) return;
-          const n = liveRef.current ? liveRef.current.segment(words.map((w) => w.word)) : 0;
-          if (LIVE_HIGHLIGHT) setReadCount(n);
-          armSilenceStop(liveRef.current?.isComplete() ? 1000 : 3000);
-        },
+        onPartialTranscript: () => armSilenceStop(), // active speech keeps postponing the stop
+        onSegment: () => armSilenceStop(), // a finalized burst also counts
       });
-      clearTimeout(setupWatchdog);
-      if (disposedRef.current || setupTimedOut) {
+      if (disposedRef.current) {
         session.cancel();
         return;
       }
@@ -384,12 +267,8 @@ export default function ReadPage() {
 
   function handleVerdicts(r: ReadingAssessmentResult, verdicts: WordVerdict[]) {
     const flagged = verdicts.filter((v) => v.needsHelp);
-    if (!awardedRef.current && attemptRef.current === 0) {
+    if (attemptRef.current === 0) {
       // Award once per page — the word-retry take is practice, not a reading.
-      // awardedRef (not attemptRef) is the gate: error recoveries reset
-      // attemptRef to keep correction usable, and that reset must never
-      // re-arm a second award for the same page.
-      awardedRef.current = true;
       pet.awardReading({
         accuracy: r.scores.accuracy,
         wordCount: r.words.filter((w) => w.errorType !== 'Insertion').length,
@@ -404,17 +283,15 @@ export default function ReadPage() {
       setPhase('correction');
       return;
     }
-    // Retry take: the praise rewards the effort, not the original stumble.
-    celebrateAndAdvance(attemptRef.current > 0 ? 'You did it!' : praiseFor(r.scores.accuracy, flagged.length));
+    celebrateAndAdvance();
   }
 
-  function celebrateAndAdvance(p: string, cue = true) {
-    setPraise(p);
-    if (cue) playReadingCue('section-success.mp3');
+  function celebrateAndAdvance(successfulRead = true) {
+    if (successfulRead) playReadingCue('section-success.mp3');
     setPhase('celebrate');
     setTimeout(() => {
       if (!disposedRef.current) advance();
-    }, 1600);
+    }, 1300);
   }
 
   function advance() {
@@ -423,9 +300,6 @@ export default function ReadPage() {
       if (disposedRef.current) return;
       setTricky(null);
       attemptRef.current = 0;
-      awardedRef.current = false;
-      liveRef.current = null;
-      setReadCount(0);
       if (pageIdx + 1 < chapter!.pages.length) {
         playReadingCue('page-turn.mp3');
         setPageIdx((i) => i + 1);
@@ -439,15 +313,10 @@ export default function ReadPage() {
 
   function finishChapter() {
     const c = chapter!;
-    // Dedupe: a generated chapter may practise one or two words across every
-    // page, and "den, den, den" reads like a bug to the parent.
-    const newWords = [
-      ...new Set(c.pages.flatMap((p) => p.focusWords).filter((w) => w !== c.character)),
-    ];
     saveReport({
       date: new Date().toLocaleDateString('en-CA'), // local YYYY-MM-DD, not UTC
       childName: profile!.childName,
-      newWords,
+      newWords: c.pages.flatMap((p) => p.focusWords).filter((w) => w !== c.character),
       // Words the child actually struggled with come FIRST so they survive the
       // parent screen's top-3 slice; generic chapter phonics fill the rest.
       practiced: [...practicedRef.current.entries()]
@@ -455,37 +324,11 @@ export default function ReadPage() {
         .concat(c.phonics.map((ph) => ({ word: ph.words[0], hint: ph.hint }))),
       teaser: c.teaser,
     });
-    // Signed-in parents opted into the session note at registration — send it
-    // (in-app always; SMS when Twilio + their phone number are configured).
-    // Best-effort: a delivery failure must never affect the child's flow.
-    if (user && !user.isAnonymous) {
-      void (async () => {
-        try {
-          const authToken = await user.getIdToken();
-          await fetch('/api/messages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-            body: JSON.stringify({
-              sessionData: {
-                childName: profile!.childName,
-                newWords,
-                practicedWords: [...practicedRef.current.entries()].map(([word, hint]) => ({ word, hint })),
-                mostlyAssisted: false,
-                tomorrowTeaser: c.teaser,
-              },
-            }),
-          });
-        } catch {
-          /* message delivery is best-effort */
-        }
-      })();
-    }
     setPhase('chapter-end');
   }
 
   /* Dev-only shortcut so the whole flow is testable without a microphone. */
   function simulate(kind: 'good' | 'tricky') {
-    startedReadingRef.current = true; // sims count as reading — no chapter swaps mid-flow
     const words = page.text.split(/\s+/).map((t) => t.toLowerCase().replace(/[^a-z']/g, '')).filter(Boolean);
     const fakeResult = {
       scores: { pronunciation: 90, accuracy: kind === 'good' ? 94 : 70, fluency: 90, completeness: 100, prosody: 80 },
@@ -497,31 +340,6 @@ export default function ReadPage() {
       needsHelp: kind === 'tricky' && i === words.length - 1, reason: null,
     })) as WordVerdict[];
     handleVerdicts(fakeResult, verdicts);
-  }
-
-  /* Dev-only: stream fake partial transcripts through the real highlight
-   * path so the karaoke effect is testable without a microphone. */
-  function simulateLive() {
-    const live = createLiveProgress(page.text);
-    liveRef.current = live;
-    setReadCount(0);
-    setPhase('listening');
-    const words = page.text.split(/\s+/).filter(Boolean);
-    let i = 0;
-    const timer = setInterval(() => {
-      if (disposedRef.current) {
-        clearInterval(timer);
-        return;
-      }
-      i++;
-      setReadCount(live.partial(words.slice(0, i).join(' ')));
-      if (i >= words.length) {
-        clearInterval(timer);
-        setTimeout(() => {
-          if (!disposedRef.current) simulate('good');
-        }, 600);
-      }
-    }, 350);
   }
 
   /* ── Screen 5: chapter end ── */
@@ -657,17 +475,7 @@ export default function ReadPage() {
         >
           ✕
         </button>
-        <button
-          className="icon-btn"
-          aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'}
-          disabled={phase === 'listening' || phase === 'scoring'}
-          style={phase === 'listening' || phase === 'scoring' ? { opacity: 0.45, cursor: 'default' } : undefined}
-          onClick={() => {
-            if (phase === 'listening' || phase === 'scoring') return;
-            playHomeSound('replay.mp3');
-            replayCurrentSentence();
-          }}
-        >
+        <button className="icon-btn" aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'} onClick={() => { playHomeSound('replay.mp3'); replayCurrentSentence(); }}>
           {speaking ? '🔇' : '🔊'}
         </button>
       </header>
@@ -696,7 +504,7 @@ export default function ReadPage() {
             </div>
           ) : (
             <div key={pageIdx} className={sentenceLeaving ? 'lc-sentence-out' : 'lc-sentence-in'}>
-              <PageText text={page.text} focusWords={page.focusWords} live={LIVE_HIGHLIGHT && phase === 'listening'} readCount={readCount} />
+              <PageText text={page.text} focusWords={page.focusWords} />
             </div>
           )}
           <div aria-hidden style={{ textAlign: 'center', marginTop: 20, letterSpacing: 4, fontSize: 10, color: 'var(--leaf)' }}>
@@ -727,22 +535,12 @@ export default function ReadPage() {
         <div style={{ flex: 1 }} />
 
         {phase === 'celebrate' ? (
-          <div role="status" className="lc-fade-up" style={{ textAlign: 'center' }}>
-            <div aria-hidden style={{ fontSize: 36 }}>
-              🎉
-            </div>
-            <div
-              style={{
-                fontFamily: 'var(--serif)',
-                fontSize: 34,
-                fontWeight: 700,
-                color: 'var(--dark)',
-                textShadow: '0 1px 0 rgba(255,255,255,0.55)',
-                marginTop: 4,
-              }}
-            >
-              {praise}
-            </div>
+          <div
+            className="lc-fade-up"
+            aria-label="Nice reading!"
+            style={{ textAlign: 'center', fontSize: 15, fontWeight: 600, color: 'var(--leaf)', padding: '14px 0' }}
+          >
+            ✓ Nice reading!
           </div>
         ) : phase === 'correction' && tricky ? (
           <div style={{ display: 'flex', gap: 10 }}>
@@ -759,7 +557,7 @@ export default function ReadPage() {
             <button
               className="btn-primary"
               style={{ flex: 1 }}
-              onClick={() => celebrateAndAdvance('On we go!', false)}
+              onClick={() => celebrateAndAdvance(false)}
             >
               Keep going →
             </button>
@@ -808,11 +606,6 @@ export default function ReadPage() {
             <button onClick={() => simulate('tricky')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
               sim: tricky
             </button>
-            {LIVE_HIGHLIGHT && (
-              <button onClick={simulateLive} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
-                sim: live
-              </button>
-            )}
           </div>
         )}
       </main>

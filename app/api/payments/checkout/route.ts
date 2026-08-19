@@ -2,7 +2,6 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
-import { adminUnconfiguredResponse } from '@/lib/route-auth';
 import { createCheckoutSession, getCustomerSubscription, getOrCreateCustomer, PLANS } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
@@ -10,9 +9,6 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
   try {
-    const unconfigured = adminUnconfiguredResponse();
-    if (unconfigured) return unconfigured;
-
     const auth = adminAuth();
     const db = adminDb();
 

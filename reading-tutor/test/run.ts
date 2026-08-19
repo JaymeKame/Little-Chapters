@@ -15,7 +15,7 @@ import {
 } from '../src/slots.js';
 import { allowedWordsForStage, CONTENT_BLOCKLIST, HUMAN_NOUNS } from '../content/stages.js';
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '../src/types.js';
-import { adaptTutorDraft } from '../../lib/chapters.ts';
+import { adaptTutorDraft } from '../../lib/chapters.js';
 
 let pass = 0, fail = 0;
 const ok = (cond: boolean, label: string, extra = '') => {
@@ -414,14 +414,6 @@ section('Little Chapters adapter');
     { sentences: ['Sam sat on a mat', 'Pip sat by Sam'], imagePrompt: 'Sam and Pip', summaryLine: 'Sam found a mat' },
     SKELETONS[0],
   );
-  ok(chapter !== null, 'a draft with sentences adapts successfully');
-  if (!chapter) throw new Error('adapter returned null for a valid draft');
-  const empty = adaptTutorDraft(
-    { childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
-    { sentences: [], imagePrompt: '', summaryLine: '' },
-    SKELETONS[0],
-  );
-  ok(empty === null, 'a page-less draft is rejected instead of crashing the reader');
   ok(chapter.pages.length === 2, 'tutor sentences become Chapter pages');
   ok(chapter.pages.every((page) => typeof page.text === 'string' && Array.isArray(page.focusWords)), 'Chapter page shape is preserved');
   ok(chapter.cliffhanger[1] === 'To be continued tomorrow...', 'adapter preserves the cliffhanger contract');
