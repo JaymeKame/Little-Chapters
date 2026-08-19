@@ -259,11 +259,61 @@ function saveLocal(uid: string | null, state: PetState): void {
   }
 }
 
+/* The Firestore mirror stays OFF until the readingPets rule is deployed.
+ * It used to be gated by `if (!uid) return`, which worked only while nobody
+ * was ever signed in; AuthProvider now signs every visitor in anonymously, so
+ * that check stopped gating anything and this became a live write channel for
+ * children's reading data under a ruleset that was deliberately never
+ * deployed. Flip the flag in the same change that deploys the rule. */
+const MIRROR_TO_FIRESTORE = process.env.NEXT_PUBLIC_READING_PETS_SYNC === '1';
+
+/* Claim-once migration. The pet is keyed by uid, and the uid moves under the
+ * app's feet: null -> anonymous on first load, and anonymous -> real if the
+ * parent registers without linking. Without this, Momo silently resets to an
+ * egg at both hops. Only ever claims the signed-out "anon" slot, only when the
+ * destination is empty, and removes the source — so a sibling's pet on a
+ * shared device is never absorbed. */
+function claimPetFrom(uid: string, fromUid: string | null): PetState | null {
+  try {
+    if (localStorage.getItem(lsKey(uid))) return null; // destination already owned
+    const orphan = normalize(JSON.parse(localStorage.getItem(lsKey(fromUid)) ?? 'null'));
+    if (!orphan) return null;
+    localStorage.setItem(lsKey(uid), JSON.stringify(orphan));
+    localStorage.removeItem(lsKey(fromUid));
+    return orphan;
+  } catch {
+    return null;
+  }
+}
+
+/** Adopt the signed-out "anon" pet. */
+function claimAnonPet(uid: string): PetState | null {
+  return claimPetFrom(uid, null);
+}
+
+/* The other hop that loses a pet: registering when the Google account is
+ * ALREADY attached to a different Firebase user. Linking is impossible there,
+ * so AuthProvider falls back to a plain sign-in and the uid changes anyway,
+ * stranding whatever the child earned on this device.
+ *
+ * Deliberately NOT a merge. XP could be summed but a streak cannot: a child
+ * who read five days here and three days there did not earn eight, and the
+ * streak is the one number the parent screen treats as meaningful. So this
+ * keeps the same claim-once rule as everywhere else — adopt only into an
+ * EMPTY destination — and the caller only invokes it for an outgoing
+ * ANONYMOUS user, so switching between two real sibling accounts on a shared
+ * device can never absorb one into the other. */
+export function claimPetFromAnonymousUid(uid: string, anonymousUid: string): PetState | null {
+  if (!uid || !anonymousUid || uid === anonymousUid) return null;
+  return claimPetFrom(uid, anonymousUid);
+}
+
 /** Load the pet: localStorage first, then Firestore when signed in — the
  *  copy with the newer updatedAt wins (simple cross-device resolution). */
 export async function loadPetState(uid: string | null): Promise<PetState> {
-  const local = loadLocal(uid);
+  const local = loadLocal(uid) ?? (uid ? claimAnonPet(uid) : null);
   if (!uid) return local ?? defaultPetState();
+  if (!MIRROR_TO_FIRESTORE) return local ?? defaultPetState();
   try {
     const [{ doc, getDoc }, { getDb }] = await Promise.all([import('firebase/firestore'), import('./firebase')]);
     const snap = await getDoc(doc(getDb(), 'readingPets', uid));
@@ -277,7 +327,7 @@ export async function loadPetState(uid: string | null): Promise<PetState> {
 
 export function savePetState(uid: string | null, state: PetState): void {
   saveLocal(uid, state);
-  if (!uid) return;
+  if (!uid || !MIRROR_TO_FIRESTORE) return;
   void (async () => {
     try {
       const [{ doc, setDoc }, { getDb }] = await Promise.all([import('firebase/firestore'), import('./firebase')]);

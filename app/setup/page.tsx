@@ -7,12 +7,13 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { INTERESTS, saveProfile, type InterestId } from '@/lib/profile';
+import { AVATARS, INTERESTS, avatarEmoji, saveProfile, type AvatarId, type InterestId } from '@/lib/profile';
 
 export default function SetupPage() {
   const router = useRouter();
   const [name, setName] = useState('');
   const [age, setAge] = useState(6);
+  const [avatar, setAvatar] = useState<AvatarId | undefined>(undefined);
   const [picked, setPicked] = useState<InterestId[]>([]);
 
   const ready = name.trim().length > 0 && picked.length === 3;
@@ -25,7 +26,7 @@ export default function SetupPage() {
 
   function start() {
     if (!ready) return;
-    saveProfile({ childName: name.trim(), age, interests: picked, createdAt: Date.now() });
+    saveProfile({ childName: name.trim(), age, interests: picked, avatar, createdAt: Date.now() });
     router.push('/home');
   }
 
@@ -35,7 +36,21 @@ export default function SetupPage() {
         <button
           onClick={() => router.push('/')}
           aria-label="Back"
-          style={{ border: 0, background: 'none', fontSize: 20, color: 'var(--ink-soft)', padding: 4 }}
+          // 44px hit area (the glyph alone was 13px wide); negative margin
+          // keeps the chevron optically where it was.
+          style={{
+            border: 0,
+            background: 'none',
+            fontSize: 20,
+            color: 'var(--ink-soft)',
+            width: 44,
+            height: 44,
+            padding: 0,
+            marginLeft: -12,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
         >
           ‹
         </button>
@@ -63,7 +78,7 @@ export default function SetupPage() {
           style={{
             width: 100,
             height: 100,
-            margin: '0 auto 24px',
+            margin: '0 auto 14px',
             borderRadius: 999,
             background: 'linear-gradient(180deg, #fdf3dd, #f6e7c8)',
             border: '2px solid var(--stone-deep)',
@@ -73,7 +88,34 @@ export default function SetupPage() {
             fontSize: 46,
           }}
         >
-          🧒
+          {avatarEmoji(avatar)}
+        </div>
+
+        <div role="group" aria-label="Choose their picture" style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 24 }}>
+          {AVATARS.map((a) => {
+            const on = avatar === a.id;
+            return (
+              <button
+                key={a.id}
+                onClick={() => setAvatar(on ? undefined : a.id)}
+                aria-pressed={on}
+                aria-label={a.label}
+                style={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: 999,
+                  border: `2px solid ${on ? 'var(--leaf)' : 'var(--line)'}`,
+                  background: on ? '#f2f9f5' : 'var(--card)',
+                  fontSize: 24,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {a.emoji}
+              </button>
+            );
+          })}
         </div>
 
         <label style={{ display: 'block', textAlign: 'left', fontSize: 13.5, fontWeight: 600, marginBottom: 8 }}>
@@ -83,7 +125,7 @@ export default function SetupPage() {
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="James"
+            placeholder="Michael"
             aria-label="Child's first name"
             style={{
               width: '100%',

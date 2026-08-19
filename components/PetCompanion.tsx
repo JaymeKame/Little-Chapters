@@ -35,7 +35,12 @@ export interface PetHandle {
   awardReading: (outcome: ReadingOutcome) => void;
 }
 
-export function usePet(uid: string | null): PetHandle {
+/* `uid` is the identity to persist under: a string for a signed-in user, null
+ * for the signed-out "anon" slot, and UNDEFINED for "auth has not resolved
+ * yet". The undefined case matters: null is a real, writable key, so treating
+ * not-yet-known as null made the hook load the anon pet, render it, and then
+ * blank it a moment later when the anonymous uid arrived. */
+export function usePet(uid: string | null | undefined): PetHandle {
   const [state, setState] = useState<PetState | null>(null);
   const [message, setMessage] = useState<PetMessage | null>(null);
   const [flash, setFlash] = useState<{ xp: number; levelUp: boolean } | null>(null);
@@ -45,6 +50,9 @@ export function usePet(uid: string | null): PetHandle {
 
   useEffect(() => {
     let stale = false;
+    // Auth still resolving — hold, rather than reading a slot we are about to
+    // stop using. PetCompanion renders its placeholder while state is null.
+    if (uid === undefined) return;
     // Fresh identity: drop the previous user's state/message so a stale (but
     // newer-stamped) pet can't win the reconcile below on account switch.
     setState(null);
@@ -69,7 +77,7 @@ export function usePet(uid: string | null): PetHandle {
       const award = awardForReading(outcome);
       const next = applyReading(base, award, todayKey());
       const leveledUp = levelForXp(next.xp) > levelForXp(base.xp);
-      savePetState(uidRef.current, next);
+      if (uidRef.current !== undefined) savePetState(uidRef.current, next);
       setMessage(reactionFor(award, outcome.flaggedCount, leveledUp));
       setFlash({ xp: award.xp, levelUp: leveledUp });
       if (flashTimer.current) clearTimeout(flashTimer.current);

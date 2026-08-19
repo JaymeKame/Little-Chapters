@@ -2,13 +2,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
-import { getCustomerSubscription } from '@/lib/stripe';
+import { adminUnconfiguredResponse } from '@/lib/route-auth';
+import { getCustomerSubscription, subscriptionPeriod } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
+    const unconfigured = adminUnconfiguredResponse();
+    if (unconfigured) return unconfigured;
+
     const auth = adminAuth();
     const db = adminDb();
 
@@ -44,15 +48,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ subscribed: false, subscription: null });
     }
 
-    // Extract subscription data with proper type handling
-    const subData = subscription as any;
+    const period = subscriptionPeriod(subscription);
     return NextResponse.json({
       subscribed: true,
       subscription: {
         id: subscription.id,
         status: subscription.status,
-        currentPeriodEnd: subData.current_period_end ? new Date(subData.current_period_end * 1000).toISOString() : null,
-        cancelAtPeriodEnd: subData.cancel_at_period_end || false,
+        currentPeriodEnd: period.currentPeriodEnd,
+        cancelAtPeriodEnd: period.cancelAtPeriodEnd,
         items: subscription.items.data.map((item: any) => ({
           priceId: item.price?.id || '',
           quantity: item.quantity || 1,

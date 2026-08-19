@@ -9,7 +9,7 @@
  * offline without an API key.
  */
 
-import { getStage, paletteForStage, allowedWordsForStage } from '../content/stages';
+import { getStage, paletteForStage, allowedWordsForStage, STAGES } from '../content/stages';
 import { validateAll, type CastContext, type StoryDraft, type Violation } from './validators';
 import type { Skeleton } from './skeletons';
 import {
@@ -52,10 +52,24 @@ export interface GenerateResult {
 
 const MAX_ATTEMPTS = 4;
 
+/** Every sight word legal at this stage — stages 1..id, deduped. */
+function cumulativeSightWords(id: number): string[] {
+  const out = new Set<string>();
+  for (const s of STAGES) {
+    if (s.id > id) break;
+    for (const w of s.sight_words_introduced) out.add(w.toLowerCase());
+  }
+  return [...out];
+}
+
 export function buildPrompt(
   req: GenerateRequest,
   previous?: Violation[],
   slots?: SlotAssignment,
+  /** The rejected draft itself, so a retry can REPAIR rather than restart. */
+  previousDraft?: StoryDraft,
+  /** Every word rejected so far, not just in the last attempt. */
+  bannedWords?: readonly string[],
 ): string {
   const stage = getStage(req.stage);
   const palette = paletteForStage(req.stage);
@@ -94,11 +108,20 @@ export function buildPrompt(
     `STORY SO FAR`,
     req.storySoFar || `This is the first chapter. Start fresh.`,
     ``,
-    `THE CHAPTER - one sentence per beat, in this order`,
+    `WHAT HAPPENS - one sentence per beat, in this order`,
     ...filled.map((b, i) => `${i + 1}. ${b}`),
     ``,
-    `The nouns above are already chosen. Use those exact words. Do not swap them`,
-    `for synonyms, do not add other things to the scene. Your job is the phrasing.`,
+    /* The beats are authored as adult prose ("are settling down somewhere
+     * quiet", "something inside moves"). Presented as "the chapter", a model
+     * reasonably echoes their wording — and almost none of those words exist
+     * in a 53-word stage-1 palette, so every draft failed as not-decodable no
+     * matter how strong the model was. Say plainly that they are direction. */
+    `These beats are DIRECTION, not text to copy. They are written in ordinary`,
+    `adult English and MOST OF THEIR WORDS ARE NOT ALLOWED in your answer.`,
+    `Retell each beat from scratch using ONLY the word lists below.`,
+    `The chosen nouns (${Object.values(assignment).join(', ')}) must appear`,
+    `exactly as written - do not swap them for synonyms, and do not add`,
+    `anything else to the scene.`,
     ``,
     `THE ENDING IS THE POINT`,
     req.skeleton.cliffhangerNote,
@@ -116,10 +139,17 @@ export function buildPrompt(
     ``,
     `Describing words: ${palette.adjectives.join(' ')}`,
     ``,
-    `Joining words you may also use: ${stage.sight_words_introduced.join(' ')}`,
+    // CUMULATIVE, not this stage's new words: the phonics validator accepts
+    // every sight word from stage 1 up, so listing only the newest ones hides
+    // "a", "and", "the" from a stage-2 writer — over-constraining the model
+    // against the rules it is actually graded on, and paying for the retries.
+    `Joining words you may also use: ${cumulativeSightWords(stage.id).join(' ')}`,
     ``,
     `RULES`,
-    `- ${req.skeleton.beats.length} sentences, ${min}-${max} words each.`,
+    `- Exactly ${req.skeleton.beats.length} sentences, ${min}-${max} words each.`,
+    `- Count the words in every sentence before you answer. ${max + 1} words is a rejection.`,
+    `- Every word must come from the lists above. If you cannot say it with`,
+    `  those words, say something simpler that still fits the beat.`,
     `- Cast is ${req.cast.childName}${req.cast.petName ? `, ${req.cast.petName}` : ''}, and ONE animal or object. No other people at all.`,
     `- No violence, peril, romance, religion, politics, or branded characters.`,
     `- Nothing frightening. Mild suspense only.`,
@@ -140,13 +170,26 @@ export function buildPrompt(
   );
 
   if (previous?.length) {
-    const words = [...new Set(previous.map((v) => v.word).filter(Boolean))];
+    /* REPAIR, don't restart. A rejected draft is usually one or two bad words
+     * and a sentence that ran long; telling the model to "rewrite completely"
+     * threw away everything that already passed and reliably came back worse.
+     * Banned words accumulate across ALL attempts, because a word rejected on
+     * attempt 1 used to reappear on attempt 3 once it fell out of scope. */
+    const words = [...new Set([...(bannedWords ?? []), ...previous.map((v) => v.word).filter(Boolean) as string[]])];
+    parts.push(``, `YOUR LAST ATTEMPT WAS REJECTED`);
+    if (previousDraft?.sentences?.length) {
+      parts.push(
+        `Here it is, numbered:`,
+        ...previousDraft.sentences.map((line, i) => `  [${i}] ${line}`),
+      );
+    }
     parts.push(
-      ``,
-      `YOUR LAST ATTEMPT WAS REJECTED`,
-      ...previous.slice(0, 10).map((v) => `- ${v.detail}`),
-      words.length ? `Do not use: ${words.join(', ')}` : ``,
-      `Rewrite completely. Keep the beats and the cliffhanger.`,
+      `Problems found:`,
+      ...previous.slice(0, 12).map((v) => `- ${v.detail}`),
+      words.length ? `Never use these words: ${words.join(', ')}` : ``,
+      `Fix ONLY the sentences named above. Return every sentence, in order,`,
+      `leaving the ones that were not flagged exactly as they are. Keep the`,
+      `beats and the cliffhanger. Count the words in each sentence you change.`,
     );
   }
 
@@ -175,6 +218,8 @@ export async function generateChapter(
 ): Promise<GenerateResult> {
   const rejectionLog: GenerateResult['rejectionLog'] = [];
   let previous: Violation[] | undefined;
+  let previousDraft: StoryDraft | undefined;
+  const banned = new Set<string>();
 
   // Chosen once, then held across retries. If a chapter is rejected it is the
   // phrasing that failed, not the nouns - those came from the palette and were
@@ -184,7 +229,10 @@ export async function generateChapter(
   });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const raw = await llm.complete(buildPrompt(req, previous, slots), attempt);
+    const raw = await llm.complete(
+      buildPrompt(req, previous, slots, previousDraft, [...banned]),
+      attempt,
+    );
     const draft = parseDraft(raw);
 
     if (!draft) {
@@ -201,6 +249,8 @@ export async function generateChapter(
 
     rejectionLog.push({ attempt, violations: result.violations });
     previous = result.violations;
+    previousDraft = draft;
+    for (const v of result.violations) if (v.word) banned.add(v.word);
   }
 
   // Exhausted. The caller should fall back to a previously validated chapter

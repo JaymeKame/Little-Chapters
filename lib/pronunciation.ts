@@ -196,9 +196,12 @@ function toWordScores(segment: AzureSegment): WordScore[] {
 
 /* ── Reference alignment (continuous-mode miscue detection) ────────────── */
 
-/** Lowercase and strip leading/trailing punctuation ("Sun!" → "sun"). */
+/** Lowercase and strip leading/trailing punctuation ("Sun!" → "sun").
+ *  Curly apostrophes fold to ASCII — reference text is typeset ("don’t"),
+ *  Azure's recognized words are not ("don't"); without the fold a correctly
+ *  read contraction misaligns into a synthetic Omission + Insertion. */
 function normalizeToken(t: string): string {
-  return t.toLowerCase().replace(/^[^\p{L}\p{N}']+|[^\p{L}\p{N}']+$/gu, '');
+  return t.replace(/[’ʼ]/g, "'").toLowerCase().replace(/^[^\p{L}\p{N}']+|[^\p{L}\p{N}']+$/gu, '');
 }
 
 function tokenizeReference(referenceText: string): string[] {
