@@ -17,6 +17,7 @@ import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
@@ -444,8 +445,9 @@ export default function ReadPage() {
     const newWords = [
       ...new Set(c.pages.flatMap((p) => p.focusWords).filter((w) => w !== c.character)),
     ];
-    saveReport({
+    const report = {
       date: new Date().toLocaleDateString('en-CA'), // local YYYY-MM-DD, not UTC
+      chapterId: c.id,
       childName: profile!.childName,
       newWords,
       // Words the child actually struggled with come FIRST so they survive the
@@ -454,7 +456,12 @@ export default function ReadPage() {
         .map(([word, hint]) => ({ word, hint }))
         .concat(c.phonics.map((ph) => ({ word: ph.words[0], hint: ph.hint }))),
       teaser: c.teaser,
-    });
+    };
+    saveReport(report);
+    // Marks THIS chapter done so /home stops offering it as "ready to read"
+    // until tomorrow's chapter id rolls over — independent of auth (works for
+    // the anonymous default, unlike the parent-message send below).
+    appendChapterHistoryEntry(user?.uid ?? null, report);
     // Signed-in parents opted into the session note at registration — send it
     // (in-app always; SMS when Twilio + their phone number are configured).
     // Best-effort: a delivery failure must never affect the child's flow.
@@ -793,8 +800,11 @@ export default function ReadPage() {
               lineHeight: 1.7,
             }}
           >
+            {phase === 'ready' && (
+              <span aria-hidden className="lc-mic-invite">🎙️</span>
+            )}
             <ListenBars active={phase === 'listening'} />
-            {phase === 'ready' && 'Tap, then read the page out loud!'}
+            {phase === 'ready' && 'Tap to read out loud!'}
             {phase === 'listening' && 'I’m listening…'}
             {phase === 'scoring' && 'One moment…'}
           </button>

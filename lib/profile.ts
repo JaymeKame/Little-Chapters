@@ -64,6 +64,10 @@ export function saveProfile(p: ChildProfile): void {
 
 export interface SessionReport {
   date: string; // YYYY-MM-DD
+  /** Ties the report to the specific chapter it came from (lib/chapters.ts
+   *  chapterIdFor) — lets /home tell "today's chapter" apart from "today's
+   *  chapter, already read" instead of just checking the date. */
+  chapterId: string;
   childName: string;
   newWords: string[];
   practiced: { word: string; hint: string }[];

@@ -29,6 +29,7 @@ import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
 import { avatarEmoji, loadProfile, type ChildProfile } from '@/lib/profile';
 import { chapterFor, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { wasChapterCompleted } from '@/lib/chapter-history';
 import { playHomeSound, playTheme, prepareStoryAudio, speakPrompt, stopAmbience, stopTheme, themeAssetFor, welcomeLine } from '@/lib/audio';
 
 export default function ChildHomePage() {
@@ -50,6 +51,13 @@ export default function ChildHomePage() {
     void requestTutorChapter(p).then((generated) => { if (generated) setChapter(generated); });
   }, [router]);
 
+  // Local-only and synchronous on purpose (see wasChapterCompleted) — reflects
+  // completion the instant /read writes it, no Firestore round trip. Waits
+  // for authLoading like usePet does: checking the anon slot before the real
+  // uid resolves would flash "ready" for a returning signed-in child who
+  // already finished today's chapter under their real uid.
+  const alreadyRead = chapter && !authLoading ? wasChapterCompleted(user?.uid ?? null, chapter.id) : false;
+
   // Prepare the real flat theme asset; playback waits for a user gesture.
   useEffect(() => {
     if (profile) prepareStoryAudio(themeAssetFor(profile.interests[0]));
@@ -61,7 +69,7 @@ export default function ChildHomePage() {
   function replayWelcome() {
     if (!profile) return;
     playHomeSound('replay.mp3');
-    speakPrompt(welcomeLine(profile.childName, chapter));
+    speakPrompt(welcomeLine(profile.childName, chapter, alreadyRead));
   }
 
   function startChapter() {
@@ -73,7 +81,7 @@ export default function ChildHomePage() {
     setTimeout(() => router.push('/read'), 260);
   }
 
-  if (!profile || !chapter) return <div className="screen" />;
+  if (!profile || !chapter || authLoading) return <div className="screen" />;
 
   const backgroundUrl = selectStoryScene(chapter.id, profile.interests);
 
@@ -146,9 +154,19 @@ export default function ChildHomePage() {
             }}
           >
             <span style={{ fontFamily: 'var(--serif)', fontWeight: 700, fontSize: 30, color: 'var(--dark)', lineHeight: 1.2 }}>
-              Today&rsquo;s
-              <br />
-              Chapter
+              {alreadyRead ? (
+                <>
+                  Today&rsquo;s
+                  <br />
+                  Chapter ✓
+                </>
+              ) : (
+                <>
+                  Today&rsquo;s
+                  <br />
+                  Chapter
+                </>
+              )}
             </span>
             <div
               aria-hidden
@@ -170,7 +188,7 @@ export default function ChildHomePage() {
           <button
             className="lc-play-btn"
             onClick={startChapter}
-            aria-label="Start today's chapter"
+            aria-label={alreadyRead ? "Read today's chapter again" : "Start today's chapter"}
             style={{
               marginTop: 26,
               width: 85,
@@ -213,7 +231,11 @@ export default function ChildHomePage() {
               cursor: 'pointer',
             }}
           >
-            There&rsquo;s a new chapter ready for you!&nbsp;&nbsp;
+            {alreadyRead ? (
+              <>You read today&rsquo;s chapter! See you tomorrow&nbsp;&nbsp;</>
+            ) : (
+              <>There&rsquo;s a new chapter ready for you!&nbsp;&nbsp;</>
+            )}
             <span aria-hidden>🔊</span>
           </button>
 

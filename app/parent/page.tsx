@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { useAuth } from '@/components/AuthProvider';
 import { loadProfile, loadReport, type ChildProfile, type SessionReport } from '@/lib/profile';
+import { loadChapterHistory, type ChapterHistoryEntry } from '@/lib/chapter-history';
 import { ParentMessages } from '@/components/ParentMessages';
 
 const PRACTICE_ICONS = ['🌱', '✨', '🪄'];
@@ -20,12 +21,28 @@ export default function ParentMessagePage() {
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [report, setReport] = useState<SessionReport | null>(null);
   const [now, setNow] = useState('');
+  const [history, setHistory] = useState<ChapterHistoryEntry[]>([]);
 
   useEffect(() => {
     setProfile(loadProfile());
     setReport(loadReport());
     setNow(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
   }, []);
+
+  useEffect(() => {
+    // Waits for auth to resolve so a signed-in parent's cross-device history
+    // isn't rendered from the anonymous slot for one frame. History is the
+    // one thing here that works the same whether or not the parent ever
+    // registered — unlike <ParentMessages/>, which only exists post sign-up.
+    if (authLoading) return;
+    let cancelled = false;
+    void loadChapterHistory(user?.uid ?? null).then((h) => {
+      if (!cancelled) setHistory(h);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, user]);
 
   const name = report?.childName ?? profile?.childName ?? 'your reader';
   const isToday = report?.date === new Date().toLocaleDateString('en-CA');
@@ -142,6 +159,39 @@ export default function ParentMessagePage() {
             </p>
           </div>
         )}
+        {/* Earlier chapters — same no-scores rule as the note above: dates and
+            words only, nothing that reads as a metric. Excludes whichever
+            chapter is already shown as "today"/the latest report above, so
+            nothing appears twice. Works for every child, registered or not —
+            unlike <ParentMessages/>, which only exists post sign-up. */}
+        {(() => {
+          const earlier = history.filter((h) => h.chapterId !== report?.chapterId).slice(0, 6);
+          if (earlier.length === 0) return null;
+          return (
+            <div style={{ marginTop: 18, maxWidth: 330 }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-soft)', margin: '0 0 8px' }}>Earlier chapters</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {earlier.map((h) => (
+                  <div
+                    key={h.chapterId}
+                    style={{
+                      background: 'var(--card)',
+                      border: '1px solid var(--line)',
+                      borderRadius: 10,
+                      padding: '8px 12px',
+                      fontSize: 12.5,
+                    }}
+                  >
+                    <span style={{ color: 'var(--ink-soft)' }}>
+                      {new Date(`${h.date}T12:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}
+                    </span>
+                    {h.newWords.length > 0 && <span> — {h.newWords.slice(0, 4).join(', ')}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
         {/* Progress detail lives HERE, not on the child's screens — the
             handoff forbids scores/streaks/XP in child-facing UI. */}
         <div style={{ marginTop: 22 }}>
