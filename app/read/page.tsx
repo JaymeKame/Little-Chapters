@@ -178,6 +178,7 @@ export default function ReadPage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
+    void requestTutorChapter(p).then((generated) => { if (generated) setChapter(generated); });
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
