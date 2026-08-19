@@ -531,7 +531,7 @@ export default function ReadPage() {
       <div className="screen lc-scene-content">
         <header className="lc-top-controls" style={{ display: 'flex', padding: '16px 18px' }}>
           <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
-            🏠
+            <img src="/icons/home.png" alt="" style={{ height: 24, width: 'auto' }} />
           </button>
         </header>
         <main
@@ -640,6 +640,9 @@ export default function ReadPage() {
         <button
           className="icon-btn"
           aria-label="Close"
+          // close.png already carries its own cream circle + shadow, so the
+          // button's CSS background is dropped here to avoid a double ring.
+          style={{ background: 'transparent', boxShadow: 'none' }}
           onClick={() => {
             // Full teardown BEFORE navigating: a still-resolving session or a
             // pending silence timer must not resurrect the flow mid-exit.
@@ -651,7 +654,7 @@ export default function ReadPage() {
             router.push('/home');
           }}
         >
-          ✕
+          <img src="/icons/close.png" alt="" style={{ width: '112%', height: '112%', objectFit: 'contain' }} />
         </button>
         <button
           className={`icon-btn${speaking ? ' lc-speaking-active' : ''}`}
@@ -664,7 +667,7 @@ export default function ReadPage() {
             replayCurrentSentence();
           }}
         >
-          {speaking ? '🔇' : '🔊'}
+          <img src="/icons/speaker-audio.png" alt="" style={{ height: 22, width: 'auto' }} />
         </button>
       </header>
 
@@ -724,9 +727,9 @@ export default function ReadPage() {
 
         {phase === 'celebrate' ? (
           <div role="status" className="lc-fade-up" style={{ textAlign: 'center' }}>
-            <div aria-hidden style={{ fontSize: 36 }}>
-              🎉
-            </div>
+            <span aria-hidden className="lc-success-pop" style={{ display: 'inline-block' }}>
+              <img src="/icons/success-star.png" alt="" style={{ height: 40, width: 'auto' }} />
+            </span>
             <div
               style={{
                 fontFamily: 'var(--serif)',
@@ -744,13 +747,22 @@ export default function ReadPage() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
             <button
               className="btn-primary lc-help-pulse"
-              style={{ background: 'var(--blue)', boxShadow: '0 3px 0 #054a8a', width: '100%' }}
+              style={{
+                background: 'var(--blue)',
+                boxShadow: '0 3px 0 #054a8a',
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+              }}
               onClick={() => {
                 setPhase('scoring');
                 void beginListening(tricky);
               }}
             >
-              🎙️ Try the word
+              <img src="/icons/mic-listening.png" alt="" style={{ height: 20, width: 'auto' }} />
+              Try the word
             </button>
             <button
               onClick={() => celebrateAndAdvance('On we go!', false)}
@@ -798,8 +810,12 @@ export default function ReadPage() {
             }}
           >
             {phase === 'ready' ? (
-              <span aria-hidden className="lc-invite-pulse" style={{ fontSize: 22 }}>
-                🎙️
+              <span aria-hidden className="lc-invite-pulse" style={{ display: 'inline-block' }}>
+                <img src="/icons/mic-listening.png" alt="" style={{ height: 28, width: 'auto' }} />
+              </span>
+            ) : phase === 'scoring' ? (
+              <span aria-hidden className="lc-processing-spin" style={{ display: 'inline-block' }}>
+                <img src="/icons/processing.png" alt="" style={{ height: 24, width: 'auto' }} />
               </span>
             ) : (
               <ListenBars active={phase === 'listening'} />

@@ -471,19 +471,42 @@ a {
   animation: lc-fade-in 300ms ease both;
 }
 
-/* Ready-state invite: a single pulse on the mic icon draws the eye to the
- * one action available — never a loop, so it never nags. Re-fires on its
- * own because the button (and this icon) remounts fresh each time the
- * child lands back in the ready state. */
+/* Ready-state invite: a single restrained pulse on the mic icon draws the
+ * eye to the one action available — never a loop, so it never nags. Re-fires
+ * on its own because the button (and this icon) remounts fresh each time
+ * the child lands back in the ready state. */
 @keyframes lc-invite-pulse {
-  0% { transform: scale(1); opacity: 0.85; }
-  40% { transform: scale(1.18); opacity: 1; }
+  0% { transform: scale(0.96); opacity: 0.85; }
+  50% { transform: scale(1.04); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
 }
 
 .lc-invite-pulse {
   display: inline-block;
-  animation: lc-invite-pulse 700ms ease-out 200ms both;
+  animation: lc-invite-pulse 550ms ease-out 150ms both;
+}
+
+/* Scoring: a slow, quiet spin — "I heard you, give me a moment," nothing more. */
+@keyframes lc-processing-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.lc-processing-spin {
+  display: inline-block;
+  animation: lc-processing-spin 1.4s linear infinite;
+}
+
+/* Success: one brief pop-and-settle on the star, never a loop. */
+@keyframes lc-success-pop {
+  0% { transform: scale(0.8); opacity: 0; }
+  60% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.lc-success-pop {
+  display: inline-block;
+  animation: lc-success-pop 420ms ease-out both;
 }
 
 /* System-speaking (TTS replay) cue: sky blue and its own steady pulse so a
@@ -523,7 +546,9 @@ a {
   .lc-help-pulse,
   .lc-listen-bars span,
   .lc-invite-pulse,
-  .lc-speaking-active {
+  .lc-speaking-active,
+  .lc-processing-spin,
+  .lc-success-pop {
     animation: none !important;
   }
   .lc-leaving .lc-scene-bg img,

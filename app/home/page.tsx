@@ -165,7 +165,9 @@ export default function ChildHomePage() {
             />
           </div>
 
-          {/* The one big button */}
+          {/* The one big button — the illustrated asset carries its own
+              circle, shadow, and leaf motif, so the button itself stays
+              transparent (no extra background/shadow to fight it). */}
           <button
             className="lc-play-btn"
             onClick={startChapter}
@@ -176,24 +178,13 @@ export default function ChildHomePage() {
               height: 85,
               borderRadius: 999,
               border: 0,
-              background: '#fff',
-              boxShadow: '0 6px 18px rgba(43,43,43,0.22)',
+              background: 'transparent',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
             }}
           >
-            <span
-              aria-hidden
-              style={{
-                width: 0,
-                height: 0,
-                borderTop: '18px solid transparent',
-                borderBottom: '18px solid transparent',
-                borderLeft: '28px solid var(--dark)',
-                marginLeft: 7,
-              }}
-            />
+            <img src="/icons/play-primary.png" alt="" style={{ width: '112%', height: '112%', objectFit: 'contain' }} />
           </button>
 
           <button
@@ -207,13 +198,16 @@ export default function ChildHomePage() {
               borderRadius: 18,
               padding: '10px 14px',
               fontSize: 13,
-              textAlign: 'center',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
               boxShadow: '0 2px 8px rgba(43,43,43,0.08)',
               cursor: 'pointer',
             }}
           >
-            There&rsquo;s a new chapter ready for you!&nbsp;&nbsp;
-            <span aria-hidden>🔊</span>
+            There&rsquo;s a new chapter ready for you!
+            <img src="/icons/speaker-audio.png" alt="" style={{ height: 16, width: 'auto' }} />
           </button>
 
           {/* Momo: small, secondary, delayed entrance — never competes with Play. */}
