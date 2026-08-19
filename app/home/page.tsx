@@ -47,6 +47,7 @@ export default function ChildHomePage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
+    void requestTutorChapter(p).then((generated) => { if (generated) setChapter(generated); });
   }, [router]);
 
   // Prepare the real flat theme asset; playback waits for a user gesture.
