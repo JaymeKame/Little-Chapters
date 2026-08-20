@@ -16,6 +16,9 @@ import {
 import { allowedWordsForStage, CONTENT_BLOCKLIST, HUMAN_NOUNS } from '../content/stages.js';
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '../src/types.js';
 import { adaptTutorDraft } from '../../lib/chapters.ts';
+import { toWordSignals, toSentenceResult } from '../../lib/reading-signal-adapter.ts';
+import type { WordScore } from '../../lib/pronunciation.ts';
+import type { DecodeResult } from '../../lib/reading-verdict.ts';
 
 let pass = 0, fail = 0;
 const ok = (cond: boolean, label: string, extra = '') => {
@@ -425,6 +428,120 @@ section('Little Chapters adapter');
   ok(chapter.pages.length === 2, 'tutor sentences become Chapter pages');
   ok(chapter.pages.every((page) => typeof page.text === 'string' && Array.isArray(page.focusWords)), 'Chapter page shape is preserved');
   ok(chapter.cliffhanger[1] === 'To be continued tomorrow...', 'adapter preserves the cliffhanger contract');
+}
+
+section('Reading signal adapter - live speech layer -> WordSignal');
+{
+  // A representative take, not a synthetic edge case: a child reading
+  // "Rex raced across the field." with one genuinely mispronounced word,
+  // one long hesitation before a word, one word they sounded out slowly,
+  // and one they skipped outright. Timings/scores are the kind of numbers
+  // lib/pronunciation.ts actually produces (ms offsets, 0-100 accuracy,
+  // per-phoneme detail), not round test numbers.
+  const words: WordScore[] = [
+    { word: 'Rex', accuracy: 92, errorType: 'None', offsetMs: 300, durationMs: 280,
+      phonemes: [{ phoneme: 'r', accuracy: 90 }, { phoneme: 'ɛ', accuracy: 95 }, { phoneme: 'ks', accuracy: 91 }] },
+    // Genuinely weak: low word score AND a badly-scored phoneme. This is the
+    // "real mistake" case - both signals agree, so it SHOULD read as low
+    // confidence.
+    { word: 'raced', accuracy: 38, errorType: 'Mispronunciation', offsetMs: 650, durationMs: 410,
+      phonemes: [{ phoneme: 'r', accuracy: 85 }, { phoneme: 'eɪ', accuracy: 22 }, { phoneme: 's', accuracy: 40 }, { phoneme: 't', accuracy: 45 }] },
+    // High word accuracy but ONE weak phoneme (e.g. a slightly soft /k/) -
+    // the case that proves confidence tracks the word score, not the
+    // phoneme minimum, per the tiebreaker in the integration brief.
+    { word: 'across', accuracy: 88, errorType: 'None', offsetMs: 2400, durationMs: 520,
+      phonemes: [{ phoneme: 'ə', accuracy: 90 }, { phoneme: 'k', accuracy: 41 }, { phoneme: 'r', accuracy: 92 }, { phoneme: 'ɒ', accuracy: 89 }, { phoneme: 's', accuracy: 94 }] },
+    // Skipped outright - LCS alignment already synthesized this Omission
+    // (see lib/pronunciation.ts alignWords()), so there is no real timestamp.
+    { word: 'the', accuracy: null, errorType: 'Omission', offsetMs: null, durationMs: null, phonemes: [] },
+    // Sounded out slowly, but got there - long duration, decent accuracy.
+    { word: 'field', accuracy: 81, errorType: 'None', offsetMs: 4200, durationMs: 1950,
+      phonemes: [{ phoneme: 'f', accuracy: 88 }, { phoneme: 'iː', accuracy: 79 }, { phoneme: 'l', accuracy: 80 }, { phoneme: 'd', accuracy: 82 }] },
+  ];
+
+  const { signals, diagnostics, insertions } = toWordSignals(words);
+
+  ok(signals.length === 5, 'one WordSignal per expected word (Omission included, nothing dropped)', String(signals.length));
+  ok(insertions.length === 0, 'no insertions in a clean-alignment take');
+
+  const rex = signals[0];
+  ok(rex.heard === true, 'a normally-read word is heard');
+  ok(Math.abs(rex.confidence - 0.92) < 1e-9, 'confidence is Azure word accuracy / 100, not rescaled', String(rex.confidence));
+  ok(rex.duration_ms === 280, 'duration_ms passes through unchanged');
+  ok(rex.gap_before_ms === 300, 'the FIRST word\'s gap is measured from listening-start (its own offset)', String(rex.gap_before_ms));
+
+  const raced = signals[1];
+  ok(raced.confidence < 0.4, 'a genuinely mispronounced word gets low confidence', String(raced.confidence));
+  ok(raced.gap_before_ms === 650 - (300 + 280), 'gap_before_ms is offset minus the previous word\'s end', String(raced.gap_before_ms));
+
+  const across = signals[2];
+  ok(across.confidence > 0.85, 'confidence tracks the WORD score, not the weak phoneme inside it (k=41)', String(across.confidence));
+  ok(across.gap_before_ms > 1200, 'the long hesitation before "across" shows up as a large gap', String(across.gap_before_ms));
+
+  const theWord = signals[3];
+  ok(theWord.heard === false, 'an Omission is not heard');
+  ok(theWord.confidence === 0, 'and carries zero confidence');
+  ok(theWord.duration_ms === 0 && theWord.gap_before_ms === 0, 'no fabricated timing for a word that was never said');
+
+  const field = signals[4];
+  ok(field.duration_ms === 1950, 'a slowly sounded-out word keeps its real (long) duration');
+
+  ok(diagnostics.length === 5, 'diagnostics has one entry per signal (not per raw Azure word)');
+  ok(diagnostics[2].azureMinPhoneme === 41, 'the weak phoneme IS preserved in diagnostics, just not in confidence', String(diagnostics[2].azureMinPhoneme));
+  ok(diagnostics[1].azureAccuracy === 38, 'diagnostics keep the raw Azure word accuracy too');
+}
+{
+  // Insertions: the child re-read a word / said something extra. WordSignal
+  // has no slot for "unexpected word" (it is indexed by expected word), so
+  // these must be dropped from signals but not silently vanish.
+  const words: WordScore[] = [
+    { word: 'Rex', accuracy: 90, errorType: 'None', offsetMs: 100, durationMs: 300, phonemes: [] },
+    { word: 'Rex', accuracy: 91, errorType: 'Insertion', offsetMs: 420, durationMs: 300, phonemes: [] },
+    { word: 'ran', accuracy: 87, errorType: 'None', offsetMs: 800, durationMs: 300, phonemes: [] },
+  ];
+  const { signals, insertions } = toWordSignals(words);
+  ok(signals.length === 2, 'an Insertion does not become a WordSignal', String(signals.length));
+  ok(insertions.length === 1 && insertions[0] === 'Rex', 'but it is surfaced separately, not silently discarded');
+  ok(signals[1].gap_before_ms === 800 - (100 + 300), 'the running clock skips over the dropped insertion correctly', String(signals[1].gap_before_ms));
+}
+{
+  // Unassessed: Azure recognized something but returned no assessment block
+  // at all (toWordScores() in lib/pronunciation.ts). Rare, but must not throw
+  // on a null accuracy.
+  const words: WordScore[] = [
+    { word: 'zoop', accuracy: null, errorType: 'Unassessed', offsetMs: 100, durationMs: 250, phonemes: [] },
+  ];
+  const { signals } = toWordSignals(words);
+  ok(signals[0].heard === true, 'Unassessed still means something was heard');
+  ok(signals[0].confidence === 0, 'but with no score to translate, confidence is the documented 0 fallback');
+}
+{
+  // MDD enrichment: diagnostics should pick up the decode score when
+  // provided, exactly like combineVerdicts already does - proving phoneme
+  // AND decode-layer evidence both survive into diagnostics even though
+  // neither touches WordSignal itself.
+  const words: WordScore[] = [
+    { word: 'cat', accuracy: 70, errorType: 'None', offsetMs: 0, durationMs: 300, phonemes: [{ phoneme: 'k', accuracy: 65 }] },
+  ];
+  const decode: DecodeResult = {
+    recognized: 'cot',
+    words: [{ word: 'cat', per: 0.6, score: 40, expected: 'k ae t', heard: 'k a t' }],
+    sentence_score: 40,
+  };
+  const { diagnostics } = toWordSignals(words, decode);
+  ok(diagnostics[0].decodeScore === 40, 'MDD decode score reaches diagnostics', String(diagnostics[0].decodeScore));
+  ok(diagnostics[0].decodeHeard === 'k a t', 'and what MDD actually decoded is preserved too');
+}
+{
+  // toSentenceResult: the thin SentenceResult wrapper. assisted/reread are
+  // caller-supplied (the adapter cannot know how the reading happened).
+  const words: WordScore[] = [
+    { word: 'Rex', accuracy: 90, errorType: 'None', offsetMs: 0, durationMs: 300, phonemes: [] },
+  ];
+  const { sentence } = toSentenceResult(0, 'Rex ran.', words, null, { assisted: true });
+  ok(sentence.text === 'Rex ran.', 'reference text passes through as SentenceResult.text');
+  ok(sentence.assisted === true && sentence.reread === false, 'assisted/reread come from the caller, not inferred');
+  ok(sentence.words.length === 1 && sentence.words[0].word === 'Rex', 'words is the adapted WordSignal array');
 }
 
 section('Slot filling - nouns chosen by code, never by the model');
