@@ -17,6 +17,8 @@ import { allowedWordsForStage, CONTENT_BLOCKLIST, HUMAN_NOUNS } from '../content
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '../src/types.js';
 import { adaptTutorDraft } from '../../lib/chapters.ts';
 import { toWordSignals, toSentenceResult } from '../../lib/reading-signal-adapter.ts';
+import { interpretSessionWithIntervention, type SessionIntervention } from '../../lib/reading-session-interpreter.ts';
+import { HELP_LADDER, rungLine, graphemeCueFor } from '../../lib/help-ladder.ts';
 import type { WordScore } from '../../lib/pronunciation.ts';
 import type { DecodeResult } from '../../lib/reading-verdict.ts';
 
@@ -542,6 +544,112 @@ section('Reading signal adapter - live speech layer -> WordSignal');
   ok(sentence.text === 'Rex ran.', 'reference text passes through as SentenceResult.text');
   ok(sentence.assisted === true && sentence.reread === false, 'assisted/reread come from the caller, not inferred');
   ok(sentence.words.length === 1 && sentence.words[0].word === 'Rex', 'words is the adapted WordSignal array');
+}
+
+section('Help ladder - config-driven copy, no judgment');
+{
+  ok(rungLine(1, { word: 'sat', sentence: 'The cat sat.', stage: 1 }) === 'That word begins with /s/.',
+     'rung 1 gives a phoneme cue from the stage graphemes, not the word', rungLine(1, { word: 'sat', sentence: 'The cat sat.', stage: 1 }));
+  ok(!rungLine(1, { word: 'sat', sentence: 'The cat sat.', stage: 1 }).includes('sat'),
+     'rung 1 never reveals the literal word');
+  ok(rungLine(2, { word: 'sat', sentence: 'The cat sat.', stage: 1 }) === 'That word is sat. Your turn.',
+     'rung 2 reveals the word, verbatim from config.json');
+  ok(rungLine(3, { word: 'sat', sentence: 'The cat sat.', stage: 1 }) === 'Let me read this one. The cat sat.',
+     'rung 3 reads the whole sentence, verbatim from config.json');
+  ok(graphemeCueFor('shadow', 4) === '/sh/', 'a digraph introduced by the given stage is preferred over its single-letter substring', graphemeCueFor('shadow', 4));
+  ok(graphemeCueFor('shadow', 4) !== graphemeCueFor('sat', 1),
+     'different graphemes produce different cues (not a generic fallback for everything)');
+  for (const line of HELP_LADDER.encouragement_lines) {
+    ok(!HELP_LADDER.rules.never_say.some((bad) => line.toLowerCase().includes(bad)),
+       `encouragement line avoids banned words: "${line}"`);
+  }
+}
+
+section('Canonical session accumulation - interpretSessionWithIntervention()');
+{
+  // Clean chapter, no interventions anywhere: identical to plain
+  // interpretSession() - the override function must be a no-op when nothing
+  // was intervened on.
+  const s = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))]);
+  const r = interpretSessionWithIntervention(s);
+  ok(r.accuracy === 1, 'a clean chapter is still 100% through the wrapper');
+  ok(r.trickyWords.length === 0 && r.cleanWords.length === 0, 'no tricky/clean words on a clean chapter');
+}
+{
+  // The exact Class A shape from docs/HELP_BOUNDARY_VALIDATION.md: a word
+  // whose confidence clears interpret.ts's floor (would read 'correct') but
+  // that live's combineVerdicts() already intervened on. previouslyTricky
+  // makes it eligible for cleanWords IF interpretSession() judged it
+  // 'correct' - the override must remove that eligibility.
+  const raced: WordSignal = { word: 'raced', confidence: 0.38, duration_ms: 410, gap_before_ms: 100, heard: true };
+  const s = session([sentence([...six(clean).slice(0, 5), raced])]);
+  const interventions: SessionIntervention = [[false, false, false, false, false, true]];
+
+  const withoutOverride = interpretSessionWithIntervention(s, [[false, false, false, false, false, false]]);
+  const racedOutcomeNoOverride = withoutOverride.words.find((w) => w.word === 'raced')!;
+  ok(racedOutcomeNoOverride.verdict === 'correct', 'sanity: without intervention, 0.38 clears the floor and reads correct');
+
+  const withOverride = interpretSessionWithIntervention(s, interventions, undefined, ['raced']);
+  const racedOutcome = withOverride.words.find((w) => w.word === 'raced')!;
+  ok(racedOutcome.verdict === 'stumbled', 'live intervention overrides a would-be correct verdict to stumbled', racedOutcome.verdict);
+  ok(!withOverride.cleanWords.includes('raced'), 'and it can never land in cleanWords, even though it was previously tricky');
+  ok(racedOutcome.reason.includes('live intervention'), 'the outcome reason says WHY, for debugging', racedOutcome.reason);
+}
+{
+  // Intervention must never touch a verdict interpret.ts already flagged on
+  // its own (stumbled/missed) - only a would-be 'correct' can be overridden.
+  // This also covers "silence follows the ladder": an all-Omission (missed)
+  // word that live also flagged (intervention: true) stays 'missed', not
+  // reclassified into something else.
+  const s = session([sentence([...six(clean).slice(0, 4), mumbled('big'), silent('dog')])]);
+  const interventions: SessionIntervention = [[false, false, false, false, true, true]];
+  const r = interpretSessionWithIntervention(s, interventions);
+  ok(r.words.find((w) => w.word === 'big')!.verdict === 'stumbled', 'an already-stumbled word stays stumbled under intervention');
+  ok(r.words.find((w) => w.word === 'dog')!.verdict === 'missed', 'an already-missed (silent) word stays missed under intervention');
+}
+{
+  // Assisted/reread sentences are excluded outright by interpret.ts, before
+  // the override ever runs - intervention on an assisted sentence's words
+  // must have zero effect, since none of them can ever be 'correct'.
+  const s = session([
+    sentence(six(clean), { assisted: true }),
+    sentence(six(clean), { reread: true }),
+    sentence(six(clean)), sentence(six(clean)), sentence(six(clean)),
+  ]);
+  const allTrue: SessionIntervention = s.sentences.map((sen) => sen.words.map(() => true));
+  const r = interpretSessionWithIntervention(s, allTrue);
+  ok(r.words.filter((w) => w.excludedBecause === 'assisted').length === 6, 'assisted words stay excluded regardless of intervention');
+  ok(r.words.filter((w) => w.excludedBecause === 'reread').length === 6, 'reread words stay excluded regardless of intervention');
+  ok(r.countedWords === 18, 'only the three real sentences count, same as plain interpretSession()');
+}
+{
+  // A full chapter: one clean page, one page that reached rung 3
+  // (assisted), one page the child heard replayed first (reread) - the
+  // shape a real /read session actually accumulates, run through the ONE
+  // canonical entry point end to end.
+  const raced: WordSignal = { word: 'raced', confidence: 0.4, duration_ms: 400, gap_before_ms: 100, heard: true };
+  const s: SessionInput = {
+    childId: 'c1', sessionId: 'chapter-e2e', stage: 2, chapterId: 'the-shiny-thing',
+    isBookshelfReread: false, startedAt: new Date().toISOString(),
+    sentences: [
+      { index: 0, text: 'Rex raced across the field.', words: [clean('Rex'), raced, ...six(clean).slice(0, 4)], assisted: false, reread: false },
+      { index: 1, text: 'It was a little gold key.', words: six(clean), assisted: true, reread: false },
+      { index: 2, text: 'Rex looked and looked.', words: six(clean), assisted: false, reread: true },
+    ],
+  };
+  const interventions: SessionIntervention = [
+    [false, true, false, false, false, false],
+    [false, false, false, false, false, false],
+    [false, false, false, false, false, false],
+  ];
+  const r = interpretSessionWithIntervention(s, interventions, undefined, ['raced']);
+  ok(r.sessionId === 'chapter-e2e', 'the SessionInput round-trips its identity');
+  ok(s.sentences.length === 3, 'the accumulated session has one SentenceResult per page');
+  ok(s.sentences.filter((sen) => sen.assisted).length === 1, 'exactly the rung-3 page is marked assisted');
+  ok(r.words.find((w) => w.word === 'raced')!.verdict === 'stumbled', 'the Class A word is caught even inside a full multi-page chapter');
+  ok(!r.cleanWords.includes('raced'), 'and stays out of cleanWords at chapter scope, not just in isolation');
+  ok(r.excludedWords === 12, 'both the assisted page and the reread page are excluded (2 pages x 6 words)', String(r.excludedWords));
+  ok(typeof r.excludedFromProgression === 'boolean', 'excludedFromProgression is a plain boolean, never a score');
 }
 
 section('Slot filling - nouns chosen by code, never by the model');

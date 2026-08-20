@@ -337,7 +337,7 @@ export function loadCachedVisuals(chapterId: string): ChapterVisuals | null {
 
 /* ── Reading-tutor story path (skeletons + stage-matched generation) ───── */
 
-function stageForAge(age: number): number {
+export function stageForAge(age: number): number {
   return Math.min(10, Math.max(1, Math.round(age) - 4));
 }
 
