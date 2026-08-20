@@ -36,6 +36,22 @@ export interface WordSignalDiagnostic {
 export interface AdaptedSentence {
   signals: WordSignal[];
   diagnostics: WordSignalDiagnostic[];
+  /** Same length/order as `signals` — interventions[i] is whether the LIVE
+   *  system (combineVerdicts' needsHelp) already intervened on signals[i].
+   *
+   *  This is NOT a measurement, and it deliberately does NOT live on
+   *  WordSignal: `confidence` on signals[i] stays the raw, untouched Azure
+   *  word-accuracy translation no matter what this says. It is a fact about
+   *  a decision that already happened elsewhere (combineVerdicts already
+   *  computed it; this is a passthrough, not a new judgment), carried
+   *  alongside the measurement it corresponds to so a caller CAN apply the
+   *  Class A invariant downstream (see
+   *  lib/reading-session-interpreter.ts and
+   *  docs/HELP_BOUNDARY_VALIDATION.md) — this file does not apply it.
+   *  Unlike `diagnostics` (debug/tuning only, never consumed), this field
+   *  is meant to be consumed — by that separate wrapper, never by anything
+   *  in this file. */
+  interventions: boolean[];
   /** Words Azure heard that were NOT in the reference text (re-reads, filler,
    *  made-up words). WordSignal has no slot for these — it is indexed by
    *  EXPECTED word — so they are dropped from `signals` by construction.
@@ -66,6 +82,7 @@ export function toWordSignals(words: WordScore[], decode: DecodeResult | null = 
 
   const signals: WordSignal[] = [];
   const diagnostics: WordSignalDiagnostic[] = [];
+  const interventions: boolean[] = [];
   const insertions: string[] = [];
 
   // Running clock across the take, in ms, for gap_before_ms. The first word's
@@ -132,6 +149,12 @@ export function toWordSignals(words: WordScore[], decode: DecodeResult | null = 
     } else {
       confidence = Math.max(0, Math.min(1, w.accuracy / 100));
     }
+    // NOT branched on v?.needsHelp. confidence is always the raw Azure
+    // word-accuracy translation, full stop — even for a word live already
+    // intervened on. See docs/HELP_BOUNDARY_VALIDATION.md: collapsing "what
+    // the measurement was" and "what was decided about it" into one number
+    // was the exact mechanism rejected there. That decision travels
+    // separately, in `interventions` below.
 
     signals.push({
       word: w.word,
@@ -149,9 +172,11 @@ export function toWordSignals(words: WordScore[], decode: DecodeResult | null = 
       decodeHeard: v?.decodeHeard ?? null,
       errorType: w.errorType,
     });
+
+    interventions.push(v?.needsHelp ?? false);
   }
 
-  return { signals, diagnostics, insertions };
+  return { signals, diagnostics, interventions, insertions };
 }
 
 /** Thin convenience wrapper for callers assembling a SessionInput — still
@@ -164,8 +189,8 @@ export function toSentenceResult(
   words: WordScore[],
   decode: DecodeResult | null = null,
   opts: { assisted?: boolean; reread?: boolean } = {},
-): { sentence: SentenceResult; diagnostics: WordSignalDiagnostic[]; insertions: string[] } {
-  const { signals, diagnostics, insertions } = toWordSignals(words, decode);
+): { sentence: SentenceResult; diagnostics: WordSignalDiagnostic[]; interventions: boolean[]; insertions: string[] } {
+  const { signals, diagnostics, interventions, insertions } = toWordSignals(words, decode);
   return {
     sentence: {
       index,
@@ -175,6 +200,7 @@ export function toSentenceResult(
       reread: opts.reread ?? false,
     },
     diagnostics,
+    interventions,
     insertions,
   };
 }

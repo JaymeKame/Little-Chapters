@@ -6,9 +6,12 @@ word (`raced`, Azure accuracy 38) that `interpretSession()` called
 flagged it. This is that discrepancy investigated properly, across a
 representative range, not just the one word that happened to surface it.
 
-**Analysis only.** Nothing here is applied to `lib/reading-signal-adapter.ts`,
-`interpret.ts`, `VERDICT_THRESHOLDS`, or `DEFAULT_INTERPRET_CONFIG`. The
-proposed fix at the end is flagged for confirmation, not implemented.
+The Class A boundary described below (live already intervened → that word
+can never read as `correct`) is now implemented, via a new file,
+`lib/reading-session-interpreter.ts` — see "How it's implemented" below.
+`interpret.ts`, `DEFAULT_INTERPRET_CONFIG`, and `VERDICT_THRESHOLDS` are
+still untouched; `lib/reading-signal-adapter.ts` gained one new output field
+(`interventions`), described below, but `WordSignal` itself did not change.
 
 Run: `node scripts/validate-help-boundary.ts`
 
@@ -118,49 +121,129 @@ bucket — a word that clears the floor is *asserted* correct, not merely
 "not flagged." That's what makes Class A actively harmful where Class B is
 merely imprecise.
 
-## Proposed boundary (flagged for confirmation — not implemented)
+## The boundary (confirmed, implemented)
 
 **One invariant, not a retuned number:** *a word `interpretSession()` calls
 `correct` must never be a word live's `combineVerdicts()` already called
 `needsHelp` on, in the same take.*
 
-Concretely: when the adapter (`lib/reading-signal-adapter.ts`) sees that
-`combineVerdicts()` already produced `needsHelp: true` for a word — which it
-already computes today, currently used only for the diagnostics side-channel
-— it would force that word's `confidence` to `0` instead of computing it
-from Azure word-level accuracy. Every other word's confidence is untouched.
-
 This is deliberately **not** "raise the floor," which the task ruled out and
 which wouldn't work anyway (Class A isn't a threshold-height problem — see
 above). It's also not a rules-engine change: `interpret.ts` and
-`DEFAULT_INTERPRET_CONFIG` stay exactly as they are; only the *input* the
-adapter feeds them changes, for the specific words live already had a
-strict, dual-signal reason to flag. It reuses the *existing*,
-already-calibrated `VERDICT_THRESHOLDS` (`docs/DECODING_GRADER.md`'s
-speechocean762 study) as the one canonical source for "this word is a
-genuine problem" — rather than introducing a second, independently-tuned
-number that can drift out of sync with it.
+`DEFAULT_INTERPRET_CONFIG` stay exactly as they are, unmodified and still
+the only place a `WordSignal` gets judged.
 
-**Simulated result** (`scripts/validate-help-boundary.ts`, second pass —
-confidence forced to `0` only where `liveNeedsHelp` was true, nothing else
-touched): **10 agree, 5 disagree** (was 7/8). All three Class A cases
-resolve. The five that remain — `kept`, `loud`, `move` (Class B) and `sun`,
-`small` (Class C) — are exactly the ones argued above to be legitimate,
-left disagreeing on purpose.
+**The mechanism first proposed here — forcing a word's `confidence` to `0`
+whenever `combineVerdicts()` already said `needsHelp` — was rejected**
+before being implemented. It collapses two different facts (what the
+measurement actually was, and what was decided about it) into one number and
+throws the first one away: a debugger looking at `raced`'s `confidence: 0`
+would have no way to know Azure actually scored it 0.38. The adapter
+translates measurements; it does not decide outcomes. That principle, set
+when the adapter was first built (`docs/INTEGRATION_SPINE.md`), still
+applies here, so the mechanism had to change, not the invariant.
 
-**This is the decision that needs Jayme's confirmation before it becomes
-load-bearing**: that Class A should be closed via this mechanism, and that
-Class B/C should remain open asymmetries rather than also being closed.
-Nothing about this has been wired into the adapter, `/read`, or any
-persistence path — this doc and the validation script are the entire diff.
+### Design options considered
+
+Three ways to carry "live already intervened on this word" from the adapter
+to the rules layer, without putting a judgment inside `WordSignal`:
+
+1. **Per-word intervention evidence attached to `SentenceResult`/
+   `SessionInput` by word index.** Would mean adding a field to
+   `reading-tutor/src/types.ts` — exactly the class of change this whole
+   task exists to avoid touching. Rejected on that basis alone, even though
+   it's arguably the "natural" home for the data.
+2. **A separate companion structure passed alongside `WordSignal[]`.**
+   Zero changes to any file under `reading-tutor/src/`. The adapter already
+   returns a companion array in this exact shape — `diagnostics:
+   WordSignalDiagnostic[]`, one entry per signal, for debug/tuning data that
+   never reaches `interpretSession()` — so this reuses an established
+   pattern rather than inventing a new one, and it reuses the *already
+   computed* `combineVerdicts()` call the diagnostics pass makes, not a new
+   alignment routine.
+3. **An optional field on the interpretation input itself.** Same objection
+   as (1): the "interpretation input" for `interpretSession()` *is*
+   `SessionInput`, defined in `reading-tutor/src/types.ts`. Adding a field
+   there, optional or not, is still a `reading-tutor` change, and it still
+   invites `interpret.ts`'s own `judge()` to read it directly — the
+   override would then live inside the rules engine rather than as an
+   explicit, separately-reviewable step in front of it.
+
+**Chosen: option 2.** It's the only one of the three that requires editing
+no file inside `reading-tutor/src/` at all — `WordSignal`, `SentenceResult`,
+`SessionInput`, and `interpret.ts` are all byte-for-byte what they were
+before this task. The judgment (the override) lives entirely in a new file,
+`lib/reading-session-interpreter.ts`, on the measurement-layer side of the
+boundary, applied as a post-processing pass over `interpretSession()`'s own
+unmodified output — never inside `interpret.ts`, never inside `WordSignal`.
+
+### How it's implemented
+
+- **`lib/reading-signal-adapter.ts`** — `AdaptedSentence` gained one new
+  field, `interventions: boolean[]`, same length/order as `signals`.
+  `interventions[i]` is `combineVerdicts()`'s own `needsHelp` for
+  `signals[i]`'s word — a passthrough of a decision already made elsewhere,
+  not a new one. `signals[i].confidence` is completely unaffected by it: the
+  confidence computation block is exactly what it was, still only ever the
+  raw Azure word-accuracy translation, `needsHelp` never enters it.
+  `toSentenceResult()` returns `interventions` alongside `sentence`,
+  `diagnostics`, `insertions`.
+- **`lib/reading-session-interpreter.ts`** (new) —
+  `interpretSessionWithIntervention(session, interventions, cfg?,
+  previouslyTricky?)` calls `interpretSession()` completely unmodified, then
+  walks its `words: WordOutcome[]` result: any word whose verdict came back
+  `'correct'` AND whose aligned `interventions[sentenceIndex][wordIndex]` is
+  `true` gets overridden to `'stumbled'`. Everything else — `interpret.ts`'s
+  `0.35` floor, its timing checks, its bookshelf/assisted-heavy/too-few-words
+  exclusion logic — runs exactly as before and is never touched. When the
+  override changes at least one word, `accuracy`/`countedWords`/
+  `excludedWords`/`trickyWords`/`cleanWords` are re-derived using the
+  identical filter/dedup recipe `interpret.ts` itself uses (copied, not
+  reinvented) so the two never drift apart; when nothing changes, the
+  function returns `interpretSession()`'s own result object as-is.
+  Intervention data is aligned to `session.sentences[i].words[j]` by
+  **position** (sentence index, then word index), mirroring exactly the
+  iteration order `interpretSession()` uses internally — not by word text,
+  since real chapter text repeats words (e.g. "looked...looked").
+
+### Real result (`scripts/validate-help-boundary.ts`)
+
+Same 15 cases as the as-is table above. Second pass now calls the real
+`interpretSessionWithIntervention()` with the adapter's real
+`interventions` output (verified to agree with a direct `combineVerdicts()`
+call for every case) — no confidence value is fabricated or zeroed anywhere
+in this pass:
+
+**10 agree, 5 disagree** (was 7/8). All three Class A cases resolve. The
+five that remain — `kept`, `loud`, `move` (Class B) and `sun`, `small`
+(Class C) — are unchanged from the as-is pass, left disagreeing on purpose,
+exactly as argued above.
+
+`raced`, in full — the real confidence value stays visible on `WordSignal`,
+the intervention fact travels separately, and the override is visible in
+the rules verdict:
+
+```
+raced
+Azure confidence: 0.38
+live intervention: true
+rules verdict: stumbled
+eligible for cleanWords: false
+```
 
 ## Branch / diff
 
 Branch: `claude/help-boundary-validation`, off `claude/integration-spine`.
 
-- `scripts/validate-help-boundary.ts` (new) — the matrix and both the
-  as-is and simulated-fix passes.
-- `docs/HELP_BOUNDARY_VALIDATION.md` (new, this file).
+- `lib/reading-signal-adapter.ts` (modified) — `AdaptedSentence` gained
+  `interventions: boolean[]`; `toWordSignals()`/`toSentenceResult()` compute
+  and return it. `WordSignal`/`confidence` computation is unchanged.
+- `lib/reading-session-interpreter.ts` (new) — the Class A override, applied
+  as a post-processing pass over `interpretSession()`'s unmodified output.
+- `scripts/validate-help-boundary.ts` (modified) — the matrix, the as-is
+  pass, and the real (not simulated) intervention-override pass.
+- `docs/HELP_BOUNDARY_VALIDATION.md` (modified, this file).
 
-No other files touched. No persistence, progression application, help
-ladder UI, or `/read` changes.
+`interpret.ts`, `DEFAULT_INTERPRET_CONFIG`, `VERDICT_THRESHOLDS`,
+`reading-tutor/src/types.ts`, and `WordSignal` itself: untouched. No
+persistence, progression application, help ladder UI, or `/read` changes.

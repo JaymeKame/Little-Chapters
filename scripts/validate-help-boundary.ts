@@ -2,20 +2,23 @@
  * what actually drives the correction UI a child sees today) agrees with
  * the RULES-LAYER decision (adapter -> WordSignal -> interpretSession() ->
  * correct/stumbled/missed, what would feed progression) across a
- * representative range of the same underlying evidence.
+ * representative range of the same underlying evidence — and confirms that
+ * lib/reading-session-interpreter.ts's Class A override closes exactly the
+ * dangerous disagreements (live already intervened, rules still says
+ * 'correct') without touching the others.
  *
  *   node scripts/validate-help-boundary.ts
  *
- * Analysis only. Does not touch persistence, progression application, the
- * help ladder UI, or /read. Does not retune VERDICT_THRESHOLDS,
- * DEFAULT_INTERPRET_CONFIG, or config.json's confidence_floor — see
- * docs/HELP_BOUNDARY_VALIDATION.md for why a single number can't fully
- * reconcile these two systems, and for the proposed (NOT YET APPLIED,
- * NOT YET CONFIRMED) resolution.                                          */
+ * Analysis + confirmation. Does not touch persistence, progression
+ * application, the help ladder UI, or /read. Does not retune
+ * VERDICT_THRESHOLDS, DEFAULT_INTERPRET_CONFIG, or config.json's
+ * confidence_floor — see docs/HELP_BOUNDARY_VALIDATION.md for why a single
+ * number can't fully reconcile these two systems.                         */
 
 import { combineVerdicts, type DecodeResult } from '../lib/reading-verdict.ts';
 import { toWordSignals } from '../lib/reading-signal-adapter.ts';
 import { interpretSession } from '../reading-tutor/src/interpret.ts';
+import { interpretSessionWithIntervention } from '../lib/reading-session-interpreter.ts';
 import type { WordScore } from '../lib/pronunciation.ts';
 import type { SessionInput, WordSignal } from '../reading-tutor/src/types.ts';
 
@@ -166,16 +169,33 @@ const CASES: Case[] = [
   },
 ];
 
-function buildSentence(index: number, refText: string, w: WordScore, priorWords: WordScore[] = []) {
+function buildSentence(
+  index: number,
+  refText: string,
+  w: WordScore,
+  decode: DecodeResult | null,
+  priorWords: WordScore[] = [],
+) {
   // For the two timing cases, chain a plausible previous word so
   // gap_before_ms comes out to the intended ~1500ms hesitation rather than
   // "first word in the take" (which measures from listening-start instead).
+  // combineVerdicts aligns decode.words to azureWords by POSITION (see
+  // lib/reading-verdict.ts) — when a prior word is chained in, pad decode
+  // with one dummy "fine" entry ahead of it so the case's real decode entry
+  // still lines up with the word actually under test, exactly as it would
+  // for the prior word's own (unrelated, not-under-test) decode result.
+  const decodeForCall: DecodeResult | null =
+    priorWords.length && decode
+      ? { ...decode, words: [...priorWords.map((pw) => ({ word: pw.word, per: 0.05, score: 95, expected: pw.word, heard: pw.word })), ...decode.words] }
+      : decode;
   const words = [...priorWords, w];
-  const { sentence } = (() => {
-    const mod = toWordSignals(words);
-    return { sentence: { index, text: refText, words: mod.signals.slice(-1), assisted: false, reread: false } };
-  })();
-  return sentence;
+  // mod.signals/mod.interventions stay parallel arrays (see
+  // lib/reading-signal-adapter.ts) so slicing the last element off each
+  // keeps them aligned to the one word this case is isolating.
+  const mod = toWordSignals(words, decodeForCall);
+  const sentence = { index, text: refText, words: mod.signals.slice(-1), assisted: false, reread: false };
+  const intervention = mod.interventions[mod.interventions.length - 1];
+  return { sentence, intervention };
 }
 
 const PRIOR: WordScore = { word: 'the', accuracy: 90, errorType: 'None', offsetMs: 100, durationMs: 300, phonemes: [] };
@@ -186,7 +206,7 @@ console.log('-'.repeat(130));
 let agreeCount = 0;
 let disagreeCount = 0;
 const disagreements: string[] = [];
-const results: { c: Case; liveNeedsHelp: boolean; signal: WordSignal }[] = [];
+const results: { c: Case; liveNeedsHelp: boolean; signal: WordSignal; intervention: boolean }[] = [];
 
 for (const c of CASES) {
   const isTimingCase = c.word.word === 'sun' || c.word.word === 'small';
@@ -200,10 +220,11 @@ for (const c of CASES) {
   const liveNeedsHelp = liveVerdicts[0].needsHelp;
 
   // RULES: adapter -> one-word SentenceResult -> one-sentence SessionInput
-  // -> interpretSession(), exactly the Phase 3 path.
-  const sentence = isTimingCase
-    ? buildSentence(0, wordForGap.word, wordForGap, [PRIOR])
-    : buildSentence(0, wordForGap.word, wordForGap);
+  // -> interpretSession(), exactly the Phase 3 path (no override applied
+  // yet in this pass — this is the "as-is" table).
+  const { sentence, intervention } = isTimingCase
+    ? buildSentence(0, wordForGap.word, wordForGap, c.decode, [PRIOR])
+    : buildSentence(0, wordForGap.word, wordForGap, c.decode);
   const session: SessionInput = {
     childId: 'validation', sessionId: 'validation-' + c.word.word, stage: 2,
     chapterId: 'validation', isBookshelfReread: false, startedAt: new Date().toISOString(),
@@ -238,7 +259,16 @@ for (const c of CASES) {
     );
   }
 
-  results.push({ c, liveNeedsHelp, signal: sentence.words[0] });
+  // The adapter's own `interventions` output (computed internally by
+  // re-using combineVerdicts, see lib/reading-signal-adapter.ts) must agree
+  // with this script's independent `liveNeedsHelp` call — both are meant to
+  // be the same fact, computed twice. If they ever diverge the adapter's
+  // interventions channel is broken, not just a display cosmetic.
+  if (intervention !== liveNeedsHelp) {
+    throw new Error(`adapter interventions disagree with combineVerdicts for '${c.word.word}': adapter=${intervention} direct=${liveNeedsHelp}`);
+  }
+
+  results.push({ c, liveNeedsHelp, signal: sentence.words[0], intervention });
 }
 
 console.log('\n' + '='.repeat(80));
@@ -246,43 +276,60 @@ console.log(`${agreeCount} agree, ${disagreeCount} disagree, out of ${CASES.leng
 console.log('\nDisagreements, with the actual reason interpretSession() gave:');
 for (const d of disagreements) console.log(d);
 
-// --- Simulation of the PROPOSED fix, for illustration only. NOT applied to
-// lib/reading-signal-adapter.ts — see docs/HELP_BOUNDARY_VALIDATION.md.
-// Proposal: when live's combineVerdicts() already says needsHelp for a
-// word, the adapter should never let a subsequently-computed word-level
-// confidence override that into a false 'correct'. Simulated here as
-// "confidence = 0 whenever liveNeedsHelp", leaving every other case's
-// confidence exactly as the real adapter already computes it. ---
+// --- REAL mechanism: lib/reading-session-interpreter.ts's
+// interpretSessionWithIntervention(). No confidence value is touched or
+// zeroed anywhere in this pass — `signal` is exactly what the as-is pass
+// above used, confidence and all. The override is applied entirely via the
+// separate `interventions` companion array (the adapter's real output,
+// already verified above to agree with a direct combineVerdicts() call),
+// passed alongside WordSignal[], never inside it. See
+// docs/HELP_BOUNDARY_VALIDATION.md for why this replaced the earlier
+// confidence-zeroing simulation. ---
 console.log('\n' + '='.repeat(80));
-console.log('SIMULATION of the proposed fix (NOT applied to the adapter — illustration only)');
+console.log('REAL: interpretSessionWithIntervention() — separate intervention signal, WordSignal untouched');
 console.log('='.repeat(80));
 
-let simAgree = 0, simDisagree = 0;
-const simDisagreements: string[] = [];
+let realAgree = 0, realDisagree = 0;
+const realDisagreements: string[] = [];
+let racedReport = '';
 
-for (const { c, liveNeedsHelp, signal } of results) {
-  const simulatedSignal: WordSignal = liveNeedsHelp ? { ...signal, confidence: 0 } : signal;
+for (const { c, liveNeedsHelp, signal, intervention } of results) {
   const session: SessionInput = {
-    childId: 'sim', sessionId: 'sim-' + c.word.word, stage: 2, chapterId: 'sim',
+    childId: 'real', sessionId: 'real-' + c.word.word, stage: 2, chapterId: 'real',
     isBookshelfReread: false, startedAt: new Date().toISOString(),
-    sentences: [{ index: 0, text: c.word.word, words: [simulatedSignal], assisted: false, reread: false }],
+    sentences: [{ index: 0, text: c.word.word, words: [signal], assisted: false, reread: false }],
   };
-  const reading = interpretSession(session);
+  const reading = interpretSessionWithIntervention(session, [[intervention]]);
   const outcome = reading.words[0];
   const rulesTricky = outcome.verdict === 'stumbled' || outcome.verdict === 'missed';
+  const eligibleForCleanWords = outcome.verdict === 'correct';
   const agree = liveNeedsHelp === rulesTricky;
-  if (agree) simAgree++; else simDisagree++;
+  if (agree) realAgree++; else realDisagree++;
   if (!agree) {
-    simDisagreements.push(`  ${c.word.word.padEnd(10)} live=${liveNeedsHelp ? 'needsHelp' : 'fine'} rules=${rulesTricky ? outcome.verdict : 'correct'} — ${c.note}`);
+    realDisagreements.push(`  ${c.word.word.padEnd(10)} live=${liveNeedsHelp ? 'needsHelp' : 'fine'} rules=${rulesTricky ? outcome.verdict : 'correct'} — ${c.note}`);
+  }
+
+  if (c.word.word === 'raced') {
+    racedReport =
+      `raced\n` +
+      `Azure confidence: ${signal.confidence}\n` +
+      `live intervention: ${intervention}\n` +
+      `rules verdict: ${outcome.verdict}\n` +
+      `eligible for cleanWords: ${eligibleForCleanWords}`;
   }
 }
 
-console.log(`${simAgree} agree, ${simDisagree} disagree, out of ${CASES.length} cases (was ${agreeCount}/${disagreeCount} before the simulated fix)`);
-console.log('\nRemaining disagreements under the proposal (these are the ones being proposed as INTENTIONAL, not fixed):');
-for (const d of simDisagreements) console.log(d);
+console.log(`${realAgree} agree, ${realDisagree} disagree, out of ${CASES.length} cases (was ${agreeCount}/${disagreeCount} before the intervention override)`);
+console.log('\nRemaining disagreements (Class B/C — left exactly as they were, intentionally):');
+for (const d of realDisagreements) console.log(d);
+
+console.log('\n' + '='.repeat(80));
+console.log('raced, in full — proof that confidence is real and untouched, and the override is separate:');
+console.log('='.repeat(80));
+console.log(racedReport);
 
 console.log(
   '\nSee docs/HELP_BOUNDARY_VALIDATION.md for the analysis of WHY each',
-  'disagreement happens, the product-question answer, and the PROPOSED',
-  '(not yet applied) resolution.',
+  'disagreement happens, the product-question answer, and the mechanism',
+  'that closes Class A without touching WordSignal.confidence.',
 );
