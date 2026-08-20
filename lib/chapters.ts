@@ -293,15 +293,21 @@ export function storySceneUrl(interest: InterestId | undefined, variant: number)
  * named/organized for this use. Inventoried by hand (dimensions + intent),
  * excluding the landing hero photo, the three tiny landing benefit icons,
  * and the setup-icons sprite sheet:
- *   dinosaurs-01.png, dinosaurs-02.png, ocean-01.png,
- *     ocean-02.png, space-01.png, unicorns-01.png.
+ *   dinosaurs-01.jpg, dinosaurs-02.jpg, ocean-01.jpg,
+ *     ocean-02.jpg, space-01.jpg, unicorns-01.jpg.
  * No scene currently exists for dogs/trains — best-effort matching falls
- * through to the general pool for those interests, per product decision. */
+ * through to the general pool for those interests, per product decision.
+ *
+ * .jpg, not .png: these are full-bleed photographic-style illustrations with
+ * no transparency, and the original PNG exports were ~2.7-3MB each — over a
+ * throttled connection that's 10+ seconds before Home's background scene
+ * finishes loading. Re-encoded losslessly-enough at quality 85 (progressive,
+ * same pixel dimensions), each is ~350-400KB with no visible artifacting. */
 const REAL_SCENE_POOL: Partial<Record<InterestId, string[]>> = {
-  dinosaurs: ['/images/landing/dinosaurs-01.png', '/images/landing/dinosaurs-02.png'],
-  ocean: ['/images/landing/ocean-01.png', '/images/landing/ocean-02.png'],
-  space: ['/images/landing/space-01.png'],
-  unicorns: ['/images/landing/unicorns-01.png'],
+  dinosaurs: ['/images/landing/dinosaurs-01.jpg', '/images/landing/dinosaurs-02.jpg'],
+  ocean: ['/images/landing/ocean-01.jpg', '/images/landing/ocean-02.jpg'],
+  space: ['/images/landing/space-01.jpg'],
+  unicorns: ['/images/landing/unicorns-01.jpg'],
 };
 
 /** Interest-aware, best-effort, stable scene selection from the REAL assets

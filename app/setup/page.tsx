@@ -11,6 +11,7 @@ import {
   AVATARS,
   INTERESTS,
   avatarEmoji,
+  avatarImageObjectPosition,
   avatarImageSrc,
   interestImageSrc,
   newChildId,
@@ -100,7 +101,11 @@ export default function SetupPage() {
           }}
         >
           {avatarImageSrc(avatar) ? (
-            <img src={avatarImageSrc(avatar)!} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <img
+              src={avatarImageSrc(avatar)!}
+              alt=""
+              style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: avatarImageObjectPosition(avatar) }}
+            />
           ) : (
             avatarEmoji(avatar)
           )}
@@ -129,7 +134,11 @@ export default function SetupPage() {
                   transition: 'opacity 150ms ease, border-color 150ms ease',
                 }}
               >
-                <img src={avatarImageSrc(a.id)!} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <img
+                  src={avatarImageSrc(a.id)!}
+                  alt=""
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: avatarImageObjectPosition(a.id) }}
+                />
               </button>
             );
           })}

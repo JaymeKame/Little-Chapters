@@ -27,7 +27,7 @@ import { useEffect, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
-import { avatarEmoji, avatarImageSrc, loadProfile, type ChildProfile } from '@/lib/profile';
+import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, loadProfile, type ChildProfile } from '@/lib/profile';
 import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { wasChapterCompleted } from '@/lib/chapter-history';
 import { playHomeSound, playTheme, prepareStoryAudio, speakPrompt, stopAmbience, stopTheme, themeAssetFor, welcomeLine } from '@/lib/audio';
@@ -103,7 +103,7 @@ export default function ChildHomePage() {
 
   return (
     <div className={`screen lc-scenic lc-home-scene${leaving ? ' lc-leaving' : ''}`} style={{ position: 'relative' }}>
-      <SceneBackground src={backgroundUrl} />
+      <SceneBackground src={backgroundUrl} priority />
 
       <div className="lc-scene-content" style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
         <header
@@ -142,7 +142,11 @@ export default function ChildHomePage() {
               }}
             >
               {avatarImageSrc(profile.avatar) ? (
-                <img src={avatarImageSrc(profile.avatar)!} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <img
+                  src={avatarImageSrc(profile.avatar)!}
+                  alt=""
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: avatarImageObjectPosition(profile.avatar) }}
+                />
               ) : (
                 avatarEmoji(profile.avatar)
               )}

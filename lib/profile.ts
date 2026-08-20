@@ -35,6 +35,16 @@ export function interestImageSrc(id: InterestId): string {
   return `/images/setup/interest-${id}.png`;
 }
 
+/** CSS object-position for the avatar image inside its circular frame.
+ *  Per-avatar because the source art isn't framed consistently: the boy
+ *  portrait is centered with even headroom, but the girl portrait's hair
+ *  bun sits right at the top edge of the canvas — a centered crop (the
+ *  default 50% 50%) clips into it. Shifting the visible window up (lower
+ *  Y%) keeps the bun fully in frame without touching the source asset. */
+export function avatarImageObjectPosition(id: AvatarId | undefined): string {
+  return id === 'girl' ? '50% 18%' : '50% 50%';
+}
+
 export interface ChildProfile {
   /** Stable, opaque identity for this child — generated once at setup, never
    *  derived from the name (names collide and are mutable; see

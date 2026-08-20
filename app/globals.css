@@ -741,9 +741,19 @@ a {
 .lc-cta {
   max-width: 340px;
   margin: 0 auto;
+  /* Explicit, not inherited: at the 900px+ breakpoint .lc-landing-main
+   * switches to text-align:left for the two-column layout, which was
+   * leaking into this button's own label (measured ~24px left padding vs.
+   * ~96px right padding around the text) since nothing here set its own
+   * alignment. */
+  text-align: center;
 }
 
 .lc-cta-caption {
+  /* Same content column as .lc-feature-grid (660px) — otherwise this and the
+   * grid above it are two independently-centered blocks of different
+   * widths, which reads as detached rather than one stacked section. */
+  width: min(100%, 660px);
   margin: 12px auto 0;
   text-align: center;
 }
@@ -777,7 +787,11 @@ a {
 .lc-landing-main { grid-template-areas: 'copy' 'art' 'cta'; }
 .lc-landing-art { background: #eadfcf; border: 1px solid rgba(43,43,43,.08); box-shadow: 0 18px 44px rgba(80,59,29,.14); }
 .lc-landing-art-wrap + .lc-landing-cta { margin-top: 42px; }
-.lc-feature-graphic { height: 112px; min-height: 112px; align-items: end; }
+/* align-items: center (not end) — the three source icons have different
+ * intrinsic heights at the fixed 84px width (86.8 / 88.5 / 99.1px measured),
+ * so bottom-alignment left their visual centers ~6px apart even though their
+ * bottoms matched. Centering makes the row read as one aligned set. */
+.lc-feature-graphic { height: 112px; min-height: 112px; align-items: center; }
 .lc-feature-image { width: 84px; height: auto; max-width: 112px; object-fit: contain; }
 
 @media (min-width: 600px) {
