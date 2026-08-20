@@ -81,6 +81,32 @@ function praiseFor(accuracy: number, flaggedCount: number): string {
   return pick(PRAISE.good);
 }
 
+/* Stage-1-decodable words (only a, i, m, s, f, p, t, n, d — every stage's
+ * cumulative grapheme set is a superset of stage 1's) — a last-resort
+ * fallback for the ?slideDemo query param below when neither the requested
+ * word nor anything on the current page happens to segment. Guaranteed to
+ * pass segmentWord() at any real stage, so this never silently no-ops. */
+const DEMO_FALLBACK_WORDS = ['sit', 'tap', 'mad', 'sad', 'pin'];
+
+/** Picks a real, currently-segmentable word to force into the help ladder
+ *  for the ?slideDemo debug/test path — never invents a word outside the
+ *  chapter's own text unless nothing on the page segments at all. Prefers
+ *  (1) the requested word if given and valid, (2) the current page's own
+ *  focus words, (3) any other word on the current page, (4) the guaranteed
+ *  stage-1 fallback list. */
+function pickDemoWord(requested: string | null, page: { text: string; focusWords: string[] }, stage: number): string | null {
+  const candidates: string[] = [
+    ...(requested ? [requested] : []),
+    ...page.focusWords,
+    ...page.text.split(/\s+/).map((w) => w.replace(/[^a-zA-Z']/g, '')),
+    ...DEMO_FALLBACK_WORDS,
+  ];
+  for (const w of candidates) {
+    if (w && segmentWord(w, stage)) return w;
+  }
+  return null;
+}
+
 /* Scene background: the SAME real curated story scene selection as Screen 3
  * (lib/chapters.ts selectStoryScene — interest-aware, stable per chapter.id)
  * → .lc-scenic/.lc-cliff gradient. The automatic AI-generation path remains
@@ -176,6 +202,12 @@ export default function ReadPage() {
   const [speaking, setSpeaking] = useState(false); // TTS replay of the current sentence — distinct from mic-listening
   const [sentenceLeaving, setSentenceLeaving] = useState(false); // brief out-transition before the next sentence mounts
   const [rung, setRung] = useState<0 | 1 | 2 | 3>(0); // help-ladder rung for the current `tricky` word (0 = not in the ladder)
+  // Gates the mic-retry button while a segmentable word's slide interaction
+  // is in progress: false the moment a new tricky word enters the ladder,
+  // true only once the child has slid through every grapheme AND heard the
+  // whole-word blend — sliding must visibly come before retrying aloud.
+  // Irrelevant (button always enabled) for a word with no slideSegments.
+  const [slideDone, setSlideDone] = useState(false);
   const liveRef = useRef<LiveProgress | null>(null);
   const listeningCuePlayedRef = useRef(false);
   const sessionRef = useRef<ReadingSession | null>(null);
@@ -238,6 +270,31 @@ export default function ReadPage() {
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
     };
   }, [router]);
+
+  /* Deterministic test path for the slide-through help interaction:
+   * /read?slideDemo forces a real, currently-segmentable word straight into
+   * the ladder via the SAME enterOrEscalateLadder() a genuine stumble uses —
+   * this is not a mock UI, it exercises the real rung/verdict/audio machinery
+   * with a chosen word instead of a real mic take. Deliberately NOT gated on
+   * NODE_ENV: Vercel preview deployments are production builds (the existing
+   * `sim: *` dev buttons never render there at all), and forcing a practice
+   * word into a pre-launch reading app carries no real risk, so this stays
+   * reachable on the preview for manual testing. Fires at most once per page
+   * load, and never while a real ladder interaction is already in progress. */
+  const slideDemoFiredRef = useRef(false);
+  useEffect(() => {
+    if (slideDemoFiredRef.current || !chapter || tricky) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('slideDemo')) return;
+    const requested = params.get('slideDemo');
+    const currentPage = chapter.pages[pageIdx];
+    if (!currentPage) return;
+    const word = pickDemoWord(requested && requested !== '1' && requested !== 'true' ? requested : null, currentPage, stage);
+    if (!word) return;
+    slideDemoFiredRef.current = true;
+    enterOrEscalateLadder(word);
+  }, [chapter, pageIdx, tricky, stage]);
 
   /* Upgrade the demo arc to a stage-matched reading-tutor chapter (cached from
    * earlier today, or generated when OPENAI_API_KEY is set server-side).
@@ -374,11 +431,15 @@ export default function ReadPage() {
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
   const sceneBg = selectStoryScene(chapter.id, profile.interests);
-  // Rung 2 only (see SlideWordHelp's own doc for why) — null whenever
-  // segmentWord() can't cleanly cover the word with graphemes this child is
-  // actually expected to know yet, in which case the plain word reveal below
-  // is used exactly as it worked before this feature existed.
-  const slideSegments = tricky && rung === 2 ? segmentWord(tricky, stage) : null;
+  // Computed for the current tricky word at ANY rung < 3, not just rung 2:
+  // with the escalation remap below, a segmentable word now shows the slide
+  // interaction at rung 1 (the first stumble) and never actually visits
+  // rung 2 again — rung 2's bare-word reveal is reserved for words that
+  // don't cleanly segment. Null whenever segmentWord() can't cover the word
+  // with graphemes this child is actually expected to know yet, in which
+  // case the plain phoneme/word reveal below is used exactly as it worked
+  // before this feature existed.
+  const slideSegments = tricky && rung < 3 ? segmentWord(tricky, stage) : null;
 
   function replayCurrentSentence() {
     // Never speak the reference text while the mic is live — the recognizer
@@ -564,10 +625,18 @@ export default function ReadPage() {
    *  docs/HELP_LADDER_INTEGRATION.md and reading-tutor/content/config.json
    *  help_template. */
   function enterOrEscalateLadder(word: string) {
-    const next = Math.min(3, rungRef.current + 1) as 1 | 2 | 3;
+    // A word already shown the slide interaction at rung 1 that still needs
+    // help skips the old bare-word rung 2 reveal entirely — the slider
+    // already showed every letter, so rung 2 would teach nothing new.
+    // Escalate straight to rung 3's sentence fallback instead ("if still
+    // struggling, escalate to the remaining stronger help"). Words that
+    // don't segment keep the original 1 -> 2 -> 3 progression untouched.
+    const skipToSentenceFallback = rungRef.current === 1 && segmentWord(word, stage) !== null;
+    const next: 1 | 2 | 3 = skipToSentenceFallback ? 3 : (Math.min(3, rungRef.current + 1) as 1 | 2 | 3);
     rungRef.current = next;
     setRung(next);
     setTricky(word);
+    setSlideDone(false);
     practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
     setPhase('correction');
     duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why; every rung ducks now, not just the speaking ones
@@ -1053,42 +1122,46 @@ export default function ReadPage() {
               Rung 3 shows the normal page text instead (the whole sentence
               is being read aloud, not a single word). */}
           {tricky && rung < 3 ? (
-            <div className="lc-help-pulse" style={{ textAlign: 'center' }}>
-              <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
-                {rungLine(rung as 1 | 2, { word: tricky, sentence: page.text, stage })}
-              </p>
-              {/* Rung 1 gives only a phoneme cue — showing the word (slide
-                  interaction included) would give away the exact thing
-                  rung 2 is meant to reveal, so this whole block is rung-2-only. */}
-              {rung >= 2 && (
-                slideSegments ? (
-                  <SlideWordHelp
-                    word={tricky}
-                    segments={slideSegments}
-                    onComplete={() => {
-                      setSpeaking(true);
-                      speakPrompt(tricky, { onEnd: () => { if (!disposedRef.current) setSpeaking(false); } });
-                    }}
-                  />
-                ) : (
-                  <>
-                    {/* segmentWord() couldn't cleanly cover this word with
-                        graphemes the child is actually expected to know at
-                        this stage — never guess; fall back to the plain
-                        word reveal exactly as it worked before this feature. */}
-                    <p className="lc-tricky-word">{tricky}</p>
-                    <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
-                      • • •
-                    </div>
-                  </>
-                )
-              )}
-              {rung === 1 && (
+            slideSegments ? (
+              // The slide interaction IS the rung-1 experience for a
+              // segmentable word — no phoneme-cue line above it (that was
+              // rung 1's old withhold-the-word text; showing every letter
+              // and withholding the sound cue at once would be a mixed
+              // message) and no competing dots/decoration, so the word and
+              // the track are the only things on the card.
+              <SlideWordHelp
+                word={tricky}
+                segments={slideSegments}
+                onComplete={() => {
+                  setSpeaking(true);
+                  speakPrompt(tricky, {
+                    onEnd: () => {
+                      if (disposedRef.current) return;
+                      setSpeaking(false);
+                      // Only NOW is it "the child's turn" — the mic button
+                      // stays disabled until the blended word has actually
+                      // finished playing, so sliding + hearing the blend
+                      // visibly precedes retrying aloud.
+                      setSlideDone(true);
+                    },
+                  });
+                }}
+              />
+            ) : (
+              <div className="lc-help-pulse" style={{ textAlign: 'center' }}>
+                {/* segmentWord() couldn't cleanly cover this word with
+                    graphemes the child is actually expected to know at this
+                    stage — never guess; fall back to the original ladder
+                    exactly as it worked before this feature existed. */}
+                <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
+                  {rungLine(rung as 1 | 2, { word: tricky, sentence: page.text, stage })}
+                </p>
+                {rung >= 2 && <p className="lc-tricky-word">{tricky}</p>}
                 <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
                   • • •
                 </div>
-              )}
-            </div>
+              </div>
+            )
           ) : (
             <div key={pageIdx} className={sentenceLeaving ? 'lc-sentence-out' : 'lc-sentence-in'}>
               <PageText text={page.text} focusWords={page.focusWords} live={LIVE_HIGHLIGHT && phase === 'listening'} readCount={readCount} />
@@ -1148,8 +1221,15 @@ export default function ReadPage() {
           </div>
         ) : phase === 'correction' && tricky && rung < 3 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+            {/* Sliding must visibly come before retrying aloud: while a
+                segmentable word's slider hasn't been completed yet, the mic
+                button is disabled rather than an equally-inviting choice
+                sitting right next to the track. "Keep going" is never
+                gated — a child can always skip, slid or not. */}
             <button
-              className="btn-primary lc-help-pulse"
+              className={slideSegments && !slideDone ? 'btn-primary' : 'btn-primary lc-help-pulse'}
+              disabled={!!slideSegments && !slideDone}
+              aria-label={slideSegments && !slideDone ? 'Slide through the word first' : 'Try the word'}
               style={{
                 background: 'var(--blue)',
                 boxShadow: '0 3px 0 #054a8a',
@@ -1158,8 +1238,10 @@ export default function ReadPage() {
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: 8,
+                ...(slideSegments && !slideDone ? { opacity: 0.4, cursor: 'default', boxShadow: 'none' } : null),
               }}
               onClick={() => {
+                if (slideSegments && !slideDone) return;
                 setPhase('scoring');
                 void beginListening(tricky);
               }}
