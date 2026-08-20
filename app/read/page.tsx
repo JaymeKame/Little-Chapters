@@ -26,9 +26,17 @@ import {
 } from '@/lib/pronunciation';
 import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
 import { toWordSignals } from '@/lib/reading-signal-adapter';
-import { interpretSessionWithIntervention, type SessionIntervention } from '@/lib/reading-session-interpreter';
+import type { SessionIntervention } from '@/lib/reading-session-interpreter';
 import { HELP_LADDER, rungLine, pickEncouragement } from '@/lib/help-ladder';
-import type { SentenceResult, SessionInput, WordSignal } from '@/reading-tutor/src/types';
+import {
+  defaultProgressFor,
+  loadLocalProgress,
+  completeSessionLocally,
+  fetchRemoteProgress,
+  completeSessionRemote,
+  reconcileProgress,
+} from '@/lib/child-progress';
+import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '@/reading-tutor/src/types';
 import {
   duckAmbience,
   playCliffhanger,
@@ -154,6 +162,7 @@ export default function ReadPage() {
   const { user, loading: authLoading } = useAuth();
   const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
   const [profile, setProfile] = useState<ChildProfile | null>(null);
+  const [progress, setProgress] = useState<ChildProgress | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [pageIdx, setPageIdx] = useState(0);
   const [phase, setPhase] = useState<Phase>('ready');
@@ -178,7 +187,15 @@ export default function ReadPage() {
   // One page == one SentenceResult (see docs/INTEGRATION_SPINE.md — this is
   // the live app's actual per-take capture granularity, already established
   // there, not re-decided here).
-  const stage = profile ? stageForAge(profile.age) : 1;
+  //
+  // stage: once a ChildProgress exists, ITS stage is authoritative (PHASE 3
+  // of docs/PERSISTENCE.md) — stageForAge(profile.age) is used only as the
+  // one-time seed for a brand-new child's initial progress, and as a brief
+  // fallback for the instant before that first load resolves. This is
+  // deliberately NOT threaded into chapter generation (requestTutorChapter
+  // below still derives its own stage from age) — that reconciliation is
+  // explicitly out of scope here (see docs/PERSISTENCE.md's final section).
+  const stage = progress?.stage ?? (profile ? stageForAge(profile.age) : 1);
   const sessionIdRef = useRef<string>('');
   const startedAtRef = useRef<string>('');
   const sentenceResultsRef = useRef<SentenceResult[]>([]);
@@ -249,6 +266,30 @@ export default function ReadPage() {
     }
     return () => stopAmbience();
   }, [profile]);
+
+  /* Load this child's ChildProgress: local first (synchronous, always
+   * available — matches every other store in this app), then a best-effort
+   * remote reconcile once auth settles. Every visitor has a uid by this
+   * point (AuthProvider signs everyone in anonymously), so this is never
+   * gated on being a "real" signed-in parent — see docs/PERSISTENCE.md. */
+  useEffect(() => {
+    if (!profile || authLoading || !user) return;
+    let cancelled = false;
+    const uid = user.uid;
+    const ageEstimate = stageForAge(profile.age);
+    const local = loadLocalProgress(uid, profile.childId) ?? defaultProgressFor(profile.childId, ageEstimate);
+    setProgress(local);
+    void (async () => {
+      const idToken = await user.getIdToken().catch(() => null);
+      if (!idToken) return;
+      const remote = await fetchRemoteProgress(idToken, profile.childId, ageEstimate);
+      if (cancelled || disposedRef.current || !remote) return;
+      setProgress(reconcileProgress(uid, profile.childId, local, remote.progress));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, authLoading, user]);
 
   useEffect(() => {
     if (phase === 'listening' || phase === 'scoring' || speaking) duckAmbience();
@@ -585,14 +626,20 @@ export default function ReadPage() {
       })();
     }
 
-    // Prove one real chapter produces one canonical rules-layer session
-    // result. interpretSessionWithIntervention() is the ONLY interpretation
-    // entry point used — never interpretSession() directly (see
-    // lib/reading-session-interpreter.ts). Nothing here persists, applies
-    // progression, changes stage, or triggers generation — this is a
-    // dev-only proof, not a wired-up pipeline.
+    // Assemble the canonical session and persist it — interpreted through
+    // interpretSessionWithIntervention() ONLY (never interpretSession()
+    // directly), applied through John's unmodified applySession(), exactly
+    // once per chapterId regardless of retries. See
+    // lib/child-progress.ts/lib/progress-store-admin.ts and
+    // docs/PERSISTENCE.md for the idempotency + ownership design.
+    //
+    // Local completion is synchronous and is what actually gates the
+    // returned `progress`/`reading` used below — it's correct with zero
+    // network dependency, matching every other store in this app. The
+    // server mirror is fire-and-forget: PHASE 4 explicitly says not to
+    // block the chapter-end screen on an optional downstream write.
     const session: SessionInput = {
-      childId: profile!.childName,
+      childId: profile!.childId,
       sessionId: sessionIdRef.current,
       stage,
       chapterId: c.id,
@@ -600,15 +647,54 @@ export default function ReadPage() {
       startedAt: startedAtRef.current,
       sentences: sentenceResultsRef.current,
     };
-    const canonical = interpretSessionWithIntervention(session, interventionsRef.current);
+    const uid = user?.uid ?? null;
+    const ageEstimate = stageForAge(profile!.age);
+    const previouslyTricky = progress?.trickyWords ?? [];
+    const { reading, progress: updatedProgress, applied } = completeSessionLocally(
+      uid,
+      profile!.childId,
+      ageEstimate,
+      session,
+      interventionsRef.current,
+      previouslyTricky,
+    );
+    setProgress(updatedProgress);
+
+    if (user) {
+      void (async () => {
+        try {
+          const idToken = await user.getIdToken();
+          const remote = await completeSessionRemote(
+            idToken,
+            profile!.childId,
+            ageEstimate,
+            session,
+            interventionsRef.current,
+            previouslyTricky,
+          );
+          // Remote is the cross-device copy — reconcile only if it moved
+          // further than what local already has (see reconcileProgress).
+          if (remote && !disposedRef.current) {
+            setProgress((current) =>
+              current ? reconcileProgress(uid, profile!.childId, current, remote.progress) : current,
+            );
+          }
+        } catch {
+          /* best-effort mirror — local persistence already succeeded */
+        }
+      })();
+    }
+
     if (process.env.NODE_ENV === 'development') {
       // Safe summary only — no accuracy, no score, nothing child/parent-facing.
       console.info('[Canonical session]', {
         sentenceCount: session.sentences.length,
         assistedSentenceCount: session.sentences.filter((s) => s.assisted).length,
-        trickyWords: canonical.trickyWords,
-        cleanWords: canonical.cleanWords,
-        excludedFromProgression: canonical.excludedFromProgression,
+        trickyWords: reading.trickyWords,
+        cleanWords: reading.cleanWords,
+        excludedFromProgression: reading.excludedFromProgression,
+        progressionApplied: applied,
+        stage: updatedProgress.stage,
       });
     }
 

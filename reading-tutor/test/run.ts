@@ -21,6 +21,33 @@ import { interpretSessionWithIntervention, type SessionIntervention } from '../.
 import { HELP_LADDER, rungLine, graphemeCueFor } from '../../lib/help-ladder.ts';
 import type { WordScore } from '../../lib/pronunciation.ts';
 import type { DecodeResult } from '../../lib/reading-verdict.ts';
+import {
+  defaultProgressFor,
+  completeSessionPure,
+  completeSessionLocally,
+  loadLocalProgress,
+  saveLocalProgress,
+  wasSessionCompleted,
+  claimChildProgressFromAnonymousUid,
+} from '../../lib/child-progress.ts';
+
+// Node has no global localStorage without --experimental-webstorage;
+// lib/child-progress.ts's local store (like every other local store in this
+// app) is written against the real browser API. Minimal in-memory shim so
+// its I/O layer — not just its pure functions — can be exercised here the
+// same way the rest of this suite exercises real modules, per CLAUDE.md's
+// "exercised with plain node scripts" convention.
+if (typeof (globalThis as unknown as { localStorage?: unknown }).localStorage === 'undefined') {
+  const store = new Map<string, string>();
+  (globalThis as unknown as { localStorage: Storage }).localStorage = {
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k: string, v: string) => { store.set(k, String(v)); },
+    removeItem: (k: string) => { store.delete(k); },
+    clear: () => store.clear(),
+    key: (i: number) => [...store.keys()][i] ?? null,
+    get length() { return store.size; },
+  } as Storage;
+}
 
 let pass = 0, fail = 0;
 const ok = (cond: boolean, label: string, extra = '') => {
@@ -415,14 +442,14 @@ section('Skeletons');
 section('Little Chapters adapter');
 {
   const chapter = adaptTutorDraft(
-    { childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
+    { childId: 'child-sam', childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
     { sentences: ['Sam sat on a mat', 'Pip sat by Sam'], imagePrompt: 'Sam and Pip', summaryLine: 'Sam found a mat' },
     SKELETONS[0],
   );
   ok(chapter !== null, 'a draft with sentences adapts successfully');
   if (!chapter) throw new Error('adapter returned null for a valid draft');
   const empty = adaptTutorDraft(
-    { childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
+    { childId: 'child-sam', childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
     { sentences: [], imagePrompt: '', summaryLine: '' },
     SKELETONS[0],
   );
@@ -744,6 +771,185 @@ section('Slot filling - nouns chosen by code, never by the model');
 
   const a2 = assignSlots(sk.beats, 1, { avoid: slotOptions('portable', 1), random: () => 0 });
   ok(a2.portable !== undefined, 'but avoidance never causes a failure when choice runs out');
+}
+
+section('Child progress - new child, initial stage');
+{
+  const p = defaultProgressFor('child-1', 6);
+  ok(p.childId === 'child-1', 'a fresh ChildProgress carries the child id');
+  ok(p.stage === initialStage(6), 'stage seeds from initialStage(ageDerivedEstimate), not raw age', String(p.stage));
+  ok(p.stage === 5, 'concretely: stageForAge-style estimate 6 seeds stage 5 (one below, per initialStage)', String(p.stage));
+  ok(p.mode === 'placement' && p.sessionsCompleted === 0, 'a new child starts in placement with zero sessions');
+}
+
+section('Child progress - completeSessionPure: progression, exclusions, idempotency');
+{
+  // Clean session, well above the placement big-jump threshold: moves.
+  const progress = defaultProgressFor('child-1', 6); // stage 5
+  const clean18 = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))], { childId: 'child-1', chapterId: 'day-1', stage: progress.stage });
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: clean18, interventions: [] });
+  ok(r.applied, 'a clean valid session applies progression');
+  ok(r.nextProgress.stage === progress.stage + 2, 'placement mode: well above level jumps two stages', String(r.nextProgress.stage));
+  ok(r.nextProgress.sessionsCompleted === 1, 'sessionsCompleted increments');
+  ok(!('accuracy' in r.persistedSession), 'the persisted session record never carries accuracy', JSON.stringify(Object.keys(r.persistedSession)));
+  ok(!JSON.stringify(r.persistedSession).includes('"accuracy"'), 'and no accuracy-shaped key survives serialisation either');
+  ok(r.persistedSession.chapterId === 'day-1' && r.persistedSession.childId === 'child-1', 'the persisted shape keeps chapter/child identity');
+  ok(typeof r.persistedSession.completedAt === 'string' && typeof r.persistedSession.startedAt === 'string', 'and start/complete timestamps');
+  ok(Array.isArray(r.persistedSession.trickyWords) && Array.isArray(r.persistedSession.cleanWords), 'and tricky/clean words for the parent-facing history');
+}
+{
+  // Assisted-heavy: excluded from progression, stage must not move (rung-3
+  // "skip / carried forward" sentences per the product ruling — assisted,
+  // not counted as a failure).
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session([
+    sentence(six(mumbled)), sentence(six(mumbled)),
+    sentence(six(clean), { assisted: true }),
+    sentence(six(clean), { assisted: true }),
+    sentence(six(clean), { assisted: true }),
+  ], { chapterId: 'day-2', stage: progress.stage });
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  ok(r.applied, 'an assisted-heavy session still "applies" (sessionsCompleted still counts a night happened)');
+  ok(r.nextProgress.stage === progress.stage, 'but the stage itself does not move', String(r.nextProgress.stage));
+  ok(r.reading.excludedFromProgression && r.reading.excludedReason === 'assisted-heavy', 'and says why');
+}
+{
+  // Reread: excluded from counting, same as assisted — enough of it (here,
+  // 3 of 4 sentences) drops below minCountableWords, so the session cannot
+  // move the stage even though the one real sentence read was clean.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session([
+    sentence(six(clean), { reread: true }), sentence(six(clean), { reread: true }),
+    sentence(six(clean), { reread: true }), sentence(six(clean)),
+  ], { chapterId: 'day-3', stage: progress.stage });
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  ok(r.nextProgress.stage === progress.stage, 'reread-heavy does not move the stage', String(r.nextProgress.stage));
+  ok(r.reading.excludedReason === 'too-few-words', 'too little unassisted signal remains to count', r.reading.excludedReason);
+}
+{
+  // Bookshelf reread: whole session excluded from progression regardless of
+  // how well it went.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session(
+    [sentence(six(clean)), sentence(six(clean)), sentence(six(clean))],
+    { chapterId: 'day-4', stage: progress.stage, isBookshelfReread: true },
+  );
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  ok(r.nextProgress.stage === progress.stage, 'a bookshelf reread never moves the stage', String(r.nextProgress.stage));
+  ok(r.reading.excludedReason === 'bookshelf-reread', 'and says why');
+}
+{
+  // Insufficient countable words.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session([sentence(['hi', 'go'].map(clean))], { chapterId: 'day-5', stage: progress.stage });
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  ok(r.nextProgress.stage === progress.stage, 'too few countable words never moves the stage', String(r.nextProgress.stage));
+  ok(r.reading.excludedReason === 'too-few-words', 'and says why');
+}
+{
+  // Idempotency at the pure-function level: alreadyCompleted short-circuits
+  // progression entirely, even though the same accuracy would otherwise move
+  // the stage.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))], { chapterId: 'day-6', stage: progress.stage });
+  const first = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  const repeat = completeSessionPure({ progress: first.nextProgress, alreadyCompleted: true, sessionInput: s, interventions: [] });
+  ok(first.applied === true && repeat.applied === false, 'the first completion applies, a repeat does not');
+  ok(repeat.nextProgress.stage === first.nextProgress.stage && repeat.nextProgress.sessionsCompleted === first.nextProgress.sessionsCompleted,
+     'a repeat leaves progress byte-for-byte where the first completion left it');
+}
+
+section('Child progress - Class A intervention still prevents cleanWords, end to end');
+{
+  // The full chapter shape from lib/reading-session-interpreter.ts's own
+  // tests, run through the persistence layer this time.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5, trickyWords: ['raced'] };
+  const raced: WordSignal = { word: 'raced', confidence: 0.4, duration_ms: 400, gap_before_ms: 100, heard: true };
+  const s: SessionInput = {
+    childId: 'child-1', sessionId: 'sess-a', stage: progress.stage, chapterId: 'day-7',
+    isBookshelfReread: false, startedAt: new Date().toISOString(),
+    sentences: [{ index: 0, text: 'Rex raced.', words: [clean('Rex'), raced], assisted: false, reread: false }],
+  };
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [[false, true]], previouslyTricky: ['raced'] });
+  ok(!r.persistedSession.cleanWords.includes('raced'), 'live intervention keeps a would-be-correct word out of the persisted cleanWords');
+  ok(r.persistedSession.trickyWords.includes('raced'), 'and it is recorded tricky instead');
+}
+
+section('Child progress - localStorage I/O: idempotent completion, reload, migration');
+{
+  const uid = 'uid-real-1';
+  const childId = 'child-io-1';
+  const ageEstimate = 6;
+  const s = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))], { chapterId: 'chapter-io-1', stage: initialStage(ageEstimate) });
+
+  ok(loadLocalProgress(uid, childId) === null, 'no progress exists for a brand-new child yet');
+  ok(!wasSessionCompleted(uid, childId, 'chapter-io-1'), 'and the chapter has not been completed yet either');
+
+  const first = completeSessionLocally(uid, childId, ageEstimate, s, []);
+  ok(first.applied, 'first completion applies progression');
+  ok(wasSessionCompleted(uid, childId, 'chapter-io-1'), 'the ledger now shows this chapter completed');
+
+  // Simulate a genuine double-tap / retried network request: the exact same
+  // sessionInput, completed again.
+  const second = completeSessionLocally(uid, childId, ageEstimate, s, []);
+  ok(second.applied === false, 'a duplicate completion of the SAME chapter does not re-apply');
+  ok(second.progress.stage === first.progress.stage && second.progress.sessionsCompleted === first.progress.sessionsCompleted,
+     'and leaves stage/sessionsCompleted exactly as the first completion did — no double count');
+
+  // Reload: a fresh load (no in-memory state carried over) restores exactly
+  // what was persisted.
+  const reloaded = loadLocalProgress(uid, childId);
+  ok(reloaded !== null && reloaded!.stage === first.progress.stage && reloaded!.sessionsCompleted === first.progress.sessionsCompleted,
+     'reloading restores the same progression state');
+
+  // A DIFFERENT chapter completing is a genuine new session, not a duplicate.
+  const s2 = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))], { chapterId: 'chapter-io-2', stage: first.progress.stage });
+  const third = completeSessionLocally(uid, childId, ageEstimate, s2, []);
+  ok(third.applied, 'a genuinely different chapterId is a new session and DOES apply');
+  ok(third.progress.sessionsCompleted === first.progress.sessionsCompleted + 1, 'sessionsCompleted advances for the new session, not the repeat');
+}
+{
+  // Anonymous -> signed-in migration (the "linking failed, new uid" fallback
+  // path — see components/AuthProvider.tsx claimAnonymousChild). Mirrors
+  // lib/pet.ts's claimPetFromAnonymousUid invariants exactly.
+  const anonUid = 'uid-anon-migrate';
+  const realUid = 'uid-real-migrate';
+  const childId = 'child-migrate-1';
+  const progress = { ...defaultProgressFor(childId, 6), sessionsCompleted: 3 };
+  saveLocalProgress(anonUid, childId, progress);
+
+  claimChildProgressFromAnonymousUid(realUid, anonUid, childId);
+  const migrated = loadLocalProgress(realUid, childId);
+  ok(migrated !== null && migrated!.sessionsCompleted === 3, 'progress moves to the new uid on claim');
+  ok(loadLocalProgress(anonUid, childId) === null, 'and is removed from the old anonymous uid — no double copy left behind');
+
+  // Idempotent: claiming again (e.g. a second onAuthStateChanged firing)
+  // must not clobber the now-populated destination or throw.
+  saveLocalProgress(anonUid, childId, { ...defaultProgressFor(childId, 6), sessionsCompleted: 99 }); // a NEW orphan, e.g. a sibling reusing the device
+  claimChildProgressFromAnonymousUid(realUid, anonUid, childId);
+  const stillMigrated = loadLocalProgress(realUid, childId);
+  ok(stillMigrated !== null && stillMigrated!.sessionsCompleted === 3, 'a second claim never overwrites an already-owned destination', String(stillMigrated?.sessionsCompleted));
+}
+
+section('Progress API routes - ownership is derived from the verified token, never client input');
+{
+  // No Firestore emulator is available in this environment (see
+  // docs/PERSISTENCE.md's report), so this is a static guarantee, not a
+  // live integration test: the route source must derive `uid` exclusively
+  // from requireReadingUser()'s verified token and must never read a uid
+  // out of the request body or query string to address Firestore.
+  const fs = await import('node:fs');
+  const routeSources = [
+    fs.readFileSync(new URL('../../app/api/progress/complete-session/route.ts', import.meta.url), 'utf8'),
+    fs.readFileSync(new URL('../../app/api/progress/child/route.ts', import.meta.url), 'utf8'),
+    fs.readFileSync(new URL('../../lib/progress-store-admin.ts', import.meta.url), 'utf8'),
+  ];
+  const suspiciousPatterns = [/body\.uid/, /body\[.uid.\]/, /searchParams\.get\(.uid.\)/, /req\.uid/];
+  for (const src of routeSources) {
+    ok(!suspiciousPatterns.some((p) => p.test(src)), 'route/store source never reads a client-supplied uid');
+  }
+  ok(routeSources[0].includes('auth.uid') && routeSources[1].includes('auth.uid'),
+     'both routes address Firestore using the verified auth.uid instead');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

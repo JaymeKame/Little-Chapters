@@ -7,7 +7,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { AVATARS, INTERESTS, avatarEmoji, saveProfile, type AvatarId, type InterestId } from '@/lib/profile';
+import { AVATARS, INTERESTS, avatarEmoji, newChildId, saveProfile, type AvatarId, type InterestId } from '@/lib/profile';
 
 export default function SetupPage() {
   const router = useRouter();
@@ -26,7 +26,7 @@ export default function SetupPage() {
 
   function start() {
     if (!ready) return;
-    saveProfile({ childName: name.trim(), age, interests: picked, avatar, createdAt: Date.now() });
+    saveProfile({ childId: newChildId(), childName: name.trim(), age, interests: picked, avatar, createdAt: Date.now() });
     router.push('/home');
   }
 
