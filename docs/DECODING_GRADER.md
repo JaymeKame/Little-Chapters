@@ -42,13 +42,77 @@ python3 -m venv .venv
 First run downloads the ~1.3 GB model from HuggingFace. CPU-only, ~1–2 s per
 clip — no GPU needed at v1 scale. Listens on `127.0.0.1:8010` (override:
 `MDD_PORT`); the Next.js route finds it via `MDD_SERVER_URL`. Never expose it
-to the public internet — the route (`app/api/reading/decode`) is the only
-intended caller and carries the Firebase auth gate.
+to the public internet unauthenticated — the route (`app/api/reading/decode`)
+is the only intended caller and carries the Firebase auth gate. When hosting
+the service outside localhost (e.g. Cloud Run), set `MDD_API_KEY` on both the
+service and the Vercel deploy: the route forwards it as a bearer token and
+`/assess` rejects requests without a matching one. `/healthz` stays
+unauthenticated so a platform's startup probe can check readiness without the
+secret. Leaving `MDD_API_KEY` unset on both sides preserves the original
+zero-configuration local workflow.
 
 Words missing from CMUdict (kid names etc.): add to `MANUAL_PRONS` in
 `mdd/grader.py`, or point `MDD_EXTRA_PRONS` at a JSON file
 (`{"word": ["ARPABET1 ARPABET2 …"]}`). The service returns 422 UNKNOWN_WORD
 listing the word when it hits one.
+
+## Deploying on Cloud Run
+
+`mdd/Dockerfile` builds a CPU-only image with the phoneme model baked in at
+build time (`RUN python -c "from grader import Grader; Grader()"`), so a
+scale-from-zero cold start never depends on Hugging Face being reachable or
+downloading 1.3 GB at runtime. Sizing is deliberately conservative — 2 vCPU,
+4 GiB, concurrency 1, min 0 / max 1 instances — since there's no measured
+peak-RSS benchmark yet; tighten it once real traffic gives you numbers.
+
+Prerequisites: an existing, billing-enabled GCP project, and an Artifact
+Registry Docker repository named `little-chapters` already created in it.
+`deploy-cloud-run.sh` deliberately does not infer a project or create one
+solely for this service — do not create GCP infrastructure or billing on
+someone's behalf without being asked.
+
+One-time setup (once you have a project and region in mind):
+
+```bash
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com \
+  --project PROJECT_ID
+gcloud artifacts repositories create little-chapters \
+  --project PROJECT_ID --location REGION --repository-format docker
+```
+
+Deploy:
+
+```bash
+export MDD_API_KEY=$(openssl rand -hex 32)
+mdd/deploy-cloud-run.sh PROJECT_ID REGION
+```
+
+The script builds the image via Cloud Build, deploys to Cloud Run with
+`--allow-unauthenticated` (Cloud Run's IAM-based private ingress isn't
+reachable from Vercel without extra credential plumbing, so the
+`MDD_API_KEY` bearer secret is the real access control on `/assess`), and
+prints the resulting `MDD_SERVER_URL` / `MDD_API_KEY` pair. Add both to
+Vercel's **Preview** environment variables and redeploy.
+
+Verify:
+
+```bash
+curl --fail --retry 12 --retry-all-errors --retry-delay 10 https://<service-url>/healthz
+# -> {"ok":true,"model":"facebook/wav2vec2-xlsr-53-espeak-cv-ft"}
+
+curl -i -X POST "https://<service-url>/assess?text=cat" --data-binary @/dev/null
+# -> 401, no Authorization header supplied
+```
+
+Then confirm the deployed app is actually using both graders: read a
+sentence on the Vercel preview and check the browser console for the
+`[Verdict]` diagnostic table (`app/read/page.tsx`'s `logVerdictDiagnostics()`)
+— it should show `graders: "azure+mdd"` with a numeric `decodeScore`. As a
+negative check, temporarily point `MDD_SERVER_URL` at an unreachable HTTPS
+URL and redeploy: the table should fall back to
+`graders: "azure-only (MDD unreachable)"` with `decodeScore: null`, proving
+the degraded path still works. Restore the correct `MDD_SERVER_URL`
+immediately after.
 
 ## Calibration (speechocean762, ages ≤7, 100 clips / 431 expert-scored words)
 
