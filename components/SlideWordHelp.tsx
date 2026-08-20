@@ -55,27 +55,44 @@ export function SlideWordHelp({
   onComplete: () => void;
 }) {
   const [value, setValue] = useState(0);
-  const [complete, setComplete] = useState(false);
-  const lastTickedRef = useRef(0);
   const count = segments.length;
+  // `complete` is DERIVED from value, never a separate latch: sliding back
+  // off the end must honestly un-complete the caption/visuals immediately,
+  // not leave them stuck showing "done" (a real bug caught by testing
+  // backward-slide-after-completion — a native range's mousedown-anywhere
+  // behavior can jump straight to the end before a drag even starts, so
+  // "reached the end" is not a one-time event to latch).
+  const complete = value >= count;
+  // Separately tracks whether onComplete() has already fired for the
+  // CURRENT approach to the end, so scrubbing back and forth near the last
+  // segment doesn't replay the whole-word blend on every render — but
+  // sliding all the way back off and reaching the end again SHOULD replay
+  // it (repetition is fine practice, not a bug), hence resetting this in the
+  // `else` branch below rather than latching it permanently like `complete`
+  // used to.
+  const firedRef = useRef(false);
 
   // A new tricky word (rung escalated to a different word, or the page
   // advanced) must never inherit the previous word's mid-slide position.
   useEffect(() => {
     setValue(0);
-    setComplete(false);
-    lastTickedRef.current = 0;
+    firedRef.current = false;
   }, [word]);
 
   function handleChange(next: number) {
+    // With step={1}, every onChange already represents landing on a genuinely
+    // new segment (the browser only fires onChange at integer boundaries) —
+    // no extra "did this actually change" bookkeeping needed. Skip only the
+    // "back to nothing selected yet" position (0), which isn't a real letter.
+    if (next !== value && next > 0) playUISound('/audio/tap-soft.mp3');
     setValue(next);
-    // One tick per NEWLY entered segment — not per raw input event, which
-    // fires continuously while dragging across a single wide segment.
-    if (next > lastTickedRef.current) playUISound('/audio/tap-soft.mp3');
-    lastTickedRef.current = Math.max(lastTickedRef.current, next);
-    if (next >= count && !complete) {
-      setComplete(true);
-      onComplete();
+    if (next >= count) {
+      if (!firedRef.current) {
+        firedRef.current = true;
+        onComplete();
+      }
+    } else {
+      firedRef.current = false;
     }
   }
 
