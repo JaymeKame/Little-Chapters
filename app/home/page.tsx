@@ -30,7 +30,17 @@ import { useAuth } from '@/components/AuthProvider';
 import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, loadProfile, type ChildProfile } from '@/lib/profile';
 import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { wasChapterCompleted } from '@/lib/chapter-history';
-import { playHomeSound, playTheme, prepareStoryAudio, speakPrompt, stopAmbience, stopTheme, themeAssetFor, welcomeLine } from '@/lib/audio';
+import {
+  pauseForBackground,
+  playHomeSound,
+  playTheme,
+  prepareStoryAudio,
+  speakPrompt,
+  stopSpeaking,
+  stopTheme,
+  themeAssetFor,
+  welcomeLine,
+} from '@/lib/audio';
 
 export default function ChildHomePage() {
   const router = useRouter();
@@ -75,12 +85,39 @@ export default function ChildHomePage() {
   const alreadyRead = chapter && !authLoading ? wasChapterCompleted(user?.uid ?? null, chapter.id) : false;
 
   // Prepare the real flat theme asset; playback waits for a user gesture.
+  // Owns theme for as long as Home is mounted, so unmount (any exit —
+  // startChapter's own navigation stops nothing here on purpose, since the
+  // theme is meant to continue seamlessly into /read) must stop the SAME
+  // track it started. This previously called stopAmbience() — a different,
+  // unused track — so theme never actually stopped here.
   useEffect(() => {
     if (profile) prepareStoryAudio(themeAssetFor(profile.interests[0]));
     return () => {
-      stopAmbience();
+      stopTheme();
     };
   }, [profile]);
+
+  // Backgrounding: stop welcome-line TTS immediately (resuming stale speech
+  // after an unknown-length background gap makes no sense) and pause theme
+  // if it happens to be playing. No explicit resume branch — Home has
+  // nothing that should unconditionally restart itself on return; theme
+  // only ever plays because of a fresh tap (startChapter/replayWelcome),
+  // never as an ambient loop the idle screen owns on its own.
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.hidden) pauseForBackground();
+    }
+    function onPageHide() {
+      stopSpeaking();
+      stopTheme();
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, []);
 
   function replayWelcome() {
     if (!profile) return;

@@ -40,6 +40,7 @@ import {
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '@/reading-tutor/src/types';
 import {
   duckAmbience,
+  pauseForBackground,
   playCliffhanger,
   playListeningStart,
   playReadingCue,
@@ -47,8 +48,8 @@ import {
   playTheme,
   prepareStoryAudio,
   restoreAmbience,
+  resumeMusic,
   speakPrompt,
-  stopAmbience,
   stopMusic,
   stopSpeaking,
   stopTheme,
@@ -263,12 +264,18 @@ export default function ReadPage() {
   }, [profile, user, authLoading]);
 
   // Reuse the same flat story theme as Home; the controller prevents duplicate loops.
+  // Owns theme for as long as this effect's chapter/profile identity holds —
+  // cleanup must stop the SAME track it started. This previously called
+  // stopAmbience() (a different, unused track), so theme never actually
+  // stopped via this path; it only stopped incidentally via the mount
+  // effect's own (correct) stopTheme() below, which fires at the same
+  // unmount moment. Both now agree, redundantly but harmlessly.
   useEffect(() => {
     if (profile) {
       prepareStoryAudio(themeAssetFor(profile.interests[0]));
       playTheme();
     }
-    return () => stopAmbience();
+    return () => stopTheme();
   }, [profile]);
 
   /* Load this child's ChildProgress: local first (synchronous, always
@@ -295,13 +302,63 @@ export default function ReadPage() {
     };
   }, [profile, authLoading, user]);
 
+  // Ownership: this effect is the single place that decides theme's target
+  // volume from product state, so nothing else independently ducks/restores
+  // it (the synchronous calls added in beginListening/replayCurrentSentence/
+  // enterOrEscalateLadder below exist only to remove the one-render-tick lag
+  // before this effect would otherwise catch up — they compute the exact
+  // same target this effect does, never a competing one).
+  //
+  // Scoring is deliberately grouped with listening, not partially restored:
+  // the wait is typically sub-second to a few seconds, and briefly turning
+  // theme back up only to duck it again a moment later for
+  // correction/celebrate would read as a glitch, not a considered beat.
   useEffect(() => {
-    if (phase === 'listening' || phase === 'scoring' || speaking) duckAmbience();
-    else restoreAmbience();
+    if (phase === 'chapter-end') {
+      // The cliffhanger cue (playCliffhanger(), effect below) owns this
+      // moment — reading theme must not continue under it, not even ducked.
+      stopTheme();
+    } else if (phase === 'listening' || phase === 'scoring' || speaking) {
+      duckAmbience();
+    } else {
+      restoreAmbience();
+    }
   }, [phase, speaking]);
 
   useEffect(() => {
     if (phase === 'chapter-end') playCliffhanger();
+  }, [phase]);
+
+  // Backgrounding: pause everything immediately (also cancels TTS — resuming
+  // stale speech into whatever state the child is in after an unknown-length
+  // gap makes no sense). On return, re-derive what SHOULD be playing from
+  // the CURRENT phase (not blindly resume whatever was paused): chapter-end
+  // already stopped theme on purpose and stays stopped, but it's still the
+  // moment the cliffhanger cue owns, so THAT resumes (from where it paused,
+  // not restarted); every other phase resumes theme at whatever volume the
+  // ownership rule above would already apply (playTheme() itself reads the
+  // current `ducked` flag).
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.hidden) {
+        pauseForBackground();
+      } else if (phase === 'chapter-end') {
+        resumeMusic();
+      } else {
+        playTheme();
+      }
+    }
+    function onPageHide() {
+      stopSpeaking();
+      stopTheme();
+      stopMusic();
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+    };
   }, [phase]);
 
   if (!profile || !chapter) return <div className="screen" />;
@@ -325,6 +382,12 @@ export default function ReadPage() {
     // docs/HELP_LADDER_INTEGRATION.md. Only applies when there's no active
     // tricky word, i.e. this is a full-page replay, not a rung cue.
     if (!tricky) pageRereadRef.current = true;
+    // Duck synchronously, right here — speakPrompt() below starts audio in
+    // this same tick, but the [phase,speaking] effect that would otherwise
+    // duck only runs on the NEXT render after setSpeaking(true) commits, one
+    // tick behind. Without this, the first instant of speech is audible
+    // under full-volume theme.
+    duckAmbience();
     setSpeaking(true);
     speakPrompt(tricky ?? page.text, { onEnd: () => setSpeaking(false) });
   }
@@ -347,6 +410,12 @@ export default function ReadPage() {
     setReadCount(0);
     stopSpeaking();
     setSpeaking(false);
+    // Duck synchronously — the caller already set phase to 'scoring'/mic
+    // setup starts this same tick, ahead of the [phase,speaking] effect's
+    // next-render pass. Mic setup can take real time (network/SDK), so this
+    // also keeps theme quiet through the "One moment…" wait, not just once
+    // Azure's onStatus('listening') callback eventually fires.
+    duckAmbience();
     listeningCuePlayedRef.current = false;
     try {
       // Setup watchdog: the token fetch / SDK load / mic prompt can hang on a
@@ -487,12 +556,14 @@ export default function ReadPage() {
     practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
     setPhase('correction');
     if (next === 2) {
+      duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why
       setSpeaking(true);
       speakPrompt(rungLine(2, { word, sentence: page.text, stage }), {
         onEnd: () => { if (!disposedRef.current) setSpeaking(false); },
       });
     } else if (next === 3) {
       pageAssistedRef.current = true;
+      duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why
       setSpeaking(true);
       speakPrompt(rungLine(3, { word, sentence: page.text, stage }), {
         onEnd: () => {
@@ -790,7 +861,18 @@ export default function ReadPage() {
       <SceneBackground src={sceneBg} cliff />
       <div className="screen lc-scene-content">
         <header className="lc-top-controls" style={{ display: 'flex', padding: '16px 18px' }}>
-          <button className="icon-btn" aria-label="Home" onClick={() => router.push('/home')}>
+          <button
+            className="icon-btn"
+            aria-label="Home"
+            onClick={() => {
+              // Immediate: the cliffhanger cue (playMusic) may still be
+              // playing — cut it the instant the child taps, not a
+              // navigation-tick later. Unmount cleanup also stops it;
+              // harmless overlap.
+              stopMusic();
+              router.push('/home');
+            }}
+          >
             <img src="/icons/home.png" alt="" style={{ height: 24, width: 'auto' }} />
           </button>
         </header>
@@ -910,6 +992,13 @@ export default function ReadPage() {
             if (silenceTimer.current) clearTimeout(silenceTimer.current);
             sessionRef.current?.cancel();
             sessionRef.current = null;
+            // Immediate, not "whenever React gets around to unmounting":
+            // router.push() is async, and any TTS/theme still audible at the
+            // moment of the tap should cut the instant the child taps close,
+            // not a navigation-tick later. The unmount cleanup below still
+            // runs too — harmless, everything it stops is already stopped.
+            stopSpeaking();
+            stopTheme();
             playHomeSound('close.mp3');
             router.push('/home');
           }}
