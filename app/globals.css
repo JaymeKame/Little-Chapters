@@ -472,6 +472,129 @@ a {
   animation: lc-fade-in 300ms ease both;
 }
 
+/* ── Slide-through word help (rung 2 only, components/SlideWordHelp.tsx) ── */
+.lc-slide-help {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.lc-slide-letters {
+  display: flex;
+  width: 100%;
+  max-width: 320px;
+  justify-content: center;
+}
+
+.lc-slide-letter {
+  flex: 1;
+  text-align: center;
+  font-weight: 700;
+  font-size: 38px;
+  color: var(--ink-soft);
+  opacity: 0.45;
+  transition: color 150ms ease, opacity 150ms ease;
+}
+
+.lc-slide-letter.is-lit {
+  color: var(--blue);
+  opacity: 1;
+}
+
+.lc-slide-track-wrap {
+  width: 100%;
+  max-width: 320px;
+}
+
+.lc-slide-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 56px;
+  border-radius: 999px;
+  outline: none;
+  touch-action: none;
+  box-shadow: 0 2px 8px rgba(43, 43, 43, 0.12);
+  cursor: pointer;
+}
+
+.lc-slide-range::-webkit-slider-runnable-track {
+  height: 56px;
+  border-radius: 999px;
+  background: inherit; /* per-word gradient set inline via trackGradient() */
+}
+
+.lc-slide-range::-moz-range-track {
+  height: 56px;
+  border-radius: 999px;
+  background: inherit;
+}
+
+.lc-slide-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 2px 6px rgba(43, 43, 43, 0.3), 0 0 0 3px var(--blue) inset;
+  cursor: grab;
+}
+
+.lc-slide-range::-moz-range-thumb {
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 2px 6px rgba(43, 43, 43, 0.3), 0 0 0 3px var(--blue) inset;
+  cursor: grab;
+}
+
+.lc-slide-range:focus-visible {
+  box-shadow: 0 0 0 3px rgba(7, 93, 173, 0.35);
+}
+
+.lc-slide-caption {
+  font-size: 14px;
+  color: var(--ink-soft);
+  margin: 0;
+  text-align: center;
+}
+
+/* Completion: one brief settle, never a loop or a second effect stacked on
+ * top of it — the caption text change already carries the "you did it". */
+@keyframes lc-slide-complete {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+  100% { transform: scale(1); }
+}
+
+.lc-slide-complete {
+  animation: lc-slide-complete 380ms ease-out 1;
+}
+
+@media (min-width: 600px) {
+  .lc-slide-letter {
+    font-size: 52px;
+  }
+  .lc-slide-letters,
+  .lc-slide-track-wrap {
+    max-width: 380px;
+  }
+  .lc-slide-range,
+  .lc-slide-range::-webkit-slider-runnable-track,
+  .lc-slide-range::-moz-range-track {
+    height: 64px;
+  }
+  .lc-slide-range::-webkit-slider-thumb,
+  .lc-slide-range::-moz-range-thumb {
+    width: 48px;
+    height: 48px;
+  }
+}
+
 /* Ready-state invite: a single restrained pulse on the mic icon draws the
  * eye to the one action available — never a loop, so it never nags. Re-fires
  * on its own because the button (and this icon) remounts fresh each time
@@ -549,8 +672,12 @@ a {
   .lc-invite-pulse,
   .lc-speaking-active,
   .lc-processing-spin,
-  .lc-success-pop {
+  .lc-success-pop,
+  .lc-slide-complete {
     animation: none !important;
+  }
+  .lc-slide-letter {
+    transition: none !important;
   }
   .lc-leaving .lc-scene-bg img,
   .lc-leaving .lc-scene-content {

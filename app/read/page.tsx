@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
+import { SlideWordHelp } from '@/components/SlideWordHelp';
 import { chapterFor, requestTutorChapter, selectStoryScene, stageForAge, type Chapter } from '@/lib/chapters';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
@@ -28,7 +29,7 @@ import {
 import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
 import { toWordSignals } from '@/lib/reading-signal-adapter';
 import type { SessionIntervention } from '@/lib/reading-session-interpreter';
-import { HELP_LADDER, rungLine, pickEncouragement } from '@/lib/help-ladder';
+import { HELP_LADDER, rungLine, pickEncouragement, segmentWord } from '@/lib/help-ladder';
 import {
   defaultProgressFor,
   loadLocalProgress,
@@ -373,6 +374,11 @@ export default function ReadPage() {
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
   const sceneBg = selectStoryScene(chapter.id, profile.interests);
+  // Rung 2 only (see SlideWordHelp's own doc for why) — null whenever
+  // segmentWord() can't cleanly cover the word with graphemes this child is
+  // actually expected to know yet, in which case the plain word reveal below
+  // is used exactly as it worked before this feature existed.
+  const slideSegments = tricky && rung === 2 ? segmentWord(tricky, stage) : null;
 
   function replayCurrentSentence() {
     // Never speak the reference text while the mic is live — the recognizer
@@ -1051,12 +1057,37 @@ export default function ReadPage() {
               <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
                 {rungLine(rung as 1 | 2, { word: tricky, sentence: page.text, stage })}
               </p>
-              {/* Rung 1 gives only a phoneme cue — showing the word here
-                  would give away the exact thing rung 2 is meant to reveal. */}
-              {rung >= 2 && <p className="lc-tricky-word">{tricky}</p>}
-              <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
-                • • •
-              </div>
+              {/* Rung 1 gives only a phoneme cue — showing the word (slide
+                  interaction included) would give away the exact thing
+                  rung 2 is meant to reveal, so this whole block is rung-2-only. */}
+              {rung >= 2 && (
+                slideSegments ? (
+                  <SlideWordHelp
+                    word={tricky}
+                    segments={slideSegments}
+                    onComplete={() => {
+                      setSpeaking(true);
+                      speakPrompt(tricky, { onEnd: () => { if (!disposedRef.current) setSpeaking(false); } });
+                    }}
+                  />
+                ) : (
+                  <>
+                    {/* segmentWord() couldn't cleanly cover this word with
+                        graphemes the child is actually expected to know at
+                        this stage — never guess; fall back to the plain
+                        word reveal exactly as it worked before this feature. */}
+                    <p className="lc-tricky-word">{tricky}</p>
+                    <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
+                      • • •
+                    </div>
+                  </>
+                )
+              )}
+              {rung === 1 && (
+                <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
+                  • • •
+                </div>
+              )}
             </div>
           ) : (
             <div key={pageIdx} className={sentenceLeaving ? 'lc-sentence-out' : 'lc-sentence-in'}>
