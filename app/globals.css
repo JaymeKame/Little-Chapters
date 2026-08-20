@@ -151,6 +151,18 @@ a {
   font-weight: 700;
 }
 
+/* Success beat: the page's own focus word(s) get a brief warm glow instead
+ * of a written "you did it" — the reading card itself gains this class only
+ * during a REAL celebrate (never the quiet assisted-continuation variant). */
+@keyframes lc-focus-word-glow {
+  0%, 100% { text-shadow: 0 0 0 rgba(244, 201, 93, 0); }
+  50% { text-shadow: 0 0 12px rgba(244, 201, 93, 0.9); }
+}
+
+.lc-celebrate-glow .lc-focus-word {
+  animation: lc-focus-word-glow 700ms ease-out both;
+}
+
 /* Live karaoke highlight while the mic is on: unread words dim, heard words
  * return to full strength, the most recent one glows sunshine. */
 .lc-page-text .lc-word {
@@ -556,6 +568,23 @@ a {
   box-shadow: 0 0 0 3px rgba(7, 93, 173, 0.35);
 }
 
+/* Idle invitation to drag — restrained (6px) and slow, gone the instant a
+ * real drag starts (the class is removed as soon as value > 0). This is the
+ * only non-text hint that the thumb moves, so it must actually read as
+ * motion, not just a barely-there shimmer. */
+@keyframes lc-slide-nudge {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(6px); }
+}
+
+.lc-slide-idle::-webkit-slider-thumb {
+  animation: lc-slide-nudge 1.4s ease-in-out infinite;
+}
+
+.lc-slide-idle::-moz-range-thumb {
+  animation: lc-slide-nudge 1.4s ease-in-out infinite;
+}
+
 .lc-slide-caption {
   font-size: 14px;
   color: var(--ink-soft);
@@ -575,6 +604,43 @@ a {
   animation: lc-slide-complete 380ms ease-out 1;
 }
 
+/* AudioWordHelp — the unsegmentable-word fallback. Shares .lc-tricky-word
+ * (the word) and .lc-slide-caption (the small supplementary caption) with
+ * SlideWordHelp on purpose, so both help interactions read as one family. */
+.lc-audio-help {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.lc-audio-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 999px;
+  background: var(--sky-soft);
+}
+
+.lc-audio-icon {
+  width: 34px;
+  height: 34px;
+}
+
+/* Honestly synced to the SPEECH DURATION, not per-phoneme (no cross-browser
+ * TTS API exposes reliable per-phoneme boundary timing) — starts the instant
+ * speaking starts, stops the instant it ends. */
+@keyframes lc-audio-word-glow {
+  0%, 100% { text-shadow: 0 0 0 rgba(244, 201, 93, 0); }
+  50% { text-shadow: 0 0 18px rgba(244, 201, 93, 0.85); }
+}
+
+.lc-audio-word-glow {
+  animation: lc-audio-word-glow 900ms ease-in-out infinite;
+}
+
 @media (min-width: 600px) {
   .lc-slide-letter {
     font-size: 52px;
@@ -592,6 +658,14 @@ a {
   .lc-slide-range::-moz-range-thumb {
     width: 48px;
     height: 48px;
+  }
+  .lc-audio-icon-wrap {
+    width: 88px;
+    height: 88px;
+  }
+  .lc-audio-icon {
+    width: 42px;
+    height: 42px;
   }
 }
 
@@ -621,16 +695,74 @@ a {
   animation: lc-processing-spin 1.4s linear infinite;
 }
 
-/* Success: one brief pop-and-settle on the star, never a loop. */
+/* Success: one brief pop-and-settle on the star, never a loop. Motion is
+ * the primary signal here (see .lc-celebrate-praise below for why the text
+ * next to it stays small) — the star is the thing a child who can't yet
+ * read is meant to actually understand as "you got it". */
 @keyframes lc-success-pop {
-  0% { transform: scale(0.8); opacity: 0; }
-  60% { transform: scale(1.08); opacity: 1; }
+  0% { transform: scale(0.7); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
 }
 
 .lc-success-pop {
   display: inline-block;
   animation: lc-success-pop 420ms ease-out both;
+}
+
+/* 2-3 restrained sparkles drifting away from the star — deliberately NOT a
+ * particle burst: individually positioned/timed (lc-sparkle-1/2/3) rather
+ * than a uniform ring, small, and gone well before the celebrate beat ends. */
+.lc-sparkle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sunshine);
+  box-shadow: 0 0 6px var(--sunshine);
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes lc-sparkle-drift-1 {
+  0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: translate(-32px, -34px) scale(1); opacity: 0; }
+}
+
+@keyframes lc-sparkle-drift-2 {
+  0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: translate(30px, -20px) scale(1); opacity: 0; }
+}
+
+@keyframes lc-sparkle-drift-3 {
+  0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: translate(4px, -42px) scale(1); opacity: 0; }
+}
+
+.lc-sparkle-1 { animation: lc-sparkle-drift-1 620ms ease-out 80ms both; }
+.lc-sparkle-2 { animation: lc-sparkle-drift-2 620ms ease-out 160ms both; }
+.lc-sparkle-3 { animation: lc-sparkle-drift-3 620ms ease-out 40ms both; }
+
+/* Praise stays small and secondary on purpose — the star + sparkles + word
+ * glow are what a child who can't read this text yet actually understands.
+ * The quiet variant (assisted rung-3 continuation) is the SAME size, just
+ * slightly muted — reassuring, never smaller/lesser in a way that could
+ * read as a lower-tier outcome. */
+.lc-celebrate-praise {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-top: 6px;
+}
+
+.lc-celebrate-praise-quiet {
+  opacity: 0.85;
 }
 
 /* System-speaking (TTS replay) cue: sky blue and its own steady pulse so a
@@ -678,6 +810,24 @@ a {
   }
   .lc-slide-letter {
     transition: none !important;
+  }
+  .lc-slide-idle::-webkit-slider-thumb,
+  .lc-slide-idle::-moz-range-thumb {
+    animation: none !important;
+  }
+  .lc-audio-word-glow {
+    animation: none !important;
+    text-shadow: 0 0 12px rgba(244, 201, 93, 0.85) !important;
+  }
+  .lc-sparkle-1,
+  .lc-sparkle-2,
+  .lc-sparkle-3 {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+  .lc-celebrate-glow .lc-focus-word {
+    animation: none !important;
+    text-shadow: 0 0 10px rgba(244, 201, 93, 0.85) !important;
   }
   .lc-leaving .lc-scene-bg img,
   .lc-leaving .lc-scene-content {

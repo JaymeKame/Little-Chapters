@@ -17,6 +17,7 @@ import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { SlideWordHelp } from '@/components/SlideWordHelp';
+import { AudioWordHelp } from '@/components/AudioWordHelp';
 import { chapterFor, requestTutorChapter, selectStoryScene, stageForAge, type Chapter } from '@/lib/chapters';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
@@ -202,12 +203,18 @@ export default function ReadPage() {
   const [speaking, setSpeaking] = useState(false); // TTS replay of the current sentence — distinct from mic-listening
   const [sentenceLeaving, setSentenceLeaving] = useState(false); // brief out-transition before the next sentence mounts
   const [rung, setRung] = useState<0 | 1 | 2 | 3>(0); // help-ladder rung for the current `tricky` word (0 = not in the ladder)
-  // Gates the mic-retry button while a segmentable word's slide interaction
-  // is in progress: false the moment a new tricky word enters the ladder,
-  // true only once the child has slid through every grapheme AND heard the
-  // whole-word blend — sliding must visibly come before retrying aloud.
-  // Irrelevant (button always enabled) for a word with no slideSegments.
-  const [slideDone, setSlideDone] = useState(false);
+  // Gates the mic-retry button while EITHER help interaction (slide-through
+  // for a segmentable word, or AudioWordHelp's listen-then-your-turn for one
+  // that isn't) is still in progress: false the moment a new tricky word
+  // enters the ladder, true only once the child has finished that help step
+  // — sliding/listening must visibly come before retrying aloud.
+  const [helpDone, setHelpDone] = useState(false);
+  // Which visual the current 'celebrate' phase gets: a real independent/
+  // retry success (star + sparkles + word glow) vs. an assisted rung-3
+  // continuation (quiet, warm, no fanfare) — see celebrateAndAdvance's `cue`
+  // param. Neither should ever read as failure; only the former is a
+  // celebration.
+  const [celebrateCue, setCelebrateCue] = useState(true);
   const liveRef = useRef<LiveProgress | null>(null);
   const listeningCuePlayedRef = useRef(false);
   const sessionRef = useRef<ReadingSession | null>(null);
@@ -619,33 +626,35 @@ export default function ReadPage() {
     pageInterventionsRef.current = interventions;
   }
 
-  /** One rung up from wherever the ladder currently is for this page. Rungs
-   *  1/2 show a cue and offer one more mic attempt; rung 3 reads the whole
-   *  sentence aloud and marks the page assisted — see
-   *  docs/HELP_LADDER_INTEGRATION.md and reading-tutor/content/config.json
-   *  help_template. */
+  /** One rung up from wherever the ladder currently is for this page.
+   *  Rungs 1/2 show a text-free help interaction (SlideWordHelp for a
+   *  segmentable word, AudioWordHelp otherwise — see the render below) and
+   *  offer one more mic attempt; rung 3 reads the whole sentence aloud and
+   *  marks the page assisted — see docs/HELP_LADDER_INTEGRATION.md and
+   *  reading-tutor/content/config.json help_template. Rung 2's own
+   *  speakPrompt() line was retired: AudioWordHelp now owns pronouncing the
+   *  word for every rung < 3 an unsegmentable word visits, so a second,
+   *  parent-level utterance here would just race/cancel it (speakPrompt()
+   *  cancels any in-flight utterance before starting a new one). */
   function enterOrEscalateLadder(word: string) {
     // A word already shown the slide interaction at rung 1 that still needs
     // help skips the old bare-word rung 2 reveal entirely — the slider
     // already showed every letter, so rung 2 would teach nothing new.
     // Escalate straight to rung 3's sentence fallback instead ("if still
     // struggling, escalate to the remaining stronger help"). Words that
-    // don't segment keep the original 1 -> 2 -> 3 progression untouched.
+    // don't segment keep the original 1 -> 2 -> 3 progression untouched —
+    // AudioWordHelp re-pronounces the word fresh on each escalation (it's
+    // keyed by rung in the render below).
     const skipToSentenceFallback = rungRef.current === 1 && segmentWord(word, stage) !== null;
     const next: 1 | 2 | 3 = skipToSentenceFallback ? 3 : (Math.min(3, rungRef.current + 1) as 1 | 2 | 3);
     rungRef.current = next;
     setRung(next);
     setTricky(word);
-    setSlideDone(false);
+    setHelpDone(false);
     practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
     setPhase('correction');
     duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why; every rung ducks now, not just the speaking ones
-    if (next === 2) {
-      setSpeaking(true);
-      speakPrompt(rungLine(2, { word, sentence: page.text, stage }), {
-        onEnd: () => { if (!disposedRef.current) setSpeaking(false); },
-      });
-    } else if (next === 3) {
+    if (next === 3) {
       pageAssistedRef.current = true;
       setSpeaking(true);
       speakPrompt(rungLine(3, { word, sentence: page.text, stage }), {
@@ -690,16 +699,24 @@ export default function ReadPage() {
 
   function celebrateAndAdvance(p: string, cue = true) {
     // Clear the correction card immediately — otherwise it lingers behind
-    // the celebrate star/text until advance() fires 1600ms later, showing
-    // two states' UI at once (the correction card was only ever meant to
-    // survive through the RETRY's listening/scoring, not into celebrate).
+    // the celebrate visual until advance() fires later, showing two states'
+    // UI at once (the correction card was only ever meant to survive through
+    // the RETRY's listening/scoring, not into celebrate).
     setTricky(null);
     setPraise(p);
+    setCelebrateCue(cue);
     if (cue) playReadingCue('section-success.mp3');
     setPhase('celebrate');
+    // A real independent/retry success gets the brief star+sparkle+glow
+    // beat (long enough for lc-success-pop + the sparkle drift to actually
+    // finish, short enough that the story visibly rewards the child by
+    // continuing rather than making them wait on a screen). An assisted
+    // rung-3 advance (cue=false) has no animation to wait out — the "no
+    // pause, no second chance, no change in tone" comment above its caller
+    // means this hold should be as brief as the phase transition itself.
     setTimeout(() => {
       if (!disposedRef.current) advance();
-    }, 1600);
+    }, cue ? 700 : 350);
   }
 
   /** Pushes the current page's finished SentenceResult onto the
@@ -1109,7 +1126,7 @@ export default function ReadPage() {
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '4px 22px 26px' }}>
         <div
-          className="lc-reading-card-in"
+          className={phase === 'celebrate' && celebrateCue ? 'lc-reading-card-in lc-celebrate-glow' : 'lc-reading-card-in'}
           style={{
             background: '#fffdf8',
             borderRadius: 18,
@@ -1124,12 +1141,13 @@ export default function ReadPage() {
           {tricky && rung < 3 ? (
             slideSegments ? (
               // The slide interaction IS the rung-1 experience for a
-              // segmentable word — no phoneme-cue line above it (that was
-              // rung 1's old withhold-the-word text; showing every letter
-              // and withholding the sound cue at once would be a mixed
-              // message) and no competing dots/decoration, so the word and
-              // the track are the only things on the card.
+              // segmentable word — no competing text or decoration, so the
+              // word and the track are the only things on the card. Keyed
+              // by rung so an escalation (rare — see enterOrEscalateLadder,
+              // most segmentable-word failures jump straight to rung 3)
+              // still remounts cleanly rather than reusing stale state.
               <SlideWordHelp
+                key={rung}
                 word={tricky}
                 segments={slideSegments}
                 onComplete={() => {
@@ -1142,25 +1160,20 @@ export default function ReadPage() {
                       // stays disabled until the blended word has actually
                       // finished playing, so sliding + hearing the blend
                       // visibly precedes retrying aloud.
-                      setSlideDone(true);
+                      setHelpDone(true);
                     },
                   });
                 }}
               />
             ) : (
-              <div className="lc-help-pulse" style={{ textAlign: 'center' }}>
-                {/* segmentWord() couldn't cleanly cover this word with
-                    graphemes the child is actually expected to know at this
-                    stage — never guess; fall back to the original ladder
-                    exactly as it worked before this feature existed. */}
-                <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
-                  {rungLine(rung as 1 | 2, { word: tricky, sentence: page.text, stage })}
-                </p>
-                {rung >= 2 && <p className="lc-tricky-word">{tricky}</p>}
-                <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
-                  • • •
-                </div>
-              </div>
+              // segmentWord() couldn't cleanly cover this word with
+              // graphemes the child is actually expected to know at this
+              // stage — never guess a segmentation. AudioWordHelp
+              // pronounces the WHOLE word instead; never a phoneme-by-
+              // phoneme cue, never visible slash-notation. Keyed by rung so
+              // a second failure re-pronounces fresh rather than sitting on
+              // the previous attempt's "your turn" state.
+              <AudioWordHelp key={rung} word={tricky} onComplete={() => setHelpDone(true)} />
             )
           ) : (
             <div key={pageIdx} className={sentenceLeaving ? 'lc-sentence-out' : 'lc-sentence-in'}>
@@ -1195,23 +1208,30 @@ export default function ReadPage() {
         <div style={{ flex: 1 }} />
 
         {phase === 'celebrate' ? (
-          <div role="status" className="lc-fade-up" style={{ textAlign: 'center' }}>
-            <span aria-hidden className="lc-success-pop" style={{ display: 'inline-block' }}>
-              <img src="/icons/success-star.png" alt="" style={{ height: 40, width: 'auto' }} />
-            </span>
-            <div
-              style={{
-                fontFamily: 'var(--serif)',
-                fontSize: 34,
-                fontWeight: 700,
-                color: 'var(--dark)',
-                textShadow: '0 1px 0 rgba(255,255,255,0.55)',
-                marginTop: 4,
-              }}
-            >
-              {praise}
+          celebrateCue ? (
+            // Real independent/retry success: motion + sound lead, not a
+            // sentence to read. The star (enlarged from its old 40px) and a
+            // few restrained sparkles are the primary signal; praise is
+            // small and secondary, present for sound-off/screen-reader
+            // users but never the thing a child has to read to know they
+            // succeeded.
+            <div role="status" className="lc-fade-up lc-celebrate-beat" style={{ textAlign: 'center' }}>
+              <span aria-hidden className="lc-success-pop" style={{ display: 'inline-block', position: 'relative' }}>
+                <img src="/icons/success-star.png" alt="" style={{ height: 60, width: 'auto' }} />
+                <span className="lc-sparkle lc-sparkle-1" aria-hidden />
+                <span className="lc-sparkle lc-sparkle-2" aria-hidden />
+                <span className="lc-sparkle lc-sparkle-3" aria-hidden />
+              </span>
+              <div className="lc-celebrate-praise">{praise}</div>
             </div>
-          </div>
+          ) : (
+            // Assisted rung-3 continuation: warm and neutral, never a
+            // failure look, but deliberately no star/sparkle/sound — "no
+            // pause, no second chance, no change in tone."
+            <div role="status" className="lc-fade-up" style={{ textAlign: 'center' }}>
+              <div className="lc-celebrate-praise lc-celebrate-praise-quiet">{praise}</div>
+            </div>
+          )
         ) : phase === 'correction' && speaking ? (
           // Rung 2/3's own TTS is playing (ambience already ducked by the
           // existing phase/speaking effect) — no action available yet, the
@@ -1221,15 +1241,15 @@ export default function ReadPage() {
           </div>
         ) : phase === 'correction' && tricky && rung < 3 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-            {/* Sliding must visibly come before retrying aloud: while a
-                segmentable word's slider hasn't been completed yet, the mic
-                button is disabled rather than an equally-inviting choice
-                sitting right next to the track. "Keep going" is never
-                gated — a child can always skip, slid or not. */}
+            {/* Sliding/listening must visibly come before retrying aloud:
+                whichever help interaction is showing (slider or audio), the
+                mic button stays disabled until it finishes — never an
+                equally-inviting choice sitting right next to it. "Keep
+                going" is never gated — a child can always skip. */}
             <button
-              className={slideSegments && !slideDone ? 'btn-primary' : 'btn-primary lc-help-pulse'}
-              disabled={!!slideSegments && !slideDone}
-              aria-label={slideSegments && !slideDone ? 'Slide through the word first' : 'Try the word'}
+              className={helpDone ? 'btn-primary lc-help-pulse' : 'btn-primary'}
+              disabled={!helpDone}
+              aria-label={helpDone ? 'Try the word' : 'Finish the help first'}
               style={{
                 background: 'var(--blue)',
                 boxShadow: '0 3px 0 #054a8a',
@@ -1238,10 +1258,10 @@ export default function ReadPage() {
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: 8,
-                ...(slideSegments && !slideDone ? { opacity: 0.4, cursor: 'default', boxShadow: 'none' } : null),
+                ...(helpDone ? null : { opacity: 0.4, cursor: 'default', boxShadow: 'none' }),
               }}
               onClick={() => {
-                if (slideSegments && !slideDone) return;
+                if (!helpDone) return;
                 setPhase('scoring');
                 void beginListening(tricky);
               }}

@@ -1,24 +1,28 @@
 'use client';
 
-/* Rung 2's slide-through word help: the child drags one handle left to right
- * across the tricky word's graphemes (segmentWord() in lib/help-ladder.ts),
- * one coloured segment per grapheme, then hears the whole word blended.
- *
- * Deliberately scoped to rung 2 only — rung 1 withholds the word on purpose
- * ("that word begins with {phoneme}"; see enterOrEscalateLadder's comment),
- * and this component always shows every letter, so it would defeat rung 1's
- * whole reason to exist. Rung 3 stays the existing full-sentence TTS
- * fallback. Nothing here touches rung escalation, beginListening(tricky), or
- * any interpretation/persistence code — this is presentation only, layered
- * in front of the same "Try the word" / "Keep going" buttons that already
- * exist below it.
+/* The help ladder's slide-through word help for a SEGMENTABLE word: the
+ * child drags one handle left to right across the tricky word's graphemes
+ * (segmentWord() in lib/help-ladder.ts), one coloured segment per grapheme,
+ * then hears the whole word blended. Shown as soon as the word first becomes
+ * tricky (rung 1) — see app/read/page.tsx's enterOrEscalateLadder for why a
+ * second failure on an already-slid word skips straight to rung 3 rather
+ * than repeating this. AudioWordHelp is its sibling for words segmentWord()
+ * won't cover. Nothing here touches rung escalation, beginListening(tricky),
+ * or any interpretation/persistence code — this is presentation only,
+ * layered in front of the same "Try the word" / "Keep going" buttons that
+ * already exist below it.
  *
  * A single real <input type="range"> is the entire interactive surface —
  * native drag, tap-to-jump, and arrow-key stepping for mouse, touch, and
  * keyboard alike, with no hand-rolled pointer-event code to get wrong. Its
  * default appearance is fully replaced (see the -webkit-slider and
  * -moz-range pseudo-elements in globals.css) so the visible track can show
- * one hard-edged colour per grapheme. */
+ * one hard-edged colour per grapheme.
+ *
+ * The thumb gets a small idle left-right nudge (lc-slide-idle) while
+ * untouched (value 0) — the ONLY hint that it's draggable a child doesn't
+ * have to read is otherwise just its shape, and "drag me" is not always
+ * obvious from a static circle alone. Stops the instant a real drag starts. */
 
 import { useEffect, useRef, useState } from 'react';
 import { playUISound } from '@/lib/audio';
@@ -109,7 +113,7 @@ export function SlideWordHelp({
       <div className="lc-slide-track-wrap">
         <input
           type="range"
-          className="lc-slide-range"
+          className={value === 0 ? 'lc-slide-range lc-slide-idle' : 'lc-slide-range'}
           min={0}
           max={count}
           step={1}
