@@ -24,6 +24,17 @@ export function avatarEmoji(id: AvatarId | undefined): string {
   return AVATARS.find((a) => a.id === id)?.emoji ?? '🧒';
 }
 
+/** Illustrated avatar asset — null only when no avatar has been chosen yet
+ *  (avatar is optional at setup), in which case callers fall back to the
+ *  emoji above. */
+export function avatarImageSrc(id: AvatarId | undefined): string | null {
+  return id ? `/images/setup/avatar-${id}.png` : null;
+}
+
+export function interestImageSrc(id: InterestId): string {
+  return `/images/setup/interest-${id}.png`;
+}
+
 export interface ChildProfile {
   /** Stable, opaque identity for this child — generated once at setup, never
    *  derived from the name (names collide and are mutable; see
@@ -83,6 +94,10 @@ export function saveProfile(p: ChildProfile): void {
 
 export interface SessionReport {
   date: string; // YYYY-MM-DD
+  /** Ties the report to the specific chapter it came from (lib/chapters.ts
+   *  chapterIdFor) — lets /home tell "today's chapter" apart from "today's
+   *  chapter, already read" instead of just checking the date. */
+  chapterId: string;
   childName: string;
   newWords: string[];
   practiced: { word: string; hint: string }[];
