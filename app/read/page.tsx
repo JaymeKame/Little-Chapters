@@ -616,6 +616,60 @@ export default function ReadPage() {
     }
   }
 
+  /** Diagnostic infrastructure, not a feature: per-word verdict logging so
+   *  "why didn't that register as a stumble" is answerable from DevTools
+   *  instead of guessed at. Never rendered in the UI, never touches
+   *  needsHelp/reason/confidence — purely reads what combineVerdicts() and
+   *  toWordSignals() already computed.
+   *
+   *  Deliberately NOT gated on NODE_ENV === 'development': that check is
+   *  FALSE on every Vercel deployment, preview included (`next build`
+   *  always sets NODE_ENV=production — the same reason the sim: buttons
+   *  and the old [Canonical session] log never appear there either), so a
+   *  dev-only gate would make this invisible on exactly the environment
+   *  real testing happens on. console.debug() is the actual gate instead —
+   *  Chrome/Firefox DevTools hide Debug-level messages by default (only
+   *  Info/Warning/Error show unless "Verbose"/"Debug" is switched on), so
+   *  it stays out of the way without being unreachable when it's needed. */
+  function logVerdictDiagnostics(r: ReadingAssessmentResult, verdicts: WordVerdict[], decodeResult: DecodeResult | null) {
+    const { diagnostics, signals } = toWordSignals(r.words, decodeResult);
+    let si = 0; // walks diagnostics/signals, which skip Insertions — verdicts does not
+    const rows = verdicts.map((v) => {
+      if (v.errorType === 'Insertion') {
+        return {
+          word: v.word,
+          errorType: v.errorType,
+          needsHelp: v.needsHelp,
+          reason: v.reason,
+          graders: 'n/a (insertion)',
+          azureAccuracy: v.azureAccuracy,
+          azureMinPhoneme: v.azureMinPhoneme,
+          decodeScore: null as number | null,
+          confidence: null as number | null,
+        };
+      }
+      const confidence = signals[si]?.confidence ?? null;
+      si += 1;
+      return {
+        word: v.word,
+        errorType: v.errorType,
+        needsHelp: v.needsHelp,
+        reason: v.reason,
+        // decodeScore is only ever null here because the MDD service was
+        // unreachable for THIS request (decodeReading()'s catch branch) —
+        // see combineVerdicts' azure-only-fallback threshold, which is
+        // stricter (<40) than the dual-grader default (<50).
+        graders: v.decodeScore != null ? 'azure+mdd' : 'azure-only (MDD unreachable)',
+        azureAccuracy: v.azureAccuracy,
+        azureMinPhoneme: v.azureMinPhoneme,
+        decodeScore: v.decodeScore,
+        confidence,
+      };
+    });
+    console.debug(`[Verdict] rung ${rungRef.current} · page ${pageIdx} · "${page.text.slice(0, 50)}${page.text.length > 50 ? '…' : ''}"`);
+    console.table(rows);
+  }
+
   /** Stores this take's adapted WordSignal[]/interventions as the page's
    *  canonical measurement. Called ONLY for the first, whole-page take
    *  (rungRef.current === 0) — a rung 1/2 retry take covers just the
@@ -671,6 +725,7 @@ export default function ReadPage() {
   }
 
   function handleVerdicts(r: ReadingAssessmentResult, verdicts: WordVerdict[], decodeResult: DecodeResult | null) {
+    logVerdictDiagnostics(r, verdicts, decodeResult);
     const flagged = verdicts.filter((v) => v.needsHelp);
     if (rungRef.current === 0) storePageSignals(r.words, decodeResult);
     if (!awardedRef.current && rungRef.current === 0) {
