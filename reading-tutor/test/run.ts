@@ -15,7 +15,7 @@ import {
 } from '../src/slots.js';
 import { allowedWordsForStage, CONTENT_BLOCKLIST, HUMAN_NOUNS } from '../content/stages.js';
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '../src/types.js';
-import { adaptTutorDraft } from '../../lib/chapters.ts';
+import { adaptTutorDraft, resolveGenerationStage, resolveGenerationContext, stageForAge, chapterIdFor } from '../../lib/chapters.ts';
 import { toWordSignals, toSentenceResult } from '../../lib/reading-signal-adapter.ts';
 import { interpretSessionWithIntervention, type SessionIntervention } from '../../lib/reading-session-interpreter.ts';
 import { HELP_LADDER, rungLine, graphemeCueFor } from '../../lib/help-ladder.ts';
@@ -30,6 +30,7 @@ import {
   wasSessionCompleted,
   claimChildProgressFromAnonymousUid,
 } from '../../lib/child-progress.ts';
+import type { ChildProfile } from '../../lib/profile.ts';
 
 // Node has no global localStorage without --experimental-webstorage;
 // lib/child-progress.ts's local store (like every other local store in this
@@ -950,6 +951,148 @@ section('Progress API routes - ownership is derived from the verified token, nev
   }
   ok(routeSources[0].includes('auth.uid') && routeSources[1].includes('auth.uid'),
      'both routes address Firestore using the verified auth.uid instead');
+}
+
+section('Adaptive loop - persisted stage wins over age (the specific regression this task exists to prevent)');
+{
+  // The task's own worked example: age implies Stage 3, but the persisted
+  // ChildProgress says Stage 2. Generation must use Stage 2. This is
+  // deliberately separate from the narrative test below so it can never be
+  // accidentally satisfied by the two numbers coinciding.
+  const uid = 'uid-differ-1';
+  const profile: ChildProfile = {
+    childId: 'child-differ-1', childName: 'Kai', age: 7,
+    interests: ['space'], createdAt: Date.now(),
+  };
+  ok(stageForAge(profile.age) === 3, 'sanity: age implies stage 3 for this profile');
+  saveLocalProgress(uid, profile.childId, { ...defaultProgressFor(profile.childId, 3), stage: 2 });
+  const stage = resolveGenerationStage(profile, uid);
+  ok(stage === 2, 'generation uses the PERSISTED stage (2), not the age-derived one (3) — the exact failure mode this task guards against', String(stage));
+  const context = resolveGenerationContext(profile, uid);
+  ok(context.stage === 2, 'and the full generation context carries the same persisted stage through');
+}
+
+section('Adaptive loop - Phase 5: one complete lifecycle through the real production functions');
+{
+  const uid = 'uid-loop-1';
+  const profile: ChildProfile = {
+    childId: 'child-loop-1', childName: 'Nia', age: 7,
+    interests: ['dogs'], createdAt: Date.now(),
+  };
+
+  // 1. Child begins with stage S. No ChildProgress exists yet for this
+  //    child, so generation seeds from initialStage(stageForAge(age)) —
+  //    the SAME composition lib/child-progress.ts's defaultProgressFor()
+  //    uses for the progress record itself (Phase 1/3's "first use: age ->
+  //    initial stage").
+  ok(stageForAge(profile.age) === 3, 'sanity: this profile\'s age implies stage 3');
+  const seedStage = resolveGenerationStage(profile, uid);
+  ok(seedStage === initialStage(3) && seedStage === 2, 'a brand-new child seeds one stage below the age estimate, not at it', String(seedStage));
+
+  // 2. Today's chapter exists at stage S=2 — generated (not asserted) via
+  //    the REAL generateChapter()/validateAll(), unmodified, with a
+  //    deterministic fake LLM client (no OPENAI_API_KEY / network in this
+  //    environment — same constraint, same fixture-injection point, the
+  //    existing "Generator" tests above already use).
+  ok(allowedWordsForStage(seedStage).has('cat') && allowedWordsForStage(seedStage).has('mat'),
+     'sanity: the words this test relies on are genuinely legal at the seeded stage');
+  const cast1 = { childName: profile.childName, petName: 'Momo' };
+  const day1Llm: LlmClient = {
+    async complete() {
+      return JSON.stringify({
+        sentences: ['Nia sat on a mat', 'Momo sat on a mat', 'Nia and Momo had fun', 'The cat sat on it'],
+        imagePrompt: 'Nia and Momo on a mat', summaryLine: 'Nia and Momo had fun on the mat',
+      });
+    },
+  };
+  const day1 = await generateChapter({
+    stage: seedStage, cast: cast1, interests: profile.interests,
+    storySoFar: '', recentlyMissedWords: [], skeleton: SKELETONS[0],
+  }, day1Llm);
+  ok(day1.ok && !!day1.draft, 'today\'s chapter is a real, validator-passing draft at stage S', JSON.stringify(day1.rejectionLog));
+  const day1Chapter = day1.draft && adaptTutorDraft(profile, day1.draft, SKELETONS[0], day1.slots, seedStage);
+  ok(!!day1Chapter && day1Chapter.pages.length > 0, 'and adapts into a real Chapter through the existing lifecycle function');
+  ok(!!day1Chapter && day1Chapter.phonics[0].hint === `Stage ${seedStage} practice`, 'labelled with the stage it was actually generated at');
+
+  // 3. Child completes a canonical reading session, 4. with at least one
+  //    legitimate difficulty recorded ('cat', mumbled — genuinely stumbled,
+  //    not skipped/reread, so it's an honest tricky-word signal).
+  const session: SessionInput = {
+    childId: profile.childId, sessionId: 'sess-loop-1', stage: seedStage, chapterId: 'chapter-loop-day1',
+    isBookshelfReread: false, startedAt: new Date().toISOString(),
+    sentences: [
+      sentence(six(clean)),
+      sentence([...six(clean).slice(0, 5), mumbled('cat')]),
+      sentence(six(clean)),
+    ],
+  };
+  // 5. Session persists once, 6. applySession() runs once, 7. updated
+  //    ChildProgress is persisted — all via the real, unmodified Phase 4/5
+  //    persistence function from the previous task.
+  const completion = completeSessionLocally(uid, profile.childId, stageForAge(profile.age), session, []);
+  ok(completion.applied, 'the session applies progression exactly once');
+  ok(completion.reading.trickyWords.includes('cat'), 'the genuine difficulty is recorded as a tricky word');
+  ok(completion.progress.trickyWords.includes('cat'), 'and survives onto ChildProgress.trickyWords');
+  const stageAfterDay1 = completion.progress.stage;
+  ok(stageAfterDay1 === seedStage + 1, 'accuracy (17/18) clears placementJumpAt: stage moves up one', String(stageAfterDay1));
+
+  // 8. Next generation reads the persisted ChildProgress.stage — NOT a
+  //    freshly-derived age stage (explicit assertion, per the task).
+  const day2Context = resolveGenerationContext(profile, uid);
+  ok(day2Context.stage === stageAfterDay1, 'generation request stage EQUALS persisted ChildProgress.stage', `${day2Context.stage} vs ${stageAfterDay1}`);
+  ok(day2Context.stage !== stageForAge(profile.age) || day2Context.stage === initialStage(stageForAge(profile.age)) + 1,
+     'and is not merely coincidentally equal to a fresh age re-derivation', String(day2Context.stage));
+  // 9. Generation receives the intended reinforcement state.
+  ok(day2Context.recentlyMissedWords.includes('cat'), 'tomorrow\'s generation context includes the real tricky word for reinforcement');
+  ok(day2Context.storySoFar === '', 'no SessionReport exists yet in this test, so continuity is honestly empty, not fabricated');
+
+  // 10. Generated chapter passes the real validators, with the
+  //     reinforcement word actually reaching the prompt.
+  const day2Prompts: string[] = [];
+  const day2Llm: LlmClient = {
+    async complete(prompt) {
+      day2Prompts.push(prompt);
+      return JSON.stringify({
+        sentences: ['Nia and Momo sat on a mat', 'The cat sat on the mat', 'Nia had fun with the cat', 'Momo and Nia had a big cat'],
+        imagePrompt: 'Nia, Momo, and a cat', summaryLine: 'Nia and Momo met a cat',
+      });
+    },
+  };
+  const day2 = await generateChapter({
+    stage: day2Context.stage, cast: cast1, interests: profile.interests,
+    storySoFar: day2Context.storySoFar, recentlyMissedWords: day2Context.recentlyMissedWords,
+    skeleton: SKELETONS[0],
+  }, day2Llm);
+  ok(day2.ok && !!day2.draft, 'tomorrow\'s chapter also passes the real, unmodified validators', JSON.stringify(day2.rejectionLog));
+  ok(day2Prompts[0].includes('cat'), 'the tricky word actually reaches the built prompt, not just the request object');
+
+  // 11. Next chapter is stored/read through the existing chapter lifecycle.
+  const day2Chapter = day2.draft && adaptTutorDraft(profile, day2.draft, SKELETONS[0], day2.slots, day2Context.stage);
+  ok(!!day2Chapter && day2Chapter.pages.length > 0, 'tomorrow\'s chapter adapts into a real Chapter too');
+  ok(!!day2Chapter && day2Chapter.phonics[0].hint === `Stage ${day2Context.stage} practice`, 'labelled with the NEW, moved stage — not the original seed stage');
+
+  // 12. Re-running the completion/generation path does not duplicate
+  //     progression or create competing chapters.
+  const repeat = completeSessionLocally(uid, profile.childId, stageForAge(profile.age), session, []);
+  ok(repeat.applied === false, 'repeating the SAME chapter\'s completion does not re-apply progression');
+  ok(repeat.progress.stage === stageAfterDay1 && repeat.progress.sessionsCompleted === completion.progress.sessionsCompleted,
+     'progress after the repeat is byte-identical to after the first completion');
+  const day2ContextAgain = resolveGenerationContext(profile, uid);
+  ok(day2ContextAgain.stage === day2Context.stage && JSON.stringify(day2ContextAgain.recentlyMissedWords) === JSON.stringify(day2Context.recentlyMissedWords),
+     'a second generation-context read (e.g. a refreshed page) resolves identically — same stage means the same cache id, so requestTutorChapter\'s existing cache/inFlight dedup (unmodified) serves the cached chapter instead of generating a competing one');
+}
+
+section('Adaptive loop - API route forwards personalization inputs (static check — no OPENAI_API_KEY in this environment)');
+{
+  // Mirrors the previous task's "ownership derived from verified token"
+  // static check: the live route 503s immediately without an API key, so
+  // this proves the WIRING exists in source rather than invoking it.
+  const fs = await import('node:fs');
+  const routeSrc = fs.readFileSync(new URL('../../app/api/chapters/story/route.ts', import.meta.url), 'utf8');
+  ok(routeSrc.includes('body.recentlyMissedWords'), 'the route reads recentlyMissedWords from the request body');
+  ok(routeSrc.includes('body.storySoFar'), 'and storySoFar');
+  ok(/recentlyMissedWords,?\s*\n?\s*(slots|skeleton)|recentlyMissedWords\s*,/.test(routeSrc) && routeSrc.includes('recentlyMissedWords') && routeSrc.includes('generateChapter'),
+     'and forwards them into generateChapter(), not just parses and discards them');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

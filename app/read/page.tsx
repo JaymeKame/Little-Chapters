@@ -221,7 +221,10 @@ export default function ReadPage() {
     startedAtRef.current = new Date().toISOString();
     sentenceResultsRef.current = [];
     interventionsRef.current = [];
-    void requestTutorChapter(p).then((generated) => { if (generated) setChapter(generated); });
+    // Unauthenticated early attempt (no uid yet — auth hasn't settled at
+    // mount) — in production this 401s and is swallowed, same as always;
+    // the auth-gated effect below does the real, correctly-staged fetch.
+    void requestTutorChapter(p, null).then((generated) => { if (generated) setChapter(generated); });
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
@@ -248,7 +251,7 @@ export default function ReadPage() {
     let cancelled = false;
     void (async () => {
       const authToken = user ? await user.getIdToken().catch(() => null) : null;
-      const tutorChapter = await requestTutorChapter(profile, authToken);
+      const tutorChapter = await requestTutorChapter(profile, user?.uid ?? null, authToken);
       if (tutorChapter && !cancelled && !disposedRef.current && !startedReadingRef.current) {
         setChapter(tutorChapter);
       }

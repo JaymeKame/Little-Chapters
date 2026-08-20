@@ -47,8 +47,24 @@ export default function ChildHomePage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
-    void requestTutorChapter(p).then((generated) => { if (generated) setChapter(generated); });
   }, [router]);
+
+  // Prefetch/upgrade to the stage-matched tutor chapter — waits for auth to
+  // settle (same reasoning as app/read/page.tsx's identical effect: a uid
+  // is required to look up this child's persisted stage, and the anon
+  // sign-in is still in flight at mount). Never blocks the instant demo-arc
+  // render above; this only ever upgrades chapter in place once resolved.
+  useEffect(() => {
+    if (!profile || authLoading) return;
+    let cancelled = false;
+    const uid = user?.uid ?? null;
+    void requestTutorChapter(profile, uid).then((generated) => {
+      if (generated && !cancelled) setChapter(generated);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, user, authLoading]);
 
   // Prepare the real flat theme asset; playback waits for a user gesture.
   useEffect(() => {
