@@ -52,8 +52,10 @@ export function stopSpeaking(): void {
 }
 
 /** Chapter-aware welcome line for Screen 3 (falls back to a generic line if
- *  no chapter is available yet). */
-export function welcomeLine(childName: string, chapter?: Chapter | null): string {
+ *  no chapter is available yet). `alreadyRead` covers the "came back later
+ *  today" case — no chapter prompt, since there isn't a new one to start. */
+export function welcomeLine(childName: string, chapter?: Chapter | null, alreadyRead = false): string {
+  if (alreadyRead) return `You already read today's chapter, ${childName}! Come back tomorrow for a new one.`;
   if (chapter) return `Ready to see what happens to ${chapter.character} today, ${childName}?`;
   return `Hi ${childName}, your new chapter is ready.`;
 }
