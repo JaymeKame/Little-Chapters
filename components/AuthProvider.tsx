@@ -21,7 +21,19 @@ import {
 } from 'firebase/auth';
 import { getFirebaseAuth } from '@/lib/firebase';
 import { claimPetFromAnonymousUid } from '@/lib/pet';
+import { claimChildProgressFromAnonymousUid } from '@/lib/child-progress';
+import { loadProfile } from '@/lib/profile';
 import { doc, setDoc, getFirestore } from 'firebase/firestore';
+
+/** Claims everything keyed by the outgoing anonymous uid into the new uid —
+ *  pet state (existing) and reading progress/session history (this task).
+ *  See lib/child-progress.ts's claimChildProgressFromAnonymousUid for why
+ *  this is local-only for now (PHASE 6's flagged limitation). */
+function claimAnonymousChild(newUid: string, oldAnonUid: string): void {
+  claimPetFromAnonymousUid(newUid, oldAnonUid);
+  const profile = loadProfile();
+  if (profile) claimChildProgressFromAnonymousUid(newUid, oldAnonUid, profile.childId);
+}
 
 interface AuthContextValue {
   user: User | null;
@@ -82,7 +94,7 @@ async function upgradeOrSignIn(provider: GoogleAuthProvider | OAuthProvider): Pr
 
   try {
     const cred = await signInWithPopup(auth, provider);
-    if (outgoingAnonUid) claimPetFromAnonymousUid(cred.user.uid, outgoingAnonUid);
+    if (outgoingAnonUid) claimAnonymousChild(cred.user.uid, outgoingAnonUid);
   } catch (err) {
     if ((err as { code?: string })?.code === 'auth/popup-blocked') return redirect();
     throw err;
@@ -96,7 +108,7 @@ async function finishRedirectSignIn(auth: ReturnType<typeof getFirebaseAuth>): P
     if (!result) return;
     const pending = sessionStorage.getItem(PENDING_ANON_UID);
     if (pending) {
-      claimPetFromAnonymousUid(result.user.uid, pending);
+      claimAnonymousChild(result.user.uid, pending);
       sessionStorage.removeItem(PENDING_ANON_UID);
     }
   } catch {

@@ -33,12 +33,27 @@ export async function POST(request: NextRequest) {
   if (!auth.ok) return auth.response;
   if (overLimit(auth.uid)) return NextResponse.json({ error: 'RATE_LIMITED' }, { status: 429 });
   try {
-    const body = await request.json() as { profile?: ChildProfile; stage?: number; skeletonId?: string };
+    const body = await request.json() as {
+      profile?: ChildProfile;
+      stage?: number;
+      skeletonId?: string;
+      recentlyMissedWords?: string[];
+      storySoFar?: string;
+    };
     const profile = body.profile;
     if (!profile?.childName || !Array.isArray(profile.interests)) {
       return NextResponse.json({ error: 'Invalid profile' }, { status: 400 });
     }
     const stage = Math.min(10, Math.max(1, Math.round(body.stage || 1)));
+    // Both already-existing GenerateRequest fields — see
+    // docs/ADAPTIVE_LOOP.md Phase 2. buildPrompt() itself re-filters
+    // recentlyMissedWords through allowedWordsForStage(stage) before ever
+    // using them, so a word that's since become stage-inappropriate can
+    // never reach the model regardless of what the client sends.
+    const recentlyMissedWords = Array.isArray(body.recentlyMissedWords)
+      ? body.recentlyMissedWords.filter((w): w is string => typeof w === 'string').slice(0, 10)
+      : [];
+    const storySoFar = typeof body.storySoFar === 'string' ? body.storySoFar.slice(0, 500) : '';
     const skeleton = SKELETONS.find((candidate) => candidate.id === body.skeletonId) ?? pickSkeleton(stage, []);
     const slots = assignSlots(skeleton.beats, stage);
     const llm: LlmClient = {
@@ -57,8 +72,8 @@ export async function POST(request: NextRequest) {
       stage,
       cast: { childName: profile.childName, petName: 'Momo' }, // Momo the reading pet, not the child twice
       interests: profile.interests,
-      storySoFar: '',
-      recentlyMissedWords: [],
+      storySoFar,
+      recentlyMissedWords,
       skeleton,
       slots,
     }, llm);

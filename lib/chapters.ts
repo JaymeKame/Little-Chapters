@@ -9,6 +9,9 @@
  * get highlighted in the reader and reported to the parent.                  */
 
 import type { ChildProfile, InterestId } from './profile';
+import { loadReport } from './profile';
+import { loadLocalProgress } from './child-progress';
+import { initialStage } from '../reading-tutor/src/progression';
 import { pickSkeleton, type Skeleton } from '../reading-tutor/src/skeletons';
 import { assignSlots } from '../reading-tutor/src/slots';
 import type { StoryDraft } from '../reading-tutor/src/validators';
@@ -337,7 +340,7 @@ export function loadCachedVisuals(chapterId: string): ChapterVisuals | null {
 
 /* ── Reading-tutor story path (skeletons + stage-matched generation) ───── */
 
-function stageForAge(age: number): number {
+export function stageForAge(age: number): number {
   return Math.min(10, Math.max(1, Math.round(age) - 4));
 }
 
@@ -362,8 +365,31 @@ function rememberSkeleton(profile: ChildProfile, id: string): void {
   }
 }
 
-export function tutorStoryContext(profile: ChildProfile): { stage: number; skeleton: Skeleton } {
-  const stage = stageForAge(profile.age);
+/** Once a ChildProgress record exists for this child (any session has ever
+ *  completed), ITS stage is authoritative for generation — never
+ *  re-derived from age (see docs/ADAPTIVE_LOOP.md, Phase 1). Age is used
+ *  only to seed the very FIRST chapter, through the SAME initialStage()
+ *  composition lib/child-progress.ts's defaultProgressFor() already uses
+ *  for the progress record itself — so chapter #1 and the child's starting
+ *  progress agree from the start, instead of chapter #1 landing one stage
+ *  above where progress says the child actually starts.
+ *
+ *  Synchronous, local-storage-only lookup, deliberately: this matches
+ *  every other local-first read in this app (lib/pet.ts, lib/child-
+ *  progress.ts) and avoids a network round-trip on every chapter request.
+ *  It does not need to be more than that — progress only ever changes at
+ *  chapter COMPLETION, never mid-read, and any remote-vs-local reconcile
+ *  (see app/read/page.tsx's own progress-loading effect) settles well
+ *  before the child's NEXT chapter is requested the following day, when a
+ *  fresh chapterId is computed anyway. */
+export function resolveGenerationStage(profile: ChildProfile, uid: string | null): number {
+  const persisted = loadLocalProgress(uid, profile.childId);
+  if (persisted) return persisted.stage;
+  return initialStage(stageForAge(profile.age));
+}
+
+export function tutorStoryContext(profile: ChildProfile, uid: string | null): { stage: number; skeleton: Skeleton } {
+  const stage = resolveGenerationStage(profile, uid);
   return { stage, skeleton: pickSkeleton(stage, recentSkeletons(profile)) };
 }
 
@@ -372,9 +398,15 @@ export function adaptTutorDraft(
   draft: StoryDraft,
   skeleton: Skeleton,
   slots?: Record<string, string>,
+  /** The stage the draft was ACTUALLY generated at (from the same
+   *  tutorStoryContext() call that produced it) — passed through rather
+   *  than re-derived, so the phonics label below can never disagree with
+   *  what the model was actually constrained to. Falls back to the old
+   *  age-derived value only for callers that don't have it yet (e.g. this
+   *  function's own existing unit tests). */
+  stage: number = stageForAge(profile.age),
 ): Chapter | null {
   if (!Array.isArray(draft.sentences) || draft.sentences.length === 0) return null; // a page-less chapter would crash the reader
-  const stage = stageForAge(profile.age);
   rememberSkeleton(profile, skeleton.id);
   const base = chapterFor(profile.interests[0], profile.childName);
   // Practice words MUST be the slots the story was actually generated with
@@ -422,18 +454,46 @@ function loadCachedTutorChapter(id: string): Chapter | null {
  * without this, the first load of a day buys the same story twice. */
 const inFlight = new Map<string, Promise<Chapter | null>>();
 
+/** The two existing, already-supported GenerateRequest personalization
+ *  inputs this task wires up (see docs/ADAPTIVE_LOOP.md, Phase 2) —
+ *  factored out from generateTutorChapter() purely so stage resolution and
+ *  context-gathering are independently testable without a network call. */
+export function resolveGenerationContext(
+  profile: ChildProfile,
+  uid: string | null,
+): { stage: number; skeleton: Skeleton; recentlyMissedWords: string[]; storySoFar: string } {
+  const context = tutorStoryContext(profile, uid);
+  // Safe to persist/reuse by construction: this is ChildProgress.trickyWords,
+  // which applySession() already computed under every existing invariant —
+  // skip/reread-excluded words can never appear here, and a live
+  // intervention that was never really a clean read can never have been
+  // filtered OUT of it either. Nothing new is inferred here.
+  const recentlyMissedWords = loadLocalProgress(uid, profile.childId)?.trickyWords ?? [];
+  // "One line summary of the story so far... for tomorrow's context" is
+  // GenerateRequest.storySoFar's own documented intent (reading-tutor/src/
+  // generate.ts) — draft.summaryLine already flows into Chapter.teaser and
+  // is already persisted via SessionReport (lib/profile.ts saveReport/
+  // loadReport). This was simply never read back in; wiring it in is
+  // closing an already-designed gap, not inventing new state.
+  const storySoFar = loadReport()?.teaser ?? '';
+  return { ...context, recentlyMissedWords, storySoFar };
+}
+
 /** One generation per child per day: the tutor chapter is cached under the
  *  same stable per-day id the demo chapter uses, so a mid-day reload reads
  *  the SAME story instead of paying for (and waiting on) a new one. */
-export async function requestTutorChapter(profile: ChildProfile, authToken?: string | null): Promise<Chapter | null> {
-  // Stage is part of the cache key: same-named profile at a different age
-  // must not be served the wrong-stage story for the rest of the day.
-  const id = `${chapterIdFor(profile.interests[0], profile.childName)}:s${stageForAge(profile.age)}`;
+export async function requestTutorChapter(profile: ChildProfile, uid: string | null, authToken?: string | null): Promise<Chapter | null> {
+  // Stage is part of the cache key: a child whose progress has moved since
+  // yesterday must not be served yesterday's-stage story for the rest of
+  // the day (same reasoning as the original age-keyed comment here — the
+  // source of the stage changed, not the need to key on it).
+  const stage = resolveGenerationStage(profile, uid);
+  const id = `${chapterIdFor(profile.interests[0], profile.childName)}:s${stage}`;
   const cached = loadCachedTutorChapter(id);
   if (cached) return cached;
   const pending = inFlight.get(id);
   if (pending) return pending;
-  const run = generateTutorChapter(profile, id, authToken);
+  const run = generateTutorChapter(profile, uid, id, authToken);
   inFlight.set(id, run);
   try {
     return await run;
@@ -444,10 +504,11 @@ export async function requestTutorChapter(profile: ChildProfile, authToken?: str
 
 async function generateTutorChapter(
   profile: ChildProfile,
+  uid: string | null,
   id: string,
   authToken?: string | null,
 ): Promise<Chapter | null> {
-  const context = tutorStoryContext(profile);
+  const context = resolveGenerationContext(profile, uid);
   try {
     const response = await fetch('/api/chapters/story', {
       method: 'POST',
@@ -455,12 +516,18 @@ async function generateTutorChapter(
         'Content-Type': 'application/json',
         ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       },
-      body: JSON.stringify({ profile, stage: context.stage, skeletonId: context.skeleton.id }),
+      body: JSON.stringify({
+        profile,
+        stage: context.stage,
+        skeletonId: context.skeleton.id,
+        recentlyMissedWords: context.recentlyMissedWords,
+        storySoFar: context.storySoFar,
+      }),
     });
     if (!response.ok) return null;
     const data = await response.json() as { draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string> };
     if (!data.draft || !data.skeleton) return null;
-    const chapter = adaptTutorDraft(profile, data.draft, data.skeleton, data.slots);
+    const chapter = adaptTutorDraft(profile, data.draft, data.skeleton, data.slots, context.stage);
     if (!chapter) return null;
     try {
       localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));

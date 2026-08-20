@@ -1,0 +1,49 @@
+// PROPOSED, NOT DEPLOYED. See docs/PERSISTENCE.md "Security boundary".
+//
+// This repo has never had a firestore.rules file (confirmed: none exists in
+// git history on any branch as of this task). The shared Firebase project
+// (inzone-f93e4) has a pre-existing world-readable catch-all rule from an
+// earlier "phase-2a" ruleset (see CLAUDE.md, and the identical situation
+// already documented for readingPets in lib/pet.ts) that was never scoped
+// down. Firestore evaluates ALL matching rule blocks for a path and allows
+// access if ANY of them grants it — so a scoped rule added here for
+// `parents/{uid}/children/**` would NOT actually restrict anything while
+// that catch-all still matches the same path. Deploying this file today
+// would be decorative at best, and would invite the same false sense of
+// security that kept the readingPets rule undeployed rather than shipped
+// broken.
+//
+// This is why PHASE 1-5 of this task built readingSessions/childProgress as
+// entirely server-mediated (Firebase Admin SDK, via app/api/progress/*):
+// Admin SDK writes are not subject to Firestore security rules at all, so
+// none of this is actually load-bearing for the data this task added. It's
+// checked in as the scoped rule that SHOULD exist if/when:
+//   (a) the shared project's catch-all is removed or scoped down, and
+//   (b) any future feature reads these collections directly from the
+//       client SDK instead of through a server route.
+//
+// Flagged per this task's PHASE 7: the catch-all itself is the structural
+// weakness, not anything specific to this rule text — nobody should assume
+// it was ever load-tested or reviewed just because it's "existing
+// convention." It should be audited and scoped (ideally to nothing broader
+// than each collection actually needs) independently of this task.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /parents/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      match /children/{childId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+
+        match /progress/{document=**} {
+          allow read, write: if request.auth != null && request.auth.uid == uid;
+        }
+        match /sessions/{document=**} {
+          allow read, write: if request.auth != null && request.auth.uid == uid;
+        }
+      }
+    }
+  }
+}

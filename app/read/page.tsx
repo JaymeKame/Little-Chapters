@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
-import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { chapterFor, requestTutorChapter, selectStoryScene, stageForAge, type Chapter } from '@/lib/chapters';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
@@ -25,6 +25,18 @@ import {
   type ReadingSession,
 } from '@/lib/pronunciation';
 import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
+import { toWordSignals } from '@/lib/reading-signal-adapter';
+import type { SessionIntervention } from '@/lib/reading-session-interpreter';
+import { HELP_LADDER, rungLine, pickEncouragement } from '@/lib/help-ladder';
+import {
+  defaultProgressFor,
+  loadLocalProgress,
+  completeSessionLocally,
+  fetchRemoteProgress,
+  completeSessionRemote,
+  reconcileProgress,
+} from '@/lib/child-progress';
+import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '@/reading-tutor/src/types';
 import {
   duckAmbience,
   playCliffhanger,
@@ -150,6 +162,7 @@ export default function ReadPage() {
   const { user, loading: authLoading } = useAuth();
   const pet = usePet(authLoading ? undefined : (user?.uid ?? null));
   const [profile, setProfile] = useState<ChildProfile | null>(null);
+  const [progress, setProgress] = useState<ChildProgress | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [pageIdx, setPageIdx] = useState(0);
   const [phase, setPhase] = useState<Phase>('ready');
@@ -159,15 +172,41 @@ export default function ReadPage() {
   const [praise, setPraise] = useState('Great reading!');
   const [speaking, setSpeaking] = useState(false); // TTS replay of the current sentence — distinct from mic-listening
   const [sentenceLeaving, setSentenceLeaving] = useState(false); // brief out-transition before the next sentence mounts
+  const [rung, setRung] = useState<0 | 1 | 2 | 3>(0); // help-ladder rung for the current `tricky` word (0 = not in the ladder)
   const liveRef = useRef<LiveProgress | null>(null);
   const listeningCuePlayedRef = useRef(false);
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const attemptRef = useRef(0);
+  const rungRef = useRef<0 | 1 | 2 | 3>(0); // logic source of truth; `rung` state above mirrors it for render
   const awardedRef = useRef(false); // XP granted for the CURRENT page (survives retry-take errors)
   const practicedRef = useRef<Map<string, string>>(new Map());
   const startedReadingRef = useRef(false); // once true, never swap the chapter text
   const disposedRef = useRef(false);
+
+  // --- Canonical session accumulation (reading-tutor's rules layer) ---
+  // One page == one SentenceResult (see docs/INTEGRATION_SPINE.md — this is
+  // the live app's actual per-take capture granularity, already established
+  // there, not re-decided here).
+  //
+  // stage: once a ChildProgress exists, ITS stage is authoritative (PHASE 3
+  // of docs/PERSISTENCE.md) — stageForAge(profile.age) is used only as the
+  // one-time seed for a brand-new child's initial progress, and as a brief
+  // fallback for the instant before that first load resolves. This is
+  // deliberately NOT threaded into chapter generation (requestTutorChapter
+  // below still derives its own stage from age) — that reconciliation is
+  // explicitly out of scope here (see docs/PERSISTENCE.md's final section).
+  const stage = progress?.stage ?? (profile ? stageForAge(profile.age) : 1);
+  const sessionIdRef = useRef<string>('');
+  const startedAtRef = useRef<string>('');
+  const sentenceResultsRef = useRef<SentenceResult[]>([]);
+  const interventionsRef = useRef<SessionIntervention>([]);
+  // The CURRENT page's canonical measurement, captured once from the first
+  // (whole-page) take only — rung 1/2 retries re-listen to just the
+  // flagged word and must never overwrite this (see docs/HELP_LADDER_INTEGRATION.md).
+  const pageSignalsRef = useRef<WordSignal[] | null>(null);
+  const pageInterventionsRef = useRef<boolean[] | null>(null);
+  const pageAssistedRef = useRef(false);
+  const pageRereadRef = useRef(false);
 
   useEffect(() => {
     disposedRef.current = false;
@@ -178,7 +217,14 @@ export default function ReadPage() {
     }
     setProfile(p);
     setChapter(chapterFor(p.interests[0], p.childName));
-    void requestTutorChapter(p).then((generated) => { if (generated) setChapter(generated); });
+    sessionIdRef.current = `${p.childName}-${Date.now()}`;
+    startedAtRef.current = new Date().toISOString();
+    sentenceResultsRef.current = [];
+    interventionsRef.current = [];
+    // Unauthenticated early attempt (no uid yet — auth hasn't settled at
+    // mount) — in production this 401s and is swallowed, same as always;
+    // the auth-gated effect below does the real, correctly-staged fetch.
+    void requestTutorChapter(p, null).then((generated) => { if (generated) setChapter(generated); });
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
@@ -205,7 +251,7 @@ export default function ReadPage() {
     let cancelled = false;
     void (async () => {
       const authToken = user ? await user.getIdToken().catch(() => null) : null;
-      const tutorChapter = await requestTutorChapter(profile, authToken);
+      const tutorChapter = await requestTutorChapter(profile, user?.uid ?? null, authToken);
       if (tutorChapter && !cancelled && !disposedRef.current && !startedReadingRef.current) {
         setChapter(tutorChapter);
       }
@@ -224,6 +270,30 @@ export default function ReadPage() {
     return () => stopAmbience();
   }, [profile]);
 
+  /* Load this child's ChildProgress: local first (synchronous, always
+   * available — matches every other store in this app), then a best-effort
+   * remote reconcile once auth settles. Every visitor has a uid by this
+   * point (AuthProvider signs everyone in anonymously), so this is never
+   * gated on being a "real" signed-in parent — see docs/PERSISTENCE.md. */
+  useEffect(() => {
+    if (!profile || authLoading || !user) return;
+    let cancelled = false;
+    const uid = user.uid;
+    const ageEstimate = stageForAge(profile.age);
+    const local = loadLocalProgress(uid, profile.childId) ?? defaultProgressFor(profile.childId, ageEstimate);
+    setProgress(local);
+    void (async () => {
+      const idToken = await user.getIdToken().catch(() => null);
+      if (!idToken) return;
+      const remote = await fetchRemoteProgress(idToken, profile.childId, ageEstimate);
+      if (cancelled || disposedRef.current || !remote) return;
+      setProgress(reconcileProgress(uid, profile.childId, local, remote.progress));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, authLoading, user]);
+
   useEffect(() => {
     if (phase === 'listening' || phase === 'scoring' || speaking) duckAmbience();
     else restoreAmbience();
@@ -240,13 +310,20 @@ export default function ReadPage() {
   function replayCurrentSentence() {
     // Never speak the reference text while the mic is live — the recognizer
     // would score the TTS voice as the child's reading (echo cancellation
-    // does not reliably remove OS-level TTS from the mic signal).
+    // does not reliably remove OS-level TTS from the mic signal). Disabled
+    // during 'correction' entirely (see header button below) so this can
+    // never race a ladder-driven rung 2/3 utterance.
     if (sessionRef.current || phase === 'listening' || phase === 'scoring') return;
     if (speaking) {
       stopSpeaking();
       setSpeaking(false);
       return;
     }
+    // Replaying the PAGE text (not a ladder word cue) is "just fed these
+    // words" in the same sense reading-tutor's `reread` flag means — see
+    // docs/HELP_LADDER_INTEGRATION.md. Only applies when there's no active
+    // tricky word, i.e. this is a full-page replay, not a rung cue.
+    if (!tricky) pageRereadRef.current = true;
     setSpeaking(true);
     speakPrompt(tricky ?? page.text, { onEnd: () => setSpeaking(false) });
   }
@@ -279,7 +356,8 @@ export default function ReadPage() {
         setupTimedOut = true;
         if (!disposedRef.current && !sessionRef.current) {
           setPhase('ready');
-          attemptRef.current = 0;
+          rungRef.current = 0;
+          setRung(0);
           setTricky(null);
           setError("That took too long to get ready — let's try again!");
         }
@@ -325,7 +403,8 @@ export default function ReadPage() {
     } catch (e) {
       if (!disposedRef.current) {
         setPhase('ready');
-        attemptRef.current = 0; // a dead retry-take must not leave correction disabled
+        rungRef.current = 0; // a dead retry-take must not leave the ladder stuck mid-rung
+        setRung(0);
         setTricky(null);
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -347,7 +426,8 @@ export default function ReadPage() {
       // Silently advancing here would fabricate the parent report.
       if (!disposedRef.current) {
         setPhase('ready');
-        attemptRef.current = 0;
+        rungRef.current = 0;
+        setRung(0);
         setTricky(null);
         setError("The connection dropped — let's try that page again!");
       }
@@ -355,16 +435,16 @@ export default function ReadPage() {
     }
     if (disposedRef.current) return;
     try {
-      const verdicts = await decode(result);
+      const { verdicts, decode: decodeResult } = await decodeReading(result);
       if (disposedRef.current) return;
-      handleVerdicts(result, verdicts);
+      handleVerdicts(result, verdicts, decodeResult);
     } catch {
       if (!disposedRef.current) advance(); // scoring hiccup on a real read — never strand the child
     }
   }
 
-  async function decode(r: ReadingAssessmentResult): Promise<WordVerdict[]> {
-    if (!r.audioWav || r.words.length === 0) return combineVerdicts(r.words, null);
+  async function decodeReading(r: ReadingAssessmentResult): Promise<{ verdicts: WordVerdict[]; decode: DecodeResult | null }> {
+    if (!r.audioWav || r.words.length === 0) return { verdicts: combineVerdicts(r.words, null), decode: null };
     try {
       const authToken = user ? await user.getIdToken() : null;
       const form = new FormData();
@@ -376,19 +456,64 @@ export default function ReadPage() {
         body: form,
       });
       if (!res.ok) throw new Error(String(res.status));
-      return combineVerdicts(r.words, (await res.json()) as DecodeResult);
+      const decodeResult = (await res.json()) as DecodeResult;
+      return { verdicts: combineVerdicts(r.words, decodeResult), decode: decodeResult };
     } catch {
-      return combineVerdicts(r.words, null);
+      return { verdicts: combineVerdicts(r.words, null), decode: null };
     }
   }
 
-  function handleVerdicts(r: ReadingAssessmentResult, verdicts: WordVerdict[]) {
+  /** Stores this take's adapted WordSignal[]/interventions as the page's
+   *  canonical measurement. Called ONLY for the first, whole-page take
+   *  (rungRef.current === 0) — a rung 1/2 retry take covers just the
+   *  flagged word, not the page, and must never overwrite this. */
+  function storePageSignals(words: ReadingAssessmentResult['words'], decodeResult: DecodeResult | null) {
+    const { signals, interventions } = toWordSignals(words, decodeResult);
+    pageSignalsRef.current = signals;
+    pageInterventionsRef.current = interventions;
+  }
+
+  /** One rung up from wherever the ladder currently is for this page. Rungs
+   *  1/2 show a cue and offer one more mic attempt; rung 3 reads the whole
+   *  sentence aloud and marks the page assisted — see
+   *  docs/HELP_LADDER_INTEGRATION.md and reading-tutor/content/config.json
+   *  help_template. */
+  function enterOrEscalateLadder(word: string) {
+    const next = Math.min(3, rungRef.current + 1) as 1 | 2 | 3;
+    rungRef.current = next;
+    setRung(next);
+    setTricky(word);
+    practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
+    setPhase('correction');
+    if (next === 2) {
+      setSpeaking(true);
+      speakPrompt(rungLine(2, { word, sentence: page.text, stage }), {
+        onEnd: () => { if (!disposedRef.current) setSpeaking(false); },
+      });
+    } else if (next === 3) {
+      pageAssistedRef.current = true;
+      setSpeaking(true);
+      speakPrompt(rungLine(3, { word, sentence: page.text, stage }), {
+        onEnd: () => {
+          if (disposedRef.current) return;
+          setSpeaking(false);
+          // "no pause, no second chance, no change in tone" — the same
+          // no-fanfare advance the manual skip button already uses, never
+          // the celebratory cue.
+          celebrateAndAdvance(pickEncouragement(), false);
+        },
+      });
+    }
+  }
+
+  function handleVerdicts(r: ReadingAssessmentResult, verdicts: WordVerdict[], decodeResult: DecodeResult | null) {
     const flagged = verdicts.filter((v) => v.needsHelp);
-    if (!awardedRef.current && attemptRef.current === 0) {
-      // Award once per page — the word-retry take is practice, not a reading.
-      // awardedRef (not attemptRef) is the gate: error recoveries reset
-      // attemptRef to keep correction usable, and that reset must never
-      // re-arm a second award for the same page.
+    if (rungRef.current === 0) storePageSignals(r.words, decodeResult);
+    if (!awardedRef.current && rungRef.current === 0) {
+      // Award once per page — a word-retry take is practice, not a reading.
+      // awardedRef (not rungRef) is the gate: error recoveries reset rungRef
+      // to keep the ladder usable, and that reset must never re-arm a
+      // second award for the same page.
       awardedRef.current = true;
       pet.awardReading({
         accuracy: r.scores.accuracy,
@@ -396,16 +521,16 @@ export default function ReadPage() {
         flaggedCount: flagged.length,
       });
     }
-    if (flagged.length > 0 && attemptRef.current === 0) {
-      const word = flagged[0].word;
-      practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
-      attemptRef.current = 1;
-      setTricky(word);
-      setPhase('correction');
+    if (flagged.length > 0 && rungRef.current < 3) {
+      // Any still-flagged result escalates the ladder one rung — including
+      // a silent retry (an all-Omission result combineVerdicts already
+      // flags): see docs/HELP_LADDER_INTEGRATION.md, "silence enters the
+      // same ladder" — there is no separate silence path here.
+      enterOrEscalateLadder(flagged[0].word);
       return;
     }
     // Retry take: the praise rewards the effort, not the original stumble.
-    celebrateAndAdvance(attemptRef.current > 0 ? 'You did it!' : praiseFor(r.scores.accuracy, flagged.length));
+    celebrateAndAdvance(rungRef.current > 0 ? 'You did it!' : praiseFor(r.scores.accuracy, flagged.length));
   }
 
   function celebrateAndAdvance(p: string, cue = true) {
@@ -417,15 +542,38 @@ export default function ReadPage() {
     }, 1600);
   }
 
+  /** Pushes the current page's finished SentenceResult onto the
+   *  chapter-lifetime accumulator. Only pushes when a whole-page measurement
+   *  actually exists (see storePageSignals) — every reachable path into
+   *  advance() has already produced one. */
+  function finalizeCurrentPage() {
+    const signals = pageSignalsRef.current;
+    if (!signals) return;
+    sentenceResultsRef.current.push({
+      index: pageIdx,
+      text: page.text,
+      words: signals,
+      assisted: pageAssistedRef.current,
+      reread: pageRereadRef.current,
+    });
+    interventionsRef.current.push(pageInterventionsRef.current ?? signals.map(() => false));
+  }
+
   function advance() {
     setSentenceLeaving(true);
+    finalizeCurrentPage();
     setTimeout(() => {
       if (disposedRef.current) return;
       setTricky(null);
-      attemptRef.current = 0;
+      rungRef.current = 0;
+      setRung(0);
       awardedRef.current = false;
       liveRef.current = null;
       setReadCount(0);
+      pageSignalsRef.current = null;
+      pageInterventionsRef.current = null;
+      pageAssistedRef.current = false;
+      pageRereadRef.current = false;
       if (pageIdx + 1 < chapter!.pages.length) {
         playReadingCue('page-turn.mp3');
         setPageIdx((i) => i + 1);
@@ -480,23 +628,122 @@ export default function ReadPage() {
         }
       })();
     }
+
+    // Assemble the canonical session and persist it — interpreted through
+    // interpretSessionWithIntervention() ONLY (never interpretSession()
+    // directly), applied through John's unmodified applySession(), exactly
+    // once per chapterId regardless of retries. See
+    // lib/child-progress.ts/lib/progress-store-admin.ts and
+    // docs/PERSISTENCE.md for the idempotency + ownership design.
+    //
+    // Local completion is synchronous and is what actually gates the
+    // returned `progress`/`reading` used below — it's correct with zero
+    // network dependency, matching every other store in this app. The
+    // server mirror is fire-and-forget: PHASE 4 explicitly says not to
+    // block the chapter-end screen on an optional downstream write.
+    const session: SessionInput = {
+      childId: profile!.childId,
+      sessionId: sessionIdRef.current,
+      stage,
+      chapterId: c.id,
+      isBookshelfReread: false,
+      startedAt: startedAtRef.current,
+      sentences: sentenceResultsRef.current,
+    };
+    const uid = user?.uid ?? null;
+    const ageEstimate = stageForAge(profile!.age);
+    const previouslyTricky = progress?.trickyWords ?? [];
+    const { reading, progress: updatedProgress, applied } = completeSessionLocally(
+      uid,
+      profile!.childId,
+      ageEstimate,
+      session,
+      interventionsRef.current,
+      previouslyTricky,
+    );
+    setProgress(updatedProgress);
+
+    if (user) {
+      void (async () => {
+        try {
+          const idToken = await user.getIdToken();
+          const remote = await completeSessionRemote(
+            idToken,
+            profile!.childId,
+            ageEstimate,
+            session,
+            interventionsRef.current,
+            previouslyTricky,
+          );
+          // Remote is the cross-device copy — reconcile only if it moved
+          // further than what local already has (see reconcileProgress).
+          if (remote && !disposedRef.current) {
+            setProgress((current) =>
+              current ? reconcileProgress(uid, profile!.childId, current, remote.progress) : current,
+            );
+          }
+        } catch {
+          /* best-effort mirror — local persistence already succeeded */
+        }
+      })();
+    }
+
+    if (process.env.NODE_ENV === 'development') {
+      // Safe summary only — no accuracy, no score, nothing child/parent-facing.
+      console.info('[Canonical session]', {
+        sentenceCount: session.sentences.length,
+        assistedSentenceCount: session.sentences.filter((s) => s.assisted).length,
+        trickyWords: reading.trickyWords,
+        cleanWords: reading.cleanWords,
+        excludedFromProgression: reading.excludedFromProgression,
+        progressionApplied: applied,
+        stage: updatedProgress.stage,
+      });
+    }
+
     setPhase('chapter-end');
   }
 
-  /* Dev-only shortcut so the whole flow is testable without a microphone. */
+  /* Dev-only shortcut so the whole flow is testable without a microphone.
+   * Uses the REAL combineVerdicts() on fabricated WordScore data (not a
+   * hand-rolled verdict list) so the sim's flagging decision and the
+   * adapter's `interventions` output are always consistent with each other
+   * — see docs/HELP_LADDER_INTEGRATION.md. */
   function simulate(kind: 'good' | 'tricky') {
     startedReadingRef.current = true; // sims count as reading — no chapter swaps mid-flow
     const words = page.text.split(/\s+/).map((t) => t.toLowerCase().replace(/[^a-z']/g, '')).filter(Boolean);
+    const bad = (i: number) => kind === 'tricky' && i === words.length - 1;
     const fakeResult = {
       scores: { pronunciation: 90, accuracy: kind === 'good' ? 94 : 70, fluency: 90, completeness: 100, prosody: 80 },
-      words: words.map((w) => ({ word: w, accuracy: 95, errorType: 'None', offsetMs: 0, durationMs: 300, phonemes: [{ phoneme: 'ə', accuracy: kind === 'good' ? 95 : 30 }] })),
+      words: words.map((w, i) => ({
+        word: w,
+        accuracy: bad(i) ? 30 : 95,
+        errorType: 'None',
+        offsetMs: 250 + i * 350,
+        durationMs: 300,
+        phonemes: [{ phoneme: 'ə', accuracy: bad(i) ? 20 : 95 }],
+      })),
     } as unknown as ReadingAssessmentResult;
-    const verdicts = words.map((w, i) => ({
-      word: w, errorType: 'None', azureAccuracy: 95, azureMinPhoneme: 95,
-      decodeScore: null, decodeHeard: null,
-      needsHelp: kind === 'tricky' && i === words.length - 1, reason: null,
-    })) as WordVerdict[];
-    handleVerdicts(fakeResult, verdicts);
+    const verdicts = combineVerdicts(fakeResult.words, null);
+    handleVerdicts(fakeResult, verdicts, null);
+  }
+
+  /* Dev-only: simulates ONE mic retry take for the current ladder word
+   * (rung 1/2's "Try the word" button, without opening a real mic) — lets
+   * the ladder's escalation logic (rung 1 → 2 → 3) be exercised headlessly.
+   * Real combineVerdicts(), same as simulate() above. */
+  function simulateRetry(kind: 'ok' | 'stumble') {
+    const word = tricky;
+    if (!word) return;
+    const fakeResult = {
+      scores: { pronunciation: kind === 'ok' ? 92 : 40, accuracy: kind === 'ok' ? 92 : 30, fluency: 90, completeness: 100, prosody: 80 },
+      words: [{
+        word, accuracy: kind === 'ok' ? 92 : 30, errorType: 'None', offsetMs: 250, durationMs: 300,
+        phonemes: [{ phoneme: 'ə', accuracy: kind === 'ok' ? 90 : 20 }],
+      }],
+    } as unknown as ReadingAssessmentResult;
+    const verdicts = combineVerdicts(fakeResult.words, null);
+    handleVerdicts(fakeResult, verdicts, null);
   }
 
   /* Dev-only: stream fake partial transcripts through the real highlight
@@ -660,10 +907,14 @@ export default function ReadPage() {
         <button
           className="icon-btn"
           aria-label={speaking ? 'Stop reading aloud' : 'Read aloud'}
-          disabled={phase === 'listening' || phase === 'scoring'}
-          style={phase === 'listening' || phase === 'scoring' ? { opacity: 0.45, cursor: 'default' } : undefined}
+          // Disabled through the whole help ladder, not just listening/
+          // scoring: rung 2/3 drive their own TTS, and letting the header
+          // button cancel() mid-utterance would race that same utterance's
+          // onend/onerror — see docs/HELP_LADDER_INTEGRATION.md.
+          disabled={phase === 'listening' || phase === 'scoring' || phase === 'correction'}
+          style={phase === 'listening' || phase === 'scoring' || phase === 'correction' ? { opacity: 0.45, cursor: 'default' } : undefined}
           onClick={() => {
-            if (phase === 'listening' || phase === 'scoring') return;
+            if (phase === 'listening' || phase === 'scoring' || phase === 'correction') return;
             playHomeSound('replay.mp3');
             replayCurrentSentence();
           }}
@@ -682,14 +933,18 @@ export default function ReadPage() {
             boxShadow: '0 6px 20px rgba(43,43,43,0.16)',
           }}
         >
-          {/* Keep the big word visible through the retry's listening/scoring —
-              hiding it the moment the child taps "Try the word" defeats it. */}
-          {tricky ? (
+          {/* Keep the ladder card visible through a retry's listening/scoring —
+              hiding it the moment the child taps "Try the word" defeats it.
+              Rung 3 shows the normal page text instead (the whole sentence
+              is being read aloud, not a single word). */}
+          {tricky && rung < 3 ? (
             <div className="lc-help-pulse" style={{ textAlign: 'center' }}>
               <p style={{ fontSize: 15, color: 'var(--ink-soft)', margin: '0 0 14px' }}>
-                Let&rsquo;s try that word together.
+                {rungLine(rung as 1 | 2, { word: tricky, sentence: page.text, stage })}
               </p>
-              <p className="lc-tricky-word">{tricky}</p>
+              {/* Rung 1 gives only a phoneme cue — showing the word here
+                  would give away the exact thing rung 2 is meant to reveal. */}
+              {rung >= 2 && <p className="lc-tricky-word">{tricky}</p>}
               <div aria-hidden style={{ color: 'var(--sky)', letterSpacing: 4, fontSize: 20, marginBottom: 8 }}>
                 • • •
               </div>
@@ -744,7 +999,14 @@ export default function ReadPage() {
               {praise}
             </div>
           </div>
-        ) : phase === 'correction' && tricky ? (
+        ) : phase === 'correction' && speaking ? (
+          // Rung 2/3's own TTS is playing (ambience already ducked by the
+          // existing phase/speaking effect) — no action available yet, the
+          // mic must not open until the line finishes.
+          <div aria-hidden style={{ textAlign: 'center', fontSize: 22, color: 'var(--sky)', padding: '16px 0' }}>
+            🔊
+          </div>
+        ) : phase === 'correction' && tricky && rung < 3 ? (
           <div style={{ display: 'flex', gap: 10 }}>
             <button
               className="btn-primary"
@@ -759,7 +1021,13 @@ export default function ReadPage() {
             <button
               className="btn-primary"
               style={{ flex: 1 }}
-              onClick={() => celebrateAndAdvance('On we go!', false)}
+              onClick={() => {
+                // Neither read correctly nor read to the child — the honest
+                // bucket is "assisted" (excluded), not "correct". See
+                // docs/HELP_LADDER_INTEGRATION.md.
+                pageAssistedRef.current = true;
+                celebrateAndAdvance('On we go!', false);
+              }}
             >
               Keep going →
             </button>
@@ -813,6 +1081,19 @@ export default function ReadPage() {
                 sim: live
               </button>
             )}
+          </div>
+        )}
+
+        {/* Dev-only: exercise the ladder's retry rungs without a real mic
+            take — same handleVerdicts() entry point as a real retry. */}
+        {process.env.NODE_ENV === 'development' && phase === 'correction' && rung > 0 && rung < 3 && !speaking && (
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 10 }}>
+            <button onClick={() => simulateRetry('ok')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
+              sim: retry ok
+            </button>
+            <button onClick={() => simulateRetry('stumble')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
+              sim: retry stumble
+            </button>
           </div>
         )}
       </main>
