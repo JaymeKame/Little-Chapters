@@ -18,7 +18,7 @@ import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '..
 import { adaptTutorDraft, resolveGenerationStage, resolveGenerationContext, stageForAge, chapterIdFor } from '../../lib/chapters.ts';
 import { toWordSignals, toSentenceResult } from '../../lib/reading-signal-adapter.ts';
 import { interpretSessionWithIntervention, type SessionIntervention } from '../../lib/reading-session-interpreter.ts';
-import { HELP_LADDER, rungLine, graphemeCueFor } from '../../lib/help-ladder.ts';
+import { HELP_LADDER, rungLine, graphemeCueFor, segmentWord } from '../../lib/help-ladder.ts';
 import type { WordScore } from '../../lib/pronunciation.ts';
 import type { DecodeResult } from '../../lib/reading-verdict.ts';
 import {
@@ -591,6 +591,64 @@ section('Help ladder - config-driven copy, no judgment');
     ok(!HELP_LADDER.rules.never_say.some((bad) => line.toLowerCase().includes(bad)),
        `encouragement line avoids banned words: "${line}"`);
   }
+}
+
+section('Word segmentation - segmentWord() for the slide-through interaction');
+{
+  const texts = (segs: ReturnType<typeof segmentWord>) => segs?.map((s) => s.text);
+
+  ok(JSON.stringify(texts(segmentWord('sat', 1))) === JSON.stringify(['s', 'a', 't']),
+     'single-letter-only word segments one grapheme per letter', JSON.stringify(texts(segmentWord('sat', 1))));
+
+  ok(JSON.stringify(texts(segmentWord('shop', 4))) === JSON.stringify(['sh', 'o', 'p']),
+     'a two-letter digraph is preferred over decomposing into its single letters',
+     JSON.stringify(texts(segmentWord('shop', 4))));
+
+  ok(JSON.stringify(texts(segmentWord('chick', 4))) === JSON.stringify(['ch', 'i', 'ck']),
+     'two different multi-letter graphemes in one word both resolve correctly',
+     JSON.stringify(texts(segmentWord('chick', 4))));
+
+  ok(JSON.stringify(texts(segmentWord('well', 3))) === JSON.stringify(['w', 'e', 'll']),
+     'a doubled-letter grapheme (ll) is treated as one segment, not two',
+     JSON.stringify(texts(segmentWord('well', 3))));
+
+  ok(JSON.stringify(texts(segmentWord('star', 7))) === JSON.stringify(['s', 't', 'ar']),
+     'an r-controlled vowel grapheme segments as one unit',
+     JSON.stringify(texts(segmentWord('star', 7))));
+
+  ok(JSON.stringify(texts(segmentWord('rain', 8))) === JSON.stringify(['r', 'ai', 'n']),
+     'a vowel-team grapheme segments as one unit',
+     JSON.stringify(texts(segmentWord('rain', 8))));
+
+  ok(JSON.stringify(texts(segmentWord('bridge', 5))) === JSON.stringify(['b', 'r', 'i', 'dge']),
+     'a trailing digraph that happens to end in "e" (dge) is not mistaken for silent-e',
+     JSON.stringify(texts(segmentWord('bridge', 5))));
+
+  ok(JSON.stringify(texts(segmentWord('snow', 9))) === JSON.stringify(['s', 'n', 'ow']),
+     'pronunciation-disambiguated ids (ow_o vs ow_ow) still collapse to the one real substring "ow"',
+     JSON.stringify(texts(segmentWord('snow', 9))));
+
+  ok(segmentWord('thin', 1) === null,
+     'a word needing a letter/digraph not yet taught at this stage (h, th) fails closed, not with a wrong guess');
+
+  ok(segmentWord('', 5) === null, 'an empty word fails closed');
+
+  for (const [word, stage] of [['gate', 6], ['bike', 6], ['bone', 8], ['cube', 10], ['cake', 6]] as const) {
+    ok(segmentWord(word, stage) === null,
+       `silent-e word "${word}" is refused rather than approximated as ${JSON.stringify(texts(segmentWord(word, stage) ?? []))} — must fall back to the existing rung 1/2/3 ladder`);
+  }
+
+  // The demo chapter's own dogs-interest "spot" word, exercised end to end
+  // in the real /read page's dev sim flow — this is the concrete fallback
+  // case the Playwright walkthrough below also drives.
+  ok(segmentWord('gate', 10) === null, 'the actual demo word "gate" (dogs interest) is refused at every stage, not just stage 6');
+
+  // And its ocean-interest counterpart is the concrete SUCCESS case the
+  // walkthrough drives — confirms a real, currently-shipping focus word
+  // segments cleanly, not just constructed test words.
+  ok(JSON.stringify(texts(segmentWord('shell', 4))) === JSON.stringify(['sh', 'e', 'll']),
+     'the actual demo word "shell" (ocean interest) segments cleanly',
+     JSON.stringify(texts(segmentWord('shell', 4))));
 }
 
 section('Canonical session accumulation - interpretSessionWithIntervention()');
