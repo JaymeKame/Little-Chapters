@@ -313,12 +313,21 @@ export default function ReadPage() {
   // the wait is typically sub-second to a few seconds, and briefly turning
   // theme back up only to duck it again a moment later for
   // correction/celebrate would read as a glitch, not a considered beat.
+  //
+  // Correction stays ducked for its ENTIRE duration, not just while
+  // `speaking` — the slide-through help interaction (segmentWord()) plays a
+  // tick per grapheme and a whole-word TTS blend through stretches of
+  // correction where speaking is false, and instructional audio must always
+  // be intelligible over the theme, per product rule. This was previously
+  // fine to leave un-ducked because the old static-card correction UI had no
+  // audio of its own outside the rung 2/3 speakPrompt calls (which already
+  // duck synchronously, above).
   useEffect(() => {
     if (phase === 'chapter-end') {
       // The cliffhanger cue (playCliffhanger(), effect below) owns this
       // moment — reading theme must not continue under it, not even ducked.
       stopTheme();
-    } else if (phase === 'listening' || phase === 'scoring' || speaking) {
+    } else if (phase === 'listening' || phase === 'scoring' || phase === 'correction' || speaking) {
       duckAmbience();
     } else {
       restoreAmbience();
@@ -555,15 +564,14 @@ export default function ReadPage() {
     setTricky(word);
     practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
     setPhase('correction');
+    duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why; every rung ducks now, not just the speaking ones
     if (next === 2) {
-      duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why
       setSpeaking(true);
       speakPrompt(rungLine(2, { word, sentence: page.text, stage }), {
         onEnd: () => { if (!disposedRef.current) setSpeaking(false); },
       });
     } else if (next === 3) {
       pageAssistedRef.current = true;
-      duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why
       setSpeaking(true);
       speakPrompt(rungLine(3, { word, sentence: page.text, stage }), {
         onEnd: () => {
