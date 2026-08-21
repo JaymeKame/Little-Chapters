@@ -34,7 +34,7 @@ import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/read
 import { buildReadingDebugPayload, readingDebugEnabled } from '@/lib/reading-debug';
 import { toWordSignals } from '@/lib/reading-signal-adapter';
 import type { SessionIntervention } from '@/lib/reading-session-interpreter';
-import { HELP_LADDER, rungLine, pickEncouragement, segmentWord } from '@/lib/help-ladder';
+import { HELP_LADDER, rungLine, pickEncouragement, canTeachWithSlider } from '@/lib/help-ladder';
 import {
   defaultProgressFor,
   loadLocalProgress,
@@ -107,7 +107,7 @@ function pickDemoWord(requested: string | null, page: { text: string; focusWords
     ...DEMO_FALLBACK_WORDS,
   ];
   for (const w of candidates) {
-    if (w && segmentWord(w, stage)) return w;
+    if (w && canTeachWithSlider(w, stage)) return w;
   }
   return null;
 }
@@ -475,11 +475,14 @@ export default function ReadPage() {
   // with the escalation remap below, a segmentable word now shows the slide
   // interaction at rung 1 (the first stumble) and never actually visits
   // rung 2 again — rung 2's bare-word reveal is reserved for words that
-  // don't cleanly segment. Null whenever segmentWord() can't cover the word
-  // with graphemes this child is actually expected to know yet, in which
-  // case the plain phoneme/word reveal below is used exactly as it worked
-  // before this feature existed.
-  const slideSegments = tricky && rung < 3 ? segmentWord(tricky, stage) : null;
+  // don't cleanly segment. Null whenever canTeachWithSlider() says the word
+  // isn't safe to blend yet — either segmentWord() can't cover it with
+  // graphemes this child is actually expected to know, OR (lib/help-ladder.ts)
+  // the curriculum's own sight_word_provenance says it's still irregular at
+  // this stage even though it happens to parse cleanly — in which case the
+  // plain phoneme/word reveal below is used exactly as it worked before this
+  // feature existed.
+  const slideSegments = tricky && rung < 3 ? canTeachWithSlider(tricky, stage) : null;
 
   function replayCurrentSentence() {
     // Never speak the reference text while the mic is live — the recognizer
@@ -758,7 +761,7 @@ export default function ReadPage() {
     // don't segment keep the original 1 -> 2 -> 3 progression untouched —
     // AudioWordHelp re-pronounces the word fresh on each escalation (it's
     // keyed by rung in the render below).
-    const skipToSentenceFallback = rungRef.current === 1 && segmentWord(word, stage) !== null;
+    const skipToSentenceFallback = rungRef.current === 1 && canTeachWithSlider(word, stage) !== null;
     const next: 1 | 2 | 3 = skipToSentenceFallback ? 3 : (Math.min(3, rungRef.current + 1) as 1 | 2 | 3);
     rungRef.current = next;
     setRung(next);
