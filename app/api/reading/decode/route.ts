@@ -15,6 +15,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const MDD_SERVER_URL = process.env.MDD_SERVER_URL || 'http://127.0.0.1:8010';
+const MDD_API_KEY = process.env.MDD_API_KEY;
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // ~110 s at the browser's 48 kHz tap
 const MAX_TEXT_CHARS = 600;
 const DECODE_TIMEOUT_MS = 60_000;
@@ -67,7 +68,10 @@ export async function POST(req: NextRequest) {
   try {
     res = await fetch(`${MDD_SERVER_URL}/assess?text=${encodeURIComponent(text)}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'audio/wav' },
+      headers: {
+        'Content-Type': 'audio/wav',
+        ...(MDD_API_KEY ? { Authorization: `Bearer ${MDD_API_KEY}` } : {}),
+      },
       body: Buffer.from(await audio.arrayBuffer()),
       cache: 'no-store',
       signal: AbortSignal.timeout(DECODE_TIMEOUT_MS),
