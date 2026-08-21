@@ -39,8 +39,21 @@ const VOICE_PROVIDER = process.env.NEXT_PUBLIC_VOICE_PROVIDER;
  * environment where "is ElevenLabs actually the thing that just played?"
  * needs answering. Chrome/Firefox DevTools hide Debug-level messages by
  * default, so this stays out of the way until deliberately switched on. */
+/** Bounded history of recent voice events, newest last — the queryable form
+ *  of the same data voiceLog() prints to the console. console.debug is easy
+ *  to miss (hidden by default, and only useful while DevTools happens to be
+ *  open at the right moment); a real test (Playwright, or a manual dev
+ *  check) needs to ask "what actually just played?" after the fact, the
+ *  same way __audioDebug below answers "what's the state of theme/ambience
+ *  right now?" for module-level Audio elements that aren't in the DOM. */
+const VOICE_LOG_MAX = 20;
+const _voiceHistory: Record<string, unknown>[] = [];
+
 function voiceLog(event: Record<string, unknown>): void {
-  console.debug('[Voice]', event);
+  const entry = { ...event, ts: Date.now() };
+  console.debug('[Voice]', entry);
+  _voiceHistory.push(entry);
+  if (_voiceHistory.length > VOICE_LOG_MAX) _voiceHistory.shift();
 }
 
 /** ElevenLabs' turbo_v2 tends toward a flat, clipped read for input with no
@@ -60,6 +73,35 @@ function withTerminalPunctuation(text: string): string {
 /** Module-level handle for a currently-playing ElevenLabs audio clip so
  *  stopSpeaking() can cancel it synchronously. */
 let _elevenLabsEl: HTMLAudioElement | null = null;
+
+/** Bumped on every speakPrompt() call AND every stopSpeaking() call. A
+ *  _speakElevenLabs() call captures the value at its own start and checks it
+ *  again right before playing — if another call (or an explicit stop) has
+ *  since incremented it, this call is stale and must not play, even though
+ *  its fetch/cache lookup already resolved. Without this, an in-flight
+ *  fetch() from an OLDER speakPrompt() call can resolve after a newer call
+ *  has already started (or after stopSpeaking() was called to silence
+ *  everything), overwrite `_elevenLabsEl` without pausing the newer clip,
+ *  and start playing stale audio on top of or after it — audible overlap,
+ *  and audio stopSpeaking() can no longer reach. Paired with the
+ *  AbortController below (network-level cancellation); this counter is the
+ *  correctness guarantee even where abort() doesn't stop a callback from
+ *  running (e.g. a cache hit, which is synchronous and has no request to
+ *  abort). */
+let _speechGeneration = 0;
+
+/** In-flight ElevenLabs request, if any — aborted whenever a newer
+ *  speakPrompt() call or an explicit stopSpeaking() supersedes it, so a slow
+ *  or hung network request doesn't keep running (and doesn't keep `speaking`
+ *  state alive) after the app has already moved on. */
+let _elevenLabsAbort: AbortController | null = null;
+
+/** A hung network must never leave the caller's onEnd() un-fired — the
+ *  correction UI's "Try the word" button and the header replay button both
+ *  gate on `speaking` flipping back to false, so a request that never
+ *  resolves would strand the child on a permanently-disabled button. Well
+ *  above ElevenLabs' normal 300-800ms round trip (see docs/VOICE_AND_PACING_AUDIT.md). */
+const ELEVENLABS_TIMEOUT_MS = 8000;
 
 /* Small in-memory cache for ElevenLabs clips, keyed by the exact synthesized
  * text. The help ladder and encouragement lines repeat often within a
@@ -96,13 +138,29 @@ function _speakElevenLabs(
   text: string,
   opts?: { onEnd?: () => void },
 ): void {
-  // Cancel any in-flight ElevenLabs utterance first.
+  // This call supersedes anything still in flight — bump the generation
+  // before doing anything else so a stale fetch/cache callback below (from a
+  // PREVIOUS call) can recognize itself as superseded the instant it runs.
+  _speechGeneration += 1;
+  const myGeneration = _speechGeneration;
+
+  // Cancel any in-flight ElevenLabs utterance/request first.
   if (_elevenLabsEl) {
     _elevenLabsEl.pause();
     _elevenLabsEl = null;
   }
+  if (_elevenLabsAbort) {
+    _elevenLabsAbort.abort();
+    _elevenLabsAbort = null;
+  }
 
   const playBlob = (blob: Blob) => {
+    // Superseded by a newer speakPrompt()/stopSpeaking() while this clip was
+    // being fetched (or pulled from cache) — never play it. Whatever call
+    // superseded this one already owns onEnd; firing it again here would be
+    // a second, unrequested callback for a request the caller has moved on
+    // from.
+    if (myGeneration !== _speechGeneration) return;
     const url = URL.createObjectURL(blob);
     const el = new Audio(url);
     _elevenLabsEl = el;
@@ -122,10 +180,15 @@ function _speakElevenLabs(
     return;
   }
 
+  const controller = new AbortController();
+  _elevenLabsAbort = controller;
+  const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
+
   fetch('/api/speech/model', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
+    signal: controller.signal,
   })
     .then(async (res) => {
       if (!res.ok) throw new Error(`model route ${res.status}`);
@@ -135,10 +198,23 @@ function _speakElevenLabs(
       playBlob(blob);
     })
     .catch((err) => {
+      // Superseded (aborted by a newer call, or by stopSpeaking()) — the
+      // caller that superseded this one already owns whatever happens next;
+      // this call must not also fall back to Web Speech on top of it.
+      if (myGeneration !== _speechGeneration) return;
       // ElevenLabs path failed — fall back to Web Speech so the child is not
       // left in silence.
-      voiceLog({ provider: 'elevenlabs', fallback: 'web-speech', reason: err instanceof Error ? err.message : String(err) });
+      const timedOut = err instanceof Error && err.name === 'AbortError';
+      voiceLog({
+        provider: 'elevenlabs',
+        fallback: 'web-speech',
+        reason: timedOut ? `timeout (${ELEVENLABS_TIMEOUT_MS}ms)` : err instanceof Error ? err.message : String(err),
+      });
       _speakWebSpeech(text, opts);
+    })
+    .finally(() => {
+      clearTimeout(timeout);
+      if (_elevenLabsAbort === controller) _elevenLabsAbort = null;
     });
 }
 
@@ -184,10 +260,20 @@ export function speakPrompt(
 }
 
 export function stopSpeaking(): void {
+  // Supersede any in-flight ElevenLabs request/cache-callback — see
+  // _speechGeneration's doc comment. Without this, a fetch already in
+  // flight when stopSpeaking() is called (e.g. the child taps Close right
+  // after a correction line starts) can still resolve afterward and start
+  // playing audio the app just tried to silence.
+  _speechGeneration += 1;
   if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
   if (_elevenLabsEl) {
     _elevenLabsEl.pause();
     _elevenLabsEl = null;
+  }
+  if (_elevenLabsAbort) {
+    _elevenLabsAbort.abort();
+    _elevenLabsAbort = null;
   }
 }
 
@@ -282,6 +368,19 @@ export function stopTheme(): void {
   clearTrack(themeEl);
   themeEl = null;
   themeAsset = null;
+  // `ducked` is a module-level singleton, not scoped to whatever page called
+  // duckAmbience() — /read's phase/speaking effect has no unmount cleanup,
+  // so if the child navigates away (or the tab is torn down) while phase is
+  // 'listening'/'scoring'/'correction', `ducked` was left true with nothing
+  // left to un-duck it. The NEXT page's playTheme() call (Home, or a fresh
+  // /read mount before its own 'ready'-phase effect has had a chance to
+  // fire) would then read that stale flag and start playing at the quiet
+  // duck volume for no reason a fresh screen could ever justify. A full stop
+  // is the correct reset point: everything `ducked` applied to is gone, so
+  // there is nothing left to be "ducked relative to". Guarded on
+  // `!ambienceEl` so stopping theme alone never un-ducks a still-playing
+  // ambience track out from under an active correction.
+  if (!ambienceEl) ducked = false;
 }
 
 /** Path convention for a chapter's ambience track — swap in a real file at
@@ -325,6 +424,11 @@ export function stopAmbience(): void {
   clearTrack(ambienceEl);
   ambienceEl = null;
   ambienceAsset = null;
+  // Only reset the shared `ducked` flag if theme isn't still relying on it —
+  // see stopTheme()'s comment for why a full stop is the correct reset
+  // point. Guarded on `!themeEl` so stopping ambience alone (theme still
+  // playing) never un-ducks theme out from under an active correction.
+  if (!themeEl) ducked = false;
 }
 
 export function setAmbienceVolume(volume: number): void {
@@ -448,6 +552,25 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
     music: musicEl && { paused: musicEl.paused, volume: musicEl.volume },
     speaking: typeof window.speechSynthesis !== 'undefined' && window.speechSynthesis.speaking,
     activeFadeTimers: fadeTimers.size,
+  });
+
+  /* Same reasoning as __audioDebug above, but for the speech/TTS side: which
+   * provider actually served the last N utterances, cache hit/miss, and the
+   * exact fallback reason when ElevenLabs didn't serve the call (network
+   * error, non-2xx from /api/speech/model, or a timeout — see
+   * ELEVENLABS_TIMEOUT_MS). Never includes the synthesized text itself or
+   * any credential — only character counts and provider/error metadata, the
+   * same fields voiceLog() already sends to console.debug. Answers "did
+   * that correction line actually use ElevenLabs, and if not, why" from a
+   * real browser/Playwright session without needing DevTools' Verbose log
+   * level switched on. */
+  (window as unknown as { __voiceDebug: () => Record<string, unknown> }).__voiceDebug = () => ({
+    configuredProvider: VOICE_PROVIDER ?? 'web-speech',
+    cacheSize: _elevenLabsCache.size,
+    elevenLabsPlaying: _elevenLabsEl != null && !_elevenLabsEl.paused,
+    elevenLabsRequestInFlight: _elevenLabsAbort != null,
+    generation: _speechGeneration,
+    recent: [..._voiceHistory],
   });
 }
 
