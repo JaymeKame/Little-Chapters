@@ -60,11 +60,26 @@ Default: **eleven_turbo_v2** — lowest latency among current v2 models
 ### Voice settings rationale
 
 ```
-stability:        0.50  — balanced; avoids both monotone and over-expressive
+stability:        0.55  — balanced; avoids both monotone and over-expressive
 similarity_boost: 0.75  — close to cloned voice without over-fitting
-style:            0.00  — neutral (safer for children; avoids exaggerated emotion)
+style:            0.25  — light natural expressiveness (0.0 read as flat/mechanical)
 use_speaker_boost: true — sharpens clarity; minimal latency cost
 ```
+
+**2026-08-21 update**: `stability`/`style` moved from 0.50/0.00 to 0.55/0.25
+in response to a live-tested "sounds mechanical" report. 0.00 style is
+ElevenLabs' fully-neutral setting, which on this voice reads closer to flat
+than warm; a small style lift plus a slightly higher stability floor targets
+"expressive but not theatrical" without the instability that low-stability +
+high-style tends to produce on v2 models. Not verified by ear against a live
+ElevenLabs account in the environment this change was made in — re-run
+`npm run test:voice -- --speak "..."` with real credentials and compare.
+
+If a listen-through says these two knobs aren't enough, the model/voice
+themselves are the bigger lever — try `eleven_multilingual_v2`
+(`ELEVENLABS_MODEL_ID=eleven_multilingual_v2`) for materially more natural
+prosody at ~700ms latency instead of ~350ms; no code change needed, it's
+already an env-var override.
 
 ---
 
@@ -146,3 +161,29 @@ Browser (lib/audio.ts)
 
 The `speakPrompt()` and `stopSpeaking()` public signatures are unchanged;
 all provider-selection logic is internal.
+
+### 2026-08-21 additions
+
+- **Text preprocessing**: `speakPrompt()` now appends a period to any prompt
+  without terminal punctuation before handing it to either provider. The
+  help ladder speaks single bare words in isolation (e.g. "chug") — with no
+  punctuation these came out sounding like a clipped dictionary-pronunciation
+  clip rather than a naturally spoken word; ending punctuation gives the
+  synthesizer a normal sentence-final intonation cue even for one word.
+- **Caching**: a small in-memory `Map<string, Blob>` (24 entries, LRU) caches
+  ElevenLabs clips by exact synthesized text. Encouragement lines, common
+  phonics words, and the welcome line repeat often within a session; a
+  repeat now plays instantly instead of re-paying the network + synthesis
+  round trip. Session-lifetime only, no persistence.
+- **Runtime verification**: `speakPrompt()` now logs which provider actually
+  served each call via `console.debug('[Voice]', ...)` — `{provider:
+  'elevenlabs', cache: 'hit'|'miss', ...}` on success, or `{provider:
+  'elevenlabs', fallback: 'web-speech', reason: ...}` when ElevenLabs failed
+  and the call silently fell back. Same pattern as the reading-verdict
+  diagnostics in `app/read/page.tsx`: `console.debug` rather than a
+  `NODE_ENV` check, since `next build` sets `NODE_ENV=production` on every
+  Vercel deployment including previews. To confirm a real correction
+  interaction actually played ElevenLabs audio (not a silent Web Speech
+  fallback), open DevTools, enable "Verbose"/"Debug" level logging, and
+  trigger a help-ladder word — look for `provider: 'elevenlabs'` with no
+  `fallback` key.

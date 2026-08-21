@@ -11,6 +11,20 @@
  *   default stability/similarity settings. eleven_turbo_v2 adds < 400 ms
  *   server latency vs the non-turbo model and stays within the free-tier
  *   character quota for typical session lengths (< 2 000 chars / session).
+ *
+ * Voice-settings tuning (2026-08-21, see docs/VOICE_AND_PACING_AUDIT.md's
+ * "mechanical" audit): stability and style nudged from the original 0.50/0.00
+ * — 0.00 style is ElevenLabs' fully-neutral setting, which on this voice
+ * reads closer to flat/clipped than warm, and the "sounds mechanical"
+ * complaint on a genuine correction interaction is consistent with that. Not
+ * verified by ear in THIS environment (no ELEVENLABS_API_KEY configured
+ * here to synthesize and listen) — this is ElevenLabs' own documented
+ * parameter semantics applied to a named symptom, not a blind guess, but it
+ * still wants a real listen-through with real credentials before shipping
+ * further. Rerun `npm run test:voice -- --speak "..."` after changing either
+ * value and compare by ear; if it still isn't right, the voice/model itself
+ * (not these two knobs) is almost certainly the bigger lever — see the
+ * updated "Alternatives" table in the audit doc.
  */
 
 const ELEVENLABS_BASE = 'https://api.elevenlabs.io/v1';
@@ -56,9 +70,18 @@ export async function synthesize(
     text,
     model_id: modelId,
     voice_settings: {
-      stability: opts.stability ?? 0.5,
+      // 0.55 (was 0.50): slightly more consistent delivery without tipping
+      // into monotone — the "expressive but not theatrical" target pairs a
+      // moderate stability floor with a small style push, rather than
+      // relying on low stability for expressiveness (that combination is
+      // what tends to read as unstable/theatrical on ElevenLabs' v2 models).
+      stability: opts.stability ?? 0.55,
       similarity_boost: opts.similarityBoost ?? 0.75,
-      style: opts.style ?? 0.0,
+      // 0.25 (was 0.00): 0.0 is ElevenLabs' fully-neutral style setting,
+      // which reads closer to flat/clipped than warm on this voice — a
+      // modest lift adds natural sentence-level expressiveness without the
+      // exaggeration 0.0 was originally chosen to avoid.
+      style: opts.style ?? 0.25,
       use_speaker_boost: opts.speakerBoost ?? true,
     },
   };

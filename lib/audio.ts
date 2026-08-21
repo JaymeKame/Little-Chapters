@@ -32,11 +32,63 @@ import type { Chapter } from './chapters';
  * module-level constant makes that static nature explicit to future readers. */
 const VOICE_PROVIDER = process.env.NEXT_PUBLIC_VOICE_PROVIDER;
 
-/* ── Voice (TTS) ──────────────────────────────────────────────────────── */
+/* Dev/preview-safe diagnostic, same pattern as app/read/page.tsx's
+ * logVerdictDiagnostics(): console.debug rather than a NODE_ENV check, since
+ * `next build` sets NODE_ENV=production on every Vercel deployment including
+ * previews — a dev-only gate would make this invisible on exactly the
+ * environment where "is ElevenLabs actually the thing that just played?"
+ * needs answering. Chrome/Firefox DevTools hide Debug-level messages by
+ * default, so this stays out of the way until deliberately switched on. */
+function voiceLog(event: Record<string, unknown>): void {
+  console.debug('[Voice]', event);
+}
+
+/** ElevenLabs' turbo_v2 tends toward a flat, clipped read for input with no
+ *  terminal punctuation — most noticeably on the SINGLE bare words the help
+ *  ladder models in isolation (e.g. "chug"), which otherwise come out
+ *  sounding like an isolated dictionary-pronunciation clip rather than a
+ *  word spoken naturally. Giving every prompt a sentence-final full stop
+ *  (when it doesn't already end in terminal punctuation) is a standard,
+ *  low-risk neural-TTS prosody nudge — harmless for Web Speech too, so this
+ *  applies to both providers rather than branching. Never changes what's
+ *  AUDIBLY said, only how it's phrased for the synthesizer. */
+function withTerminalPunctuation(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?…]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
 
 /** Module-level handle for a currently-playing ElevenLabs audio clip so
  *  stopSpeaking() can cancel it synchronously. */
 let _elevenLabsEl: HTMLAudioElement | null = null;
+
+/* Small in-memory cache for ElevenLabs clips, keyed by the exact synthesized
+ * text. The help ladder and encouragement lines repeat often within a
+ * session (config.json's encouragement_lines, common phonics words, the
+ * welcome line) — without this, every repeat re-pays the full network +
+ * synthesis round trip for audio that's byte-identical to one already
+ * played seconds earlier. Session-lifetime only (module-level, no
+ * persistence), capped so a long session can't grow this unboundedly. */
+const ELEVENLABS_CACHE_MAX = 24;
+const _elevenLabsCache = new Map<string, Blob>();
+
+function _cacheGet(key: string): Blob | undefined {
+  const hit = _elevenLabsCache.get(key);
+  if (hit) {
+    // Refresh recency (Map preserves insertion order) — simple LRU.
+    _elevenLabsCache.delete(key);
+    _elevenLabsCache.set(key, hit);
+  }
+  return hit;
+}
+
+function _cacheSet(key: string, blob: Blob): void {
+  if (_elevenLabsCache.has(key)) _elevenLabsCache.delete(key);
+  _elevenLabsCache.set(key, blob);
+  if (_elevenLabsCache.size > ELEVENLABS_CACHE_MAX) {
+    const oldest = _elevenLabsCache.keys().next().value;
+    if (oldest !== undefined) _elevenLabsCache.delete(oldest);
+  }
+}
 
 /** Internal: play text via POST /api/speech/model (ElevenLabs stream).
  *  Falls back to Web Speech API on any failure so callers are never blocked. */
@@ -49,6 +101,27 @@ function _speakElevenLabs(
     _elevenLabsEl.pause();
     _elevenLabsEl = null;
   }
+
+  const playBlob = (blob: Blob) => {
+    const url = URL.createObjectURL(blob);
+    const el = new Audio(url);
+    _elevenLabsEl = el;
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      if (_elevenLabsEl === el) _elevenLabsEl = null;
+    };
+    el.addEventListener('ended', () => { cleanup(); opts?.onEnd?.(); }, { once: true });
+    el.addEventListener('error', () => { cleanup(); opts?.onEnd?.(); }, { once: true });
+    void el.play().catch(() => { cleanup(); opts?.onEnd?.(); });
+  };
+
+  const cached = _cacheGet(text);
+  if (cached) {
+    voiceLog({ provider: 'elevenlabs', cache: 'hit', chars: text.length });
+    playBlob(cached);
+    return;
+  }
+
   fetch('/api/speech/model', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -57,20 +130,14 @@ function _speakElevenLabs(
     .then(async (res) => {
       if (!res.ok) throw new Error(`model route ${res.status}`);
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const el = new Audio(url);
-      _elevenLabsEl = el;
-      const cleanup = () => {
-        URL.revokeObjectURL(url);
-        if (_elevenLabsEl === el) _elevenLabsEl = null;
-      };
-      el.addEventListener('ended', () => { cleanup(); opts?.onEnd?.(); }, { once: true });
-      el.addEventListener('error', () => { cleanup(); opts?.onEnd?.(); }, { once: true });
-      void el.play().catch(() => { cleanup(); opts?.onEnd?.(); });
+      _cacheSet(text, blob);
+      voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length });
+      playBlob(blob);
     })
-    .catch(() => {
+    .catch((err) => {
       // ElevenLabs path failed — fall back to Web Speech so the child is not
       // left in silence.
+      voiceLog({ provider: 'elevenlabs', fallback: 'web-speech', reason: err instanceof Error ? err.message : String(err) });
       _speakWebSpeech(text, opts);
     });
 }
@@ -106,10 +173,13 @@ export function speakPrompt(
   // has already switched apps) firing speakPrompt() while hidden.
   if (typeof document !== 'undefined' && document.hidden) return;
 
+  const prompt = withTerminalPunctuation(text);
+
   if (VOICE_PROVIDER === 'elevenlabs') {
-    _speakElevenLabs(text, opts);
+    _speakElevenLabs(prompt, opts);
   } else {
-    _speakWebSpeech(text, opts);
+    voiceLog({ provider: 'web-speech', chars: prompt.length });
+    _speakWebSpeech(prompt, opts);
   }
 }
 

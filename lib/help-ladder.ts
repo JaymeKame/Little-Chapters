@@ -22,6 +22,8 @@ export interface HelpLadderConfig {
   max_retries: number;
   help_template: {
     rungs: { level: 1 | 2 | 3; trigger: string; gives: string; line: string; note: string }[];
+    phrase_retry_line: string;
+    phrase_retry_note: string;
   };
   encouragement_lines: string[];
   rules: {
@@ -198,6 +200,12 @@ export function rungLine(rung: 1 | 2 | 3, opts: { word: string; sentence: string
     .replace('{phoneme}', () => graphemeCueFor(opts.word, opts.stage))
     .replace('{word}', () => opts.word)
     .replace('{sentence}', () => opts.sentence);
+}
+
+/** The phrase-level retry line (see config.json's phrase_retry_note) — only
+ *  fills {sentence}, same as rung 3's line. */
+export function phraseRetryLine(sentence: string): string {
+  return HELP_LADDER.help_template.phrase_retry_line.replace('{sentence}', () => sentence);
 }
 
 export function pickEncouragement(): string {

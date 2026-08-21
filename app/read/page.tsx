@@ -30,11 +30,11 @@ import {
   type ReadingAssessmentResult,
   type ReadingSession,
 } from '@/lib/pronunciation';
-import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
+import { combineVerdicts, isPhraseUnreliable, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
 import { buildReadingDebugPayload, readingDebugEnabled } from '@/lib/reading-debug';
 import { toWordSignals } from '@/lib/reading-signal-adapter';
 import type { SessionIntervention } from '@/lib/reading-session-interpreter';
-import { HELP_LADDER, rungLine, pickEncouragement, canTeachWithSlider } from '@/lib/help-ladder';
+import { HELP_LADDER, rungLine, phraseRetryLine, pickEncouragement, canTeachWithSlider } from '@/lib/help-ladder';
 import {
   defaultProgressFor,
   loadLocalProgress,
@@ -200,6 +200,14 @@ export default function ReadPage() {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [pageIdx, setPageIdx] = useState(0);
   const [phase, setPhase] = useState<Phase>('ready');
+  // Flips true after a few seconds of 'scoring' — an MDD cold start (Cloud
+  // Run scale-from-zero) can leave grading genuinely slow well past what
+  // "One moment…" implies. The spinner never stops either way (it always
+  // loops), but swapping to a second, still-warm, still-jargon-free line
+  // tells the child time passing is expected, not a freeze — see
+  // docs/DECODING_GRADER.md's Cold-start latency section for why this can
+  // take a while on the very first reading of a session.
+  const [scoringSlow, setScoringSlow] = useState(false);
   const [tricky, setTricky] = useState<string | null>(null); // correction-state word
   const [error, setError] = useState<string | null>(null);
   const [readCount, setReadCount] = useState(0); // live karaoke highlight cursor
@@ -231,6 +239,9 @@ export default function ReadPage() {
   // without this queue every flagged word after the first would never get a
   // correction pass at all (see finishWordOrContinue below).
   const pendingFlaggedRef = useRef<string[]>([]);
+  // How many phrase-level retries (see handlePhraseFailure below) THIS page
+  // has already used. Resets with every other per-page ref in advance().
+  const phraseRetryRef = useRef(0);
   const startedReadingRef = useRef(false); // once true, never swap the chapter text
   const disposedRef = useRef(false);
 
@@ -320,6 +331,13 @@ export default function ReadPage() {
    * slideDemo's single-word picker, and has no reason to be reachable
    * outside local/CI test runs. Fires at most once per page load. */
   const fixtureTakeFiredRef = useRef(false);
+  // The parsed ?fixtureTake words, kept around so the dev-only "sim: repeat
+  // fixture" button (rendered only once a fixtureTake has actually fired —
+  // see the ready-phase dev button block below) can re-submit the SAME take
+  // again without a real mic — the only way to deterministically drive
+  // handlePhraseFailure's retry-then-exhaust cycle in a test. Not read by
+  // anything else; purely a test aid, same NODE_ENV gate as the effect below.
+  const fixtureTakeWordsRef = useRef<{ word: string; accuracy: number; errorType?: string }[] | null>(null);
   useEffect(() => {
     if (process.env.NODE_ENV !== 'development') return;
     if (fixtureTakeFiredRef.current || !chapter) return;
@@ -332,7 +350,16 @@ export default function ReadPage() {
       return { word, accuracy: Number(accStr ?? '30'), errorType };
     });
     if (words.some((w) => !w.word)) return;
+    // Test-only: pre-seeds the phrase-retry counter so a single fixture take
+    // can exercise handlePhraseFailure's EXHAUSTED branch directly. Driving
+    // that branch for real requires HELP_LADDER.max_retries consecutive
+    // catastrophic takes, each of which normally re-opens a real mic session
+    // in between (handlePhraseFailure's own retry path) — not reachable
+    // without live Azure credentials in a headless test run.
+    const seedRetries = Number(params.get('fixturePhraseRetries') ?? '0');
+    if (seedRetries > 0) phraseRetryRef.current = seedRetries;
     fixtureTakeFiredRef.current = true;
+    fixtureTakeWordsRef.current = words;
     simulateFixture(words);
   }, [chapter]);
 
@@ -431,6 +458,21 @@ export default function ReadPage() {
       restoreAmbience();
     }
   }, [phase, speaking]);
+
+  // See scoringSlow's declaration above: a genuine MDD cold start can make
+  // 'scoring' last well past a normal few-second wait. 5s is comfortably
+  // above every NORMAL round trip (Azure assessment finalizes near-
+  // instantly; a warm MDD call is ~1-2s CPU inference) so this practically
+  // never fires on a warm request — it only shows up when there's real
+  // waiting to reassure the child through.
+  useEffect(() => {
+    if (phase !== 'scoring') {
+      setScoringSlow(false);
+      return;
+    }
+    const t = setTimeout(() => setScoringSlow(true), 5000);
+    return () => clearTimeout(t);
+  }, [phase]);
 
   useEffect(() => {
     if (phase === 'chapter-end') playCliffhanger();
@@ -549,6 +591,7 @@ export default function ReadPage() {
           setRung(0);
           setTricky(null);
           pendingFlaggedRef.current = [];
+          phraseRetryRef.current = 0;
           setError("That took too long to get ready — let's try again!");
         }
       }, 20_000);
@@ -597,6 +640,7 @@ export default function ReadPage() {
         setRung(0);
         setTricky(null);
         pendingFlaggedRef.current = [];
+        phraseRetryRef.current = 0;
         setError(e instanceof Error ? e.message : String(e));
       }
     }
@@ -621,6 +665,7 @@ export default function ReadPage() {
         setRung(0);
         setTricky(null);
         pendingFlaggedRef.current = [];
+        phraseRetryRef.current = 0;
         setError("The connection dropped — let's try that page again!");
       }
       return;
@@ -805,9 +850,72 @@ export default function ReadPage() {
     celebrateAndAdvance(praise, cue);
   }
 
+  /** Fires when isPhraseUnreliable() judges a WHOLE take globally
+   *  unreliable — a catastrophic misread, unrelated speech, or silence —
+   *  rather than a handful of individually addressable words. Never stores
+   *  this take as the page's canonical signal and never awards pet credit
+   *  for it: it isn't real evidence of how the child reads, so it must not
+   *  count as either a success OR a failure. Offers up to
+   *  HELP_LADDER.max_retries phrase-level retries — model the whole
+   *  sentence, then reopen the mic for a fresh whole-page attempt, exactly
+   *  like the child tapping the mic button themselves; a retry that comes
+   *  back reliable falls straight into the normal handleVerdicts() path
+   *  below (rungRef/awardedRef were never touched, so it's treated exactly
+   *  like an ordinary first take). Once retries are exhausted, falls back
+   *  to the SAME whole-sentence modeling + assisted:true + quiet, no-
+   *  fanfare continue that rung 3 already uses for a single word — reusing
+   *  that frozen, already-excluded-from-progression bucket rather than
+   *  inventing new persistence semantics — so a repeatedly-unreliable page
+   *  still always resolves instead of looping the child forever. */
+  function handlePhraseFailure(r: ReadingAssessmentResult, verdicts: WordVerdict[], decodeResult: DecodeResult | null) {
+    phraseRetryRef.current += 1;
+    if (phraseRetryRef.current > HELP_LADDER.max_retries) {
+      storePageSignals(r.words, decodeResult);
+      pageAssistedRef.current = true;
+      setTricky(null); // no single word — the WHOLE sentence is what's modeled
+      setPhase('correction');
+      duckAmbience();
+      setSpeaking(true);
+      speakPrompt(rungLine(3, { word: '', sentence: page.text, stage }), {
+        onEnd: () => {
+          if (disposedRef.current) return;
+          setSpeaking(false);
+          finishWordOrContinue(pickEncouragement(), false);
+        },
+      });
+      return;
+    }
+    setTricky(null);
+    setPhase('correction');
+    duckAmbience();
+    setSpeaking(true);
+    speakPrompt(phraseRetryLine(page.text), {
+      onEnd: () => {
+        if (disposedRef.current) return;
+        setSpeaking(false);
+        setPhase('scoring');
+        void beginListening(page.text);
+      },
+    });
+  }
+
   function handleVerdicts(r: ReadingAssessmentResult, verdicts: WordVerdict[], decodeResult: DecodeResult | null) {
     logVerdictDiagnostics(r, verdicts, decodeResult);
     const flagged = verdicts.filter((v) => v.needsHelp);
+
+    // Phrase-level failure boundary — only evaluated on a whole-page take
+    // (rungRef.current === 0 covers both the very first take AND every
+    // phrase-retry re-listen above, since neither ever touches rungRef). A
+    // per-word rung 1/2 retry take targets a single word, never a "phrase";
+    // isPhraseUnreliable's own minWordsToJudge guard would reject it anyway,
+    // but gating on rungRef here keeps the intent explicit. See
+    // lib/reading-verdict.ts for why this is safe: a separate, additive
+    // signal built entirely from combineVerdicts()'s own (unchanged) output.
+    if (rungRef.current === 0 && isPhraseUnreliable(verdicts)) {
+      handlePhraseFailure(r, verdicts, decodeResult);
+      return;
+    }
+
     if (rungRef.current === 0) {
       storePageSignals(r.words, decodeResult);
       // Queue every OTHER flagged word from this whole-page take (a retry
@@ -891,6 +999,7 @@ export default function ReadPage() {
       setRung(0);
       awardedRef.current = false;
       pendingFlaggedRef.current = [];
+      phraseRetryRef.current = 0;
       liveRef.current = null;
       setReadCount(0);
       pageSignalsRef.current = null;
@@ -1515,7 +1624,7 @@ export default function ReadPage() {
             )}
             {phase === 'ready' && 'Tap to read out loud!'}
             {phase === 'listening' && 'I’m listening…'}
-            {phase === 'scoring' && 'One moment…'}
+            {phase === 'scoring' && (scoringSlow ? 'Still working on it…' : 'One moment…')}
           </button>
         )}
 
@@ -1530,6 +1639,23 @@ export default function ReadPage() {
             {LIVE_HIGHLIGHT && (
               <button onClick={simulateLive} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
                 sim: live
+              </button>
+            )}
+            {/* Test-only: re-submits the SAME ?fixtureTake words again —
+                the only way to deterministically drive
+                handlePhraseFailure()'s retry-then-exhaust cycle without a
+                real mic (its own retry reopens beginListening() for real,
+                which fails fast with no mic/Azure available in a headless
+                test run and lands back here on 'ready'). Only rendered
+                once a fixtureTake has actually fired this session. */}
+            {fixtureTakeWordsRef.current && (
+              <button
+                onClick={() => {
+                  if (fixtureTakeWordsRef.current) simulateFixture(fixtureTakeWordsRef.current);
+                }}
+                style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}
+              >
+                sim: repeat fixture
               </button>
             )}
           </div>
