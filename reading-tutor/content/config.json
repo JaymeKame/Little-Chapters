@@ -7,6 +7,8 @@
 
   "help_template": {
     "note": "Three rungs, in order. A child only ever descends this ladder - never repeats a rung. Rung 3 sets assisted:true for that sentence.",
+    "phrase_retry_line": "Let's hear that one together. {sentence}",
+    "phrase_retry_note": "Fires INSTEAD OF the per-word ladder when a whole take is judged globally unreliable (lib/reading-verdict.ts isPhraseUnreliable) - a catastrophic misread, unrelated speech, or silence, where picking one word to 'fix' would misrepresent the take. Models the whole sentence, then reopens the mic for a fresh attempt at the whole page. Up to max_retries times; once exhausted, falls through to rung 3's line and assisted:true - never counted as a false success. Deliberately not 'try again' (see rules.never_say).",
     "rungs": [
       {
         "level": 1,

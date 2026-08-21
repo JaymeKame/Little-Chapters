@@ -114,6 +114,48 @@ URL and redeploy: the table should fall back to
 the degraded path still works. Restore the correct `MDD_SERVER_URL`
 immediately after.
 
+### Cold-start latency
+
+`--min 0` (scale-to-zero) means the request that resumes an idle service pays
+the full cold-start cost before it gets a response: container boot, then
+`Grader()` loading the checkpoint (`@app.on_event('startup')` in
+`mdd/server.py` — this already runs exactly once per container, not once per
+request; that part was correct before this note was written). Two app-side
+optimizations reduce that load itself: `HF_HUB_OFFLINE=1`/
+`TRANSFORMERS_OFFLINE=1` (set in `mdd/Dockerfile`, after the build-time
+caching step) stop every cold start from making a network round-trip to
+huggingface.co to check the already-cached files are current; `grader.py`'s
+`AutoModelForCTC.from_pretrained(..., low_cpu_mem_usage=True)` avoids
+materializing a redundant full-precision copy of the checkpoint while
+loading it. Neither has been measured against a live deployment from this
+environment (no reachable Cloud Run instance or `gcloud` credentials here) —
+they're real, standard, zero-risk wins for this specific slow step, not a
+substitute for measuring.
+
+**The dominant remaining cost is infrastructure, not application code**: a
+`--min 0` service cold-starts on every idle-then-resume regardless of how
+fast `Grader()` loads. The fix is keeping one instance warm:
+
+```bash
+gcloud run services update SERVICE_NAME \
+  --project PROJECT_ID --region REGION --min-instances=1
+```
+
+(or pass `MDD_MIN_INSTANCES=1` to `deploy-cloud-run.sh` on a fresh deploy).
+This has an ongoing cost — one 2 vCPU/4 GiB instance running continuously —
+traded against eliminating cold starts entirely. To actually measure
+warm vs. cold on your deployment:
+
+```bash
+# Cold: right after `gcloud run services update ... --min-instances=0` and
+# enough idle time to actually scale down (check the Cloud Run console),
+# or right after a fresh deploy.
+curl -w '\ncold: %{time_total}s\n' -o /dev/null -s https://<service-url>/healthz
+
+# Warm: the same call again, immediately after.
+curl -w '\nwarm: %{time_total}s\n' -o /dev/null -s https://<service-url>/healthz
+```
+
 ## Calibration (speechocean762, ages ≤7, 100 clips / 431 expert-scored words)
 
 | System | word-level r | AUC (imperfect) | clearly-bad caught |

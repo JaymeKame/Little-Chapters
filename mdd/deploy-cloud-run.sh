@@ -15,6 +15,12 @@ PROJECT_ID=$1
 REGION=$2
 SERVICE_NAME=${3:-little-chapters-mdd}
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/little-chapters/${SERVICE_NAME}:$(git rev-parse --short HEAD)"
+# Default stays 0 (scale-to-zero, no idle cost) — unchanged behavior unless
+# you opt in. Setting this to 1 keeps one instance warm at all times, which
+# eliminates the model-reload cold start on every scale-from-zero at the
+# cost of paying for that instance continuously. See docs/DECODING_GRADER.md
+# "Deploying on Cloud Run" for the cold-start timing this trades off against.
+MIN_INSTANCES=${MDD_MIN_INSTANCES:-0}
 
 gcloud artifacts repositories describe little-chapters \
   --project "$PROJECT_ID" --location "$REGION" >/dev/null
@@ -29,7 +35,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --cpu 2 \
   --memory 4Gi \
   --concurrency 1 \
-  --min 0 \
+  --min "$MIN_INSTANCES" \
   --max 1 \
   --timeout 300 \
   --startup-probe 'httpGet.path=/healthz,initialDelaySeconds=0,timeoutSeconds=5,periodSeconds=10,failureThreshold=30' \

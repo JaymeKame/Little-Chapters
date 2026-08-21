@@ -684,6 +684,17 @@ a {
   animation: lc-invite-pulse 550ms ease-out 150ms both;
 }
 
+/* .lc-invite-pulse's own display:inline-block above wins the cascade over
+ * .lc-audio-icon-wrap's display:inline-flex when both classes land on the
+ * SAME span (AudioWordHelp's "your turn" state) — same specificity, this
+ * rule is later. That silently drops the flex centering the wrap relies on
+ * to keep its icon centered in the circle, so the mic renders displaced
+ * toward the top-left instead of centered — not a one-off pixel bug, a
+ * cascade collision restored here rather than patched with an offset. */
+.lc-audio-icon-wrap.lc-invite-pulse {
+  display: inline-flex;
+}
+
 /* Scoring: a slow, quiet spin — "I heard you, give me a moment," nothing more. */
 @keyframes lc-processing-spin {
   from { transform: rotate(0deg); }
