@@ -18,6 +18,9 @@ import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { SlideWordHelp } from '@/components/SlideWordHelp';
 import { AudioWordHelp } from '@/components/AudioWordHelp';
+import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
+import { MicIcon } from '@/components/icons/MicIcon';
+import { QuietCheckIcon } from '@/components/icons/QuietCheckIcon';
 import { chapterFor, requestTutorChapter, selectStoryScene, stageForAge, type Chapter } from '@/lib/chapters';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
@@ -223,6 +226,11 @@ export default function ReadPage() {
   const rungRef = useRef<0 | 1 | 2 | 3>(0); // logic source of truth; `rung` state above mirrors it for render
   const awardedRef = useRef(false); // XP granted for the CURRENT page (survives retry-take errors)
   const practicedRef = useRef<Map<string, string>>(new Map());
+  // Words the FIRST whole-page take flagged, beyond the one currently in the
+  // ladder — a retry take only re-listens to the single word it targets, so
+  // without this queue every flagged word after the first would never get a
+  // correction pass at all (see finishWordOrContinue below).
+  const pendingFlaggedRef = useRef<string[]>([]);
   const startedReadingRef = useRef(false); // once true, never swap the chapter text
   const disposedRef = useRef(false);
 
@@ -303,6 +311,30 @@ export default function ReadPage() {
     slideDemoFiredRef.current = true;
     enterOrEscalateLadder(word);
   }, [chapter, pageIdx, tricky, stage]);
+
+  /* Test-only: /read?fixtureTake=word:accuracy:errorType,word:accuracy,...
+   * drives a real, arbitrary take through combineVerdicts()+handleVerdicts()
+   * — see simulateFixture below. Unlike ?slideDemo, this IS gated on
+   * NODE_ENV: it can inject any word/error combination (including more than
+   * one flagged word at once), which is a materially bigger surface than
+   * slideDemo's single-word picker, and has no reason to be reachable
+   * outside local/CI test runs. Fires at most once per page load. */
+  const fixtureTakeFiredRef = useRef(false);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') return;
+    if (fixtureTakeFiredRef.current || !chapter) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('fixtureTake');
+    if (!raw) return;
+    const words = raw.split(',').map((tok) => {
+      const [word, accStr, errorType] = tok.split(':');
+      return { word, accuracy: Number(accStr ?? '30'), errorType };
+    });
+    if (words.some((w) => !w.word)) return;
+    fixtureTakeFiredRef.current = true;
+    simulateFixture(words);
+  }, [chapter]);
 
   /* Upgrade the demo arc to a stage-matched reading-tutor chapter (cached from
    * earlier today, or generated when OPENAI_API_KEY is set server-side).
@@ -513,6 +545,7 @@ export default function ReadPage() {
           rungRef.current = 0;
           setRung(0);
           setTricky(null);
+          pendingFlaggedRef.current = [];
           setError("That took too long to get ready — let's try again!");
         }
       }, 20_000);
@@ -560,6 +593,7 @@ export default function ReadPage() {
         rungRef.current = 0; // a dead retry-take must not leave the ladder stuck mid-rung
         setRung(0);
         setTricky(null);
+        pendingFlaggedRef.current = [];
         setError(e instanceof Error ? e.message : String(e));
       }
     }
@@ -583,6 +617,7 @@ export default function ReadPage() {
         rungRef.current = 0;
         setRung(0);
         setTricky(null);
+        pendingFlaggedRef.current = [];
         setError("The connection dropped — let's try that page again!");
       }
       return;
@@ -741,17 +776,43 @@ export default function ReadPage() {
           setSpeaking(false);
           // "no pause, no second chance, no change in tone" — the same
           // no-fanfare advance the manual skip button already uses, never
-          // the celebratory cue.
-          celebrateAndAdvance(pickEncouragement(), false);
+          // the celebratory cue. Still checks the pending queue first: a
+          // page with more than one stumble must not drop the others just
+          // because THIS one escalated all the way to rung 3.
+          finishWordOrContinue(pickEncouragement(), false);
         },
       });
     }
   }
 
+  /** Called once a word is done with the ladder — either it was just read
+   *  correctly, or the child skipped it. If the ORIGINAL whole-page take
+   *  flagged more than one word, hands the ladder to the next one (fresh, at
+   *  rung 1 — see enterOrEscalateLadder) instead of celebrating; only once
+   *  every flagged word has had its turn does the page actually celebrate
+   *  and advance. */
+  function finishWordOrContinue(praise: string, cue: boolean) {
+    const next = pendingFlaggedRef.current.shift();
+    if (next !== undefined) {
+      rungRef.current = 0; // a new word is its own first stumble, not a continuation of the last one's rung
+      setRung(0);
+      enterOrEscalateLadder(next);
+      return;
+    }
+    celebrateAndAdvance(praise, cue);
+  }
+
   function handleVerdicts(r: ReadingAssessmentResult, verdicts: WordVerdict[], decodeResult: DecodeResult | null) {
     logVerdictDiagnostics(r, verdicts, decodeResult);
     const flagged = verdicts.filter((v) => v.needsHelp);
-    if (rungRef.current === 0) storePageSignals(r.words, decodeResult);
+    if (rungRef.current === 0) {
+      storePageSignals(r.words, decodeResult);
+      // Queue every OTHER flagged word from this whole-page take (a retry
+      // take re-listens to just one word, so `flagged` here is always a
+      // singleton on every subsequent call — this only ever (re)populates
+      // on the first, whole-page take, which is exactly when it should).
+      pendingFlaggedRef.current = flagged.slice(1).map((v) => v.word);
+    }
     if (!awardedRef.current && rungRef.current === 0) {
       // Award once per page — a word-retry take is practice, not a reading.
       // awardedRef (not rungRef) is the gate: error recoveries reset rungRef
@@ -772,8 +833,10 @@ export default function ReadPage() {
       enterOrEscalateLadder(flagged[0].word);
       return;
     }
-    // Retry take: the praise rewards the effort, not the original stumble.
-    celebrateAndAdvance(rungRef.current > 0 ? 'You did it!' : praiseFor(r.scores.accuracy, flagged.length));
+    // This word passed (or exhausted rung 3). The praise rewards the effort,
+    // not the original stumble — but only actually shows once every flagged
+    // word from this page has had its turn (see finishWordOrContinue).
+    finishWordOrContinue(rungRef.current > 0 ? 'You did it!' : praiseFor(r.scores.accuracy, flagged.length), true);
   }
 
   function celebrateAndAdvance(p: string, cue = true) {
@@ -824,6 +887,7 @@ export default function ReadPage() {
       rungRef.current = 0;
       setRung(0);
       awardedRef.current = false;
+      pendingFlaggedRef.current = [];
       liveRef.current = null;
       setReadCount(0);
       pageSignalsRef.current = null;
@@ -1033,6 +1097,32 @@ export default function ReadPage() {
     }, 350);
   }
 
+  /* Dev-only/test-only: builds an arbitrary WordScore[] take (any words,
+   * accuracies, error types — including more than one flagged word in a
+   * single take) and runs it through the REAL combineVerdicts() +
+   * handleVerdicts(), exactly like simulate()/simulateRetry() above, just
+   * generalized past their fixed "good"/"tricky" shapes. Exists so the
+   * correction state machine (ladder eligibility, the multi-flagged-word
+   * queue, escalation) can be driven deterministically by real WordVerdict
+   * objects in tests without a live mic/Azure/MDD round trip — see the
+   * ?fixtureTake query hook below, its only caller. */
+  function simulateFixture(words: { word: string; accuracy: number; errorType?: string }[]) {
+    startedReadingRef.current = true;
+    const fakeResult = {
+      scores: { pronunciation: 90, accuracy: 90, fluency: 90, completeness: 100, prosody: 80 },
+      words: words.map((w) => ({
+        word: w.word,
+        accuracy: w.accuracy,
+        errorType: w.errorType ?? 'None',
+        offsetMs: 250,
+        durationMs: 300,
+        phonemes: w.errorType === 'Omission' ? [] : [{ phoneme: 'ə', accuracy: w.accuracy < 50 ? 20 : 95 }],
+      })),
+    } as unknown as ReadingAssessmentResult;
+    const verdicts = combineVerdicts(fakeResult.words, null);
+    handleVerdicts(fakeResult, verdicts, null);
+  }
+
   /* ── Screen 5: chapter end ── */
   if (phase === 'chapter-end') {
     return (
@@ -1199,7 +1289,7 @@ export default function ReadPage() {
             replayCurrentSentence();
           }}
         >
-          <img src="/icons/speaker-audio.png" alt="" style={{ height: 22, width: 'auto' }} />
+          <SpeakerIcon size={22} color="var(--blue)" />
         </button>
       </header>
 
@@ -1306,17 +1396,25 @@ export default function ReadPage() {
           ) : (
             // Assisted rung-3 continuation: warm and neutral, never a
             // failure look, but deliberately no star/sparkle/sound — "no
-            // pause, no second chance, no change in tone."
+            // pause, no second chance, no change in tone." Still needs a
+            // wordless signal though: praise text alone left a pre-reader
+            // with nothing to understand here (the old text-only version of
+            // this beat). A small, static, Leaf-colored check — never the
+            // star, never a bounce — says "that's fine, on we go" without
+            // requiring the word next to it to be read.
             <div role="status" className="lc-fade-up" style={{ textAlign: 'center' }}>
+              <QuietCheckIcon />
               <div className="lc-celebrate-praise lc-celebrate-praise-quiet">{praise}</div>
             </div>
           )
         ) : phase === 'correction' && speaking ? (
           // Rung 2/3's own TTS is playing (ambience already ducked by the
           // existing phase/speaking effect) — no action available yet, the
-          // mic must not open until the line finishes.
-          <div aria-hidden style={{ textAlign: 'center', fontSize: 22, color: 'var(--sky)', padding: '16px 0' }}>
-            🔊
+          // mic must not open until the line finishes. Same speaker glyph
+          // + speaking-pulse language as the header's replay button, never
+          // the raw 🔊 emoji character this used to be.
+          <div aria-hidden className="lc-speaking-active" style={{ display: 'inline-flex', padding: '16px 0' }}>
+            <SpeakerIcon size={26} color="var(--sky)" />
           </div>
         ) : phase === 'correction' && tricky && rung < 3 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
@@ -1345,16 +1443,18 @@ export default function ReadPage() {
                 void beginListening(tricky);
               }}
             >
-              <img src="/icons/mic-listening.png" alt="" style={{ height: 20, width: 'auto' }} />
+              <MicIcon size={20} color="#fff" />
               Try the word
             </button>
             <button
               onClick={() => {
                 // Neither read correctly nor read to the child — the honest
                 // bucket is "assisted" (excluded), not "correct". See
-                // docs/HELP_LADDER_INTEGRATION.md.
+                // docs/HELP_LADDER_INTEGRATION.md. Still checks the pending
+                // queue: skipping THIS word must not silently skip the
+                // others a multi-stumble page still owes a turn.
                 pageAssistedRef.current = true;
-                celebrateAndAdvance('On we go!', false);
+                finishWordOrContinue('On we go!', false);
               }}
               style={{
                 border: 0,
@@ -1401,7 +1501,7 @@ export default function ReadPage() {
           >
             {phase === 'ready' ? (
               <span aria-hidden className="lc-invite-pulse" style={{ display: 'inline-block' }}>
-                <img src="/icons/mic-listening.png" alt="" style={{ height: 28, width: 'auto' }} />
+                <MicIcon size={28} color="var(--leaf)" />
               </span>
             ) : phase === 'scoring' ? (
               <span aria-hidden className="lc-processing-spin" style={{ display: 'inline-block' }}>
