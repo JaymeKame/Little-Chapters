@@ -25,9 +25,43 @@ pet gives kids a reason to return tomorrow.
 `/` landing (parent) → `/setup` (name/age/pick-3 interests → localStorage
 profile, **no accounts**) → `/home` (child: play button + Momo) → `/read`
 (core reading flow + chapter-end) → `/parent` (session note).
+`/unlock` is the paywall, `/register` (account + phone) and `/payment`
+(plans) the funnel behind it, returning through `/payment/success`.
 `/dev/assess` is an internal pipeline harness. Chapter content is static demo
 text personalized by top interest (`lib/chapters.ts`) — the AI chapter-writer
 is the next milestone.
+
+## Access model — free demo, then login + pay
+
+The demo arc is readable by **anyone**: no account, no card, nothing past
+`/setup`. The paywall opens only when a child finishes their first chapter
+and the parent wants the next one. A chapter already completed stays
+re-readable forever, so the free story never disappears behind a lock.
+
+Two facts decide it, stored apart on purpose (`lib/entitlement.ts`):
+the free chapter is spent when chapter history is non-empty (localStorage —
+an anonymous visitor has no server record to consult), and the subscription
+comes from `/api/payments/subscription`, never from a local flag and never
+from `parents/{uid}` read directly (that doc is client-writable until the
+Firestore rules land, so a planted `subscriptionStatus` would unlock the
+app — every route re-checks ownership via `customerBelongsTo`).
+
+**The enforcement split matters.** `lib/entitlement.ts` +
+`lib/use-entitlement.ts` are the UX gate and deliberately fail **open** on an
+indeterminate answer: the demo text is static and generated client-side, so
+there is nothing to protect by withholding it, and a network blip must never
+lock a paying family out of the bedtime chapter. What actually costs money is
+AI generation, and that fails **closed** in `/api/chapters/story` via
+`lib/entitlement-server.ts`. An unentitled reader is refused there and falls
+back to the demo arc — free readers get the static story, subscribers get a
+stage-matched one.
+
+`lib/plans.ts` holds prices/copy and is safe to import anywhere;
+`lib/stripe.ts` holds the secret key and the Node sdk and is **server-only**.
+Importing the latter from a `'use client'` module shipped ~3 MB of Stripe sdk
+to the browser and logged `STRIPE_SECRET_KEY not set` in the browser console.
+The client names a `planId`; only the server resolves it to a price
+(`priceIdForPlan`).
 
 ## How reading is judged — the part that looks wrong but isn't
 
@@ -78,6 +112,19 @@ in `docs/DECODING_GRADER.md`).
   a threadpool (health stays responsive), and returns 422 `UNKNOWN_WORD` for
   words missing from CMUdict — add names to `MANUAL_PRONS` in `mdd/grader.py`
   (or `MDD_EXTRA_PRONS` json). CPU inference ~1–2 s/clip; no GPU needed.
+- **Auth state must be published on `onIdTokenChanged`, not
+  `onAuthStateChanged`** (`components/AuthProvider.tsx`). Registration
+  UPGRADES the anonymous visitor with `linkWithPopup` so Momo's XP survives —
+  which keeps the uid — and Firebase's auth-state listener is gated on the
+  uid CHANGING (`notifyAuthListeners` compares `lastNotifiedUid`). It
+  therefore never fired: Google sign-in succeeded, `isAuthenticated` stayed
+  false, and `/payment` bounced the parent back to `/register`, so both
+  login and payment looked like "nothing happens". The id-token listener
+  fires on the token refresh linking produces. The user is also boxed in a
+  fresh `{ user }` object per publish — linking mutates the SAME `User`
+  instance, so handing React `auth.currentUser` again is an `Object.is` no-op
+  and nothing re-renders. **Both halves are required**; either alone still
+  looks broken.
 - **Pet state** (`lib/pet.ts`): localStorage keys are per-uid
   (`little-chapters-pet:<uid|anon>`) so siblings on one device don't clobber
   each other. Streaks use the LOCAL calendar day and survive clock rollbacks.

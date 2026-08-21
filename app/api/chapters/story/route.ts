@@ -3,6 +3,7 @@ import { generateChapter, type LlmClient } from '@/reading-tutor/src/generate';
 import { pickSkeleton, SKELETONS } from '@/reading-tutor/src/skeletons';
 import { assignSlots } from '@/reading-tutor/src/slots';
 import { requireReadingUser } from '@/lib/route-auth';
+import { hasActiveSubscription } from '@/lib/entitlement-server';
 import { type ChildProfile } from '@/lib/profile';
 
 export const runtime = 'nodejs';
@@ -31,7 +32,24 @@ export async function POST(request: NextRequest) {
   if (!key) return NextResponse.json({ error: 'Story generation is not configured' }, { status: 503 });
   const auth = await requireReadingUser(request);
   if (!auth.ok) return auth.response;
+  // Rate limit BEFORE the subscription check: the check costs a Firestore
+  // read and up to two Stripe calls, so a client hammering this route must
+  // be turned away by the in-memory counter, not by the expensive path.
   if (overLimit(auth.uid)) return NextResponse.json({ error: 'RATE_LIMITED' }, { status: 429 });
+  /* The paywall's load-bearing half. Freshly written chapters are the paid
+   * product AND the only part of it that costs real money per request, so
+   * this is where entitlement is actually ENFORCED — lib/entitlement.ts only
+   * decides what the child sees. A demo visitor is refused here and the
+   * client falls back to the built-in demo arc, which is exactly the
+   * behaviour requestTutorChapter already documents for a failed generation:
+   * free readers get the static story, subscribers get a stage-matched one.
+   *
+   * uid 'anonymous' is route-auth's local-dev-open marker (no admin
+   * credentials, or SPEECH_ALLOW_UNAUTH=1) — left permitted so the tutor
+   * path stays testable on a laptop without a live subscription. */
+  if (auth.uid !== 'anonymous' && !(await hasActiveSubscription(auth.uid))) {
+    return NextResponse.json({ error: 'SUBSCRIPTION_REQUIRED' }, { status: 402 });
+  }
   try {
     const body = await request.json() as {
       profile?: ChildProfile;

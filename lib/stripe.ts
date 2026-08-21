@@ -1,7 +1,13 @@
 /* Stripe payment library for Little-Chapters subscriptions.
- * Handles customer creation, subscription management, and payment methods. */
+ * Handles customer creation, subscription management, and payment methods.
+ *
+ * SERVER-ONLY. Never import this from a 'use client' module — it holds the
+ * Stripe secret key and the Node sdk. Client code that needs plan names and
+ * prices imports lib/plans.ts instead, and sends a planId the server
+ * resolves through priceIdForPlan() below.                                  */
 
 import Stripe from 'stripe';
+import { PLANS, planById, type PlanId, type SubscriptionPlan } from './plans';
 
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
@@ -13,39 +19,19 @@ const stripe = stripeSecretKey ? new Stripe(stripeSecretKey, {
   apiVersion: '2026-07-29.dahlia',
 }) : null;
 
-export interface SubscriptionPlan {
-  id: string;
-  name: string;
-  priceId: string;
-  amount: number;
-  interval: 'month' | 'year';
-  currency: string;
-}
+export { PLANS, planById };
+export type { PlanId, SubscriptionPlan };
 
-// Subscription plans for Little-Chapters
-export const PLANS: SubscriptionPlan[] = [
-  {
-    id: 'monthly',
-    name: 'Monthly',
-    priceId: process.env.STRIPE_MONTHLY_PRICE_ID || '',
-    // $20/month — the price the landing page has stated since the first
-    // commit. The 999 that used to be here came from the payments branch as a
-    // stock placeholder; the payment screen renders this number while Stripe
-    // charges whatever the price ID says, so the two MUST agree.
-    amount: 2000,
-    interval: 'month',
-    currency: 'usd',
-  },
-  {
-    id: 'yearly',
-    name: 'Yearly',
-    priceId: process.env.STRIPE_YEARLY_PRICE_ID || '',
-    // $200/year = two months free against $20/month.
-    amount: 20000,
-    interval: 'year',
-    currency: 'usd',
-  },
-];
+/** Resolves a client-supplied planId to the Stripe price it may be charged
+ *  at. The price ID is env-only and never leaves the server, so a client can
+ *  ask for "monthly" but can never name its own price. */
+export function priceIdForPlan(planId: string): string | null {
+  const plan = planById(planId);
+  if (!plan) return null;
+  const priceId =
+    plan.id === 'monthly' ? process.env.STRIPE_MONTHLY_PRICE_ID : process.env.STRIPE_YEARLY_PRICE_ID;
+  return priceId?.trim() || null;
+}
 
 export function isStripeConfigured(): boolean {
   return !!stripe;
@@ -114,7 +100,19 @@ export async function getOrCreateCustomer(
     });
 
     if (existingCustomers.data.length > 0) {
-      return existingCustomers.data[0].id;
+      const adopted = existingCustomers.data[0];
+      // Stamp the uid on a customer we adopted by email. Without this the
+      // customer stays unstamped and customerBelongsTo can only ever match it
+      // on email — so if the parent later changes their Google/Apple account
+      // email, ownership of their own live subscription fails permanently.
+      if (metadata?.firebaseUid && adopted.metadata?.firebaseUid !== metadata.firebaseUid) {
+        try {
+          await stripe.customers.update(adopted.id, { metadata: { ...adopted.metadata, ...metadata } });
+        } catch {
+          /* best-effort: the email match still identifies them today */
+        }
+      }
+      return adopted.id;
     }
 
     // Create new customer
@@ -146,8 +144,16 @@ export async function customerBelongsTo(customerId: string, uid: string, email?:
     if (!customer || customer.deleted) return false;
     if (customer.metadata?.firebaseUid === uid) return true;
     return !!email && !!customer.email && customer.email.toLowerCase() === email.toLowerCase();
-  } catch {
-    return false;
+  } catch (error) {
+    // "This customer does not exist" is a real answer: not yours. Anything
+    // else — a 429, a 5xx, a network blip — means we could not DETERMINE
+    // ownership, and answering `false` there is dangerous: callers treat
+    // false as "not the caller's customer" and take a fallback path, which
+    // for checkout meant skipping the already-subscribed guard on a
+    // transient Stripe hiccup. Fail loudly instead of guessing.
+    const code = (error as { statusCode?: number })?.statusCode;
+    if (code === 404) return false;
+    throw error;
   }
 }
 
@@ -177,9 +183,14 @@ export async function getCustomerSubscription(customerId: string) {
   }
 
   try {
+    // limit: 1 used to sit here, which reads only the customer's most recent
+    // subscription. A parent whose newest row is `incomplete` (an abandoned
+    // checkout) or `past_due` while an older one is still active would have
+    // come back "not subscribed" — and this now gates access to the app, not
+    // just a status badge. Read a page and pick the active one.
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
-      limit: 1,
+      limit: 10,
     });
 
     return subscriptions.data.find((subscription) =>

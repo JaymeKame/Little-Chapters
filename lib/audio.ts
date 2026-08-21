@@ -279,8 +279,17 @@ export function stopSpeaking(): void {
 
 /** Chapter-aware welcome line for Screen 3 (falls back to a generic line if
  *  no chapter is available yet). `alreadyRead` covers the "came back later
- *  today" case — no chapter prompt, since there isn't a new one to start. */
-export function welcomeLine(childName: string, chapter?: Chapter | null, alreadyRead = false): string {
+ *  today" case — no chapter prompt, since there isn't a new one to start.
+ *  `locked` covers the paywall: there IS a new chapter, but a grown-up has
+ *  to open it — said to the child without any sense of having done something
+ *  wrong, and without asking them to go and pester anyone. */
+export function welcomeLine(
+  childName: string,
+  chapter?: Chapter | null,
+  alreadyRead = false,
+  locked = false,
+): string {
+  if (locked) return `The next chapter is waiting, ${childName}! A grown-up can open it for you.`;
   if (alreadyRead) return `You already read today's chapter, ${childName}! Come back tomorrow for a new one.`;
   if (chapter) return `Ready to see what happens to ${chapter.character} today, ${childName}?`;
   return `Hi ${childName}, your new chapter is ready.`;

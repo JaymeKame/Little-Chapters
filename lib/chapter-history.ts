@@ -114,6 +114,25 @@ export function appendChapterHistoryEntry(uid: string | null, entry: ChapterHist
   })();
 }
 
+/** Moves an anonymous visitor's history onto the uid they just signed in as
+ *  — same contract as claimPetFromAnonymousUid/claimChildProgressFrom-
+ *  AnonymousUid (best-effort, local-only, never overwrites a destination
+ *  that already has its own history). Called from AuthProvider's
+ *  claimAnonymousChild; see the note there for why the FREE-CHAPTER gate
+ *  depends on this and not just the parent screen. */
+export function claimChapterHistoryFromAnonymousUid(uid: string, anonymousUid: string): void {
+  if (!uid || !anonymousUid || uid === anonymousUid) return;
+  try {
+    if (loadLocal(uid).length) return; // destination already owned
+    const carried = loadLocal(anonymousUid);
+    if (!carried.length) return;
+    saveLocal(uid, carried);
+    localStorage.removeItem(lsKey(anonymousUid));
+  } catch {
+    /* best-effort, same as every other claim in this app */
+  }
+}
+
 /** Was THIS specific chapter already completed? Synchronous/local-only on
  *  purpose — /home needs this on first paint, before any Firestore round
  *  trip could resolve, and the local copy is always at least as fresh as

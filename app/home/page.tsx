@@ -33,6 +33,7 @@ import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
 import { chapterFor, requestTutorChapter, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage } from '@/lib/scene-selector';
 import { wasChapterCompleted } from '@/lib/chapter-history';
+import { useEntitlement } from '@/lib/use-entitlement';
 import {
   pauseForBackground,
   playHomeSound,
@@ -87,6 +88,13 @@ export default function ChildHomePage() {
   // already finished today's chapter under their real uid.
   const alreadyRead = chapter && !authLoading ? wasChapterCompleted(user?.uid ?? null, chapter.id) : false;
 
+  // Paywall state for THIS chapter. `locked` is false until the check
+  // settles, so Play never flickers into a locked state on a fast device —
+  // and a chapter the child already finished is never locked (see
+  // useEntitlement). The free demo chapter needs no account at all: this
+  // only ever becomes true once one has been completed.
+  const { locked } = useEntitlement(chapter?.id ?? null);
+
   // Home shows the chapter's OPENING scene (page 0) as its single cover
   // image — per-page progression is a /read concept. Memoized: selectSceneForPage()
   // writes to the recent-scene localStorage history as a side effect (see
@@ -136,10 +144,18 @@ export default function ChildHomePage() {
   function replayWelcome() {
     if (!profile) return;
     playHomeSound('replay.mp3');
-    speakPrompt(welcomeLine(profile.childName, chapter, alreadyRead));
+    speakPrompt(welcomeLine(profile.childName, chapter, alreadyRead, locked));
   }
 
   function startChapter() {
+    // Behind the paywall the tap goes to the parent screen instead — quietly,
+    // with no theme music or "here we go" cue, because nothing is starting.
+    if (locked) {
+      playHomeSound('tap-soft.mp3');
+      stopTheme();
+      router.push('/unlock');
+      return;
+    }
     // Presentation-only: compress the button, nudge the background, fade the
     // UI, THEN navigate — route/navigation logic is unchanged.
     playHomeSound('play.mp3');
@@ -224,7 +240,9 @@ export default function ChildHomePage() {
             }}
           >
             <span style={{ fontFamily: 'var(--serif)', fontWeight: 700, fontSize: 26, color: 'var(--dark)', lineHeight: 1.25 }}>
-              {alreadyRead ? "Today's Chapter ✓" : "Today's Chapter"}
+              {/* `locked` and `alreadyRead` can never both be true — a
+                  chapter this child already finished is never locked. */}
+              {alreadyRead ? "Today's Chapter ✓" : locked ? 'The Next Chapter' : "Today's Chapter"}
             </span>
           </div>
 
@@ -238,7 +256,13 @@ export default function ChildHomePage() {
           <button
             className="lc-play-btn"
             onClick={startChapter}
-            aria-label={alreadyRead ? "Read today's chapter again" : "Start today's chapter"}
+            aria-label={
+              locked
+                ? "Unlock the next chapter"
+                : alreadyRead
+                  ? "Read today's chapter again"
+                  : "Start today's chapter"
+            }
             style={{
               marginTop: -32,
               width: 85,
@@ -274,7 +298,11 @@ export default function ChildHomePage() {
               animationDelay: '800ms',
             }}
           >
-            {alreadyRead ? "You read today's chapter! See you tomorrow" : "There's a new chapter ready for you!"}
+            {locked
+              ? 'Ask a grown-up to open the next chapter'
+              : alreadyRead
+                ? "You read today's chapter! See you tomorrow"
+                : "There's a new chapter ready for you!"}
             <SpeakerIcon size={16} color="var(--blue)" />
           </button>
 

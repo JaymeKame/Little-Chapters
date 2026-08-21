@@ -3,7 +3,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
 import { adminUnconfiguredResponse } from '@/lib/route-auth';
-import { sendSMS } from '@/lib/sms';
+import { sendSMS, type SmsStatus } from '@/lib/sms';
+// Shared with the write side (/api/parents/phone) so the two can never
+// disagree about what a storable number is.
+import { E164 } from '@/lib/phone';
 import { generateParentMessage } from '@/lib/parent-message';
 import { validateParentMessage } from '@/lib/message-validator';
 import type { ReadingSessionData } from '@/lib/parent-message';
@@ -24,8 +27,6 @@ function overLimit(key: string): boolean {
   g.count += 1;
   return g.count > MESSAGES_PER_DAY;
 }
-
-const E164 = /^\+[1-9]\d{6,14}$/;
 
 export async function POST(request: NextRequest) {
   try {
@@ -94,12 +95,19 @@ export async function POST(request: NextRequest) {
     const parentData = parentDoc.data();
     const phoneNumber = parentData?.phoneNumber;
 
-    // Send SMS if phone number is configured
+    /* SMS is strictly an ADDITION to the in-app note above, which has
+     * already been written. Every branch here is a non-failure: the parent
+     * gets their message either way, and `smsStatus` is a coarse code (see
+     * SmsStatus) rather than the provider's error text, which named our
+     * env vars back to the browser. */
     let smsSent = false;
-    let smsError: string | undefined;
+    let smsStatus: SmsStatus | 'no_phone' | 'invalid_number' = 'no_phone';
 
     if (phoneNumber && !E164.test(phoneNumber)) {
-      smsError = 'Saved phone number is not in E.164 format';
+      // Predates the server-side normalisation in /api/parents/phone, so
+      // older parent docs can still hold something Twilio would reject.
+      console.warn('[messages] stored phone number is not E.164 for uid:', uid);
+      smsStatus = 'invalid_number';
     } else if (phoneNumber) {
       const smsResult = await sendSMS({
         to: phoneNumber,
@@ -107,7 +115,7 @@ export async function POST(request: NextRequest) {
       });
 
       smsSent = smsResult.success;
-      smsError = smsResult.error;
+      smsStatus = smsResult.status;
 
       if (smsSent) {
         // Update message with SMS sent status
@@ -123,7 +131,7 @@ export async function POST(request: NextRequest) {
       messageId: messageRef.id,
       message: generated.rawMessage,
       smsSent,
-      smsError,
+      smsStatus,
     });
   } catch (error) {
     console.error('Error sending parent message:', error);

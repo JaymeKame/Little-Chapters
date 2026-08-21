@@ -3,7 +3,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
 import { adminUnconfiguredResponse } from '@/lib/route-auth';
-import { createCheckoutSession, getCustomerSubscription, getOrCreateCustomer, PLANS } from '@/lib/stripe';
+import {
+  createCheckoutSession,
+  customerBelongsTo,
+  getCustomerSubscription,
+  getOrCreateCustomer,
+  planById,
+  priceIdForPlan,
+} from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -45,12 +52,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'planId is required' }, { status: 400 });
     }
 
-    const plan = PLANS.find((p) => p.id === planId);
+    const plan = planById(planId);
     if (!plan) {
       return NextResponse.json({ error: 'Invalid plan' }, { status: 400 });
     }
 
-    if (!plan.priceId) {
+    // Resolved here, server-side, from env — the client only ever names a
+    // plan id, never a price.
+    const priceId = priceIdForPlan(plan.id);
+    if (!priceId) {
       return NextResponse.json({ error: 'Plan price ID not configured' }, { status: 500 });
     }
 
@@ -59,10 +69,31 @@ export async function POST(request: NextRequest) {
     const parentData = parentDoc.data();
     const name = parentData?.name || null;
 
-    const storedCustomerId = typeof parentData?.stripeCustomerId === 'string' ? parentData.stripeCustomerId : null;
+    // The stored id is client-writable until Firestore rules land. An id that
+    // does not actually belong to this account is ignored rather than
+    // rejected: that covers a deleted or stale customer as well as a planted
+    // one, and self-heals via the write below. Rejecting outright would lock
+    // a legitimate parent out of checkout whenever their customer went away.
+    const claimedCustomerId = typeof parentData?.stripeCustomerId === 'string' ? parentData.stripeCustomerId : null;
+    const storedCustomerId =
+      claimedCustomerId && (await customerBelongsTo(claimedCustomerId, uid, email))
+        ? claimedCustomerId
+        : null;
+    if (claimedCustomerId && !storedCustomerId) {
+      console.warn('[payments/checkout] stored stripeCustomerId does not belong to uid — ignoring:', uid);
+    }
     const customerId = storedCustomerId || await getOrCreateCustomer(email, name, { firebaseUid: uid });
 
-    if (storedCustomerId && await getCustomerSubscription(storedCustomerId)) {
+    // Probe the customer we are actually about to bill, NOT storedCustomerId.
+    // storedCustomerId is null on the ownership-fallback path, and
+    // getOrCreateCustomer's email lookup can hand back the very customer that
+    // already holds the subscription — so keying this guard on the stored id
+    // let the fallback path skip it and charge a subscribed parent twice.
+    // customerId is caller-owned on both branches (a verified stored id, or a
+    // customer matched/created against the verified token email), so this
+    // leaks nothing. It also runs before the Firestore write below, so an
+    // already-subscribed parent's stored id is never overwritten.
+    if (await getCustomerSubscription(customerId)) {
       return NextResponse.json({ error: 'An active subscription already exists' }, { status: 409 });
     }
 
@@ -80,7 +111,7 @@ export async function POST(request: NextRequest) {
     const successUrl = `${baseUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${baseUrl}/payment/cancel`;
 
-    const session = await createCheckoutSession(customerId, plan.priceId, successUrl, cancelUrl, { firebaseUid: uid });
+    const session = await createCheckoutSession(customerId, priceId, successUrl, cancelUrl, { firebaseUid: uid });
 
     if (!session) {
       return NextResponse.json({ error: 'Failed to create checkout session' }, { status: 500 });
