@@ -28,6 +28,7 @@ import {
   type ReadingSession,
 } from '@/lib/pronunciation';
 import { combineVerdicts, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
+import { buildReadingDebugPayload, readingDebugEnabled } from '@/lib/reading-debug';
 import { toWordSignals } from '@/lib/reading-signal-adapter';
 import type { SessionIntervention } from '@/lib/reading-session-interpreter';
 import { HELP_LADDER, rungLine, pickEncouragement, segmentWord } from '@/lib/help-ladder';
@@ -597,7 +598,11 @@ export default function ReadPage() {
   }
 
   async function decodeReading(r: ReadingAssessmentResult): Promise<{ verdicts: WordVerdict[]; decode: DecodeResult | null }> {
-    if (!r.audioWav || r.words.length === 0) return { verdicts: combineVerdicts(r.words, null), decode: null };
+    if (!r.audioWav || r.words.length === 0) {
+      const verdicts = combineVerdicts(r.words, null);
+      await exposeVerdictDebug(verdicts, false);
+      return { verdicts, decode: null };
+    }
     try {
       const authToken = user ? await user.getIdToken() : null;
       const form = new FormData();
@@ -610,9 +615,28 @@ export default function ReadPage() {
       });
       if (!res.ok) throw new Error(String(res.status));
       const decodeResult = (await res.json()) as DecodeResult;
-      return { verdicts: combineVerdicts(r.words, decodeResult), decode: decodeResult };
+      const verdicts = combineVerdicts(r.words, decodeResult);
+      await exposeVerdictDebug(verdicts, true);
+      return { verdicts, decode: decodeResult };
     } catch {
-      return { verdicts: combineVerdicts(r.words, null), decode: null };
+      const verdicts = combineVerdicts(r.words, null);
+      await exposeVerdictDebug(verdicts, false);
+      return { verdicts, decode: null };
+    }
+  }
+
+  async function exposeVerdictDebug(verdicts: WordVerdict[], mddAvailable: boolean) {
+    try {
+      if (!readingDebugEnabled(window.location.search)) return;
+      const payload = buildReadingDebugPayload(verdicts, mddAvailable);
+      await fetch('/api/reading/debug-verdict?debugReading=1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        cache: 'no-store',
+      });
+    } catch {
+      // Diagnostics must never affect grading or strand the reading flow.
     }
   }
 
