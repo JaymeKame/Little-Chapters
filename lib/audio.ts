@@ -9,9 +9,12 @@
  * anywhere in this file.
  *
  * Current behavior:
- *  - speakPrompt()/stopSpeaking() use the browser's real Web Speech API
- *    (speechSynthesis) for voice — a legitimate system service, not a
- *    synthesized placeholder.
+ *  - speakPrompt()/stopSpeaking() use either ElevenLabs (when
+ *    NEXT_PUBLIC_VOICE_PROVIDER=elevenlabs) or the browser's Web Speech API.
+ *    The ElevenLabs path fetches audio/mpeg from POST /api/speech/model and
+ *    plays it via HTMLAudioElement; it falls back silently to Web Speech on
+ *    any network or autoplay error. The public function signatures are
+ *    unchanged — callers do not need to know which provider is active.
  *  - playTheme()/playAmbience()/playMusic()/playUISound() are asset-based: they play a
  *    real audio file (HTMLAudioElement) at the given path if one exists.
  *    If the asset is missing (404/decode/autoplay-block error), they fail
@@ -25,19 +28,61 @@
 
 import type { Chapter } from './chapters';
 
+/* NEXT_PUBLIC_ vars are inlined at build time by the Next.js bundler — this
+ * module-level constant makes that static nature explicit to future readers. */
+const VOICE_PROVIDER = process.env.NEXT_PUBLIC_VOICE_PROVIDER;
+
 /* ── Voice (TTS) ──────────────────────────────────────────────────────── */
 
-export function speakPrompt(
+/** Module-level handle for a currently-playing ElevenLabs audio clip so
+ *  stopSpeaking() can cancel it synchronously. */
+let _elevenLabsEl: HTMLAudioElement | null = null;
+
+/** Internal: play text via POST /api/speech/model (ElevenLabs stream).
+ *  Falls back to Web Speech API on any failure so callers are never blocked. */
+function _speakElevenLabs(
+  text: string,
+  opts?: { onEnd?: () => void },
+): void {
+  // Cancel any in-flight ElevenLabs utterance first.
+  if (_elevenLabsEl) {
+    _elevenLabsEl.pause();
+    _elevenLabsEl = null;
+  }
+  fetch('/api/speech/model', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`model route ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const el = new Audio(url);
+      _elevenLabsEl = el;
+      const cleanup = () => {
+        URL.revokeObjectURL(url);
+        if (_elevenLabsEl === el) _elevenLabsEl = null;
+      };
+      el.addEventListener('ended', () => { cleanup(); opts?.onEnd?.(); }, { once: true });
+      el.addEventListener('error', () => { cleanup(); opts?.onEnd?.(); }, { once: true });
+      void el.play().catch(() => { cleanup(); opts?.onEnd?.(); });
+    })
+    .catch(() => {
+      // ElevenLabs path failed — fall back to Web Speech so the child is not
+      // left in silence.
+      _speakWebSpeech(text, opts);
+    });
+}
+
+/** Internal: speak via the browser's Web Speech API (original path). */
+function _speakWebSpeech(
   text: string,
   opts?: { rate?: number; pitch?: number; onEnd?: () => void },
 ): void {
   if (typeof window === 'undefined' || !window.speechSynthesis) return;
-  // A backgrounded tab must never start speaking — this guards against a
-  // delayed callback (e.g. an async chapter-load resolving after the child
-  // has already switched apps) firing speakPrompt() while hidden.
-  if (typeof document !== 'undefined' && document.hidden) return;
   try {
-    window.speechSynthesis.cancel(); // one voice line at a time
+    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = opts?.rate ?? 0.95; // slightly slower — early readers, not adults
     u.pitch = opts?.pitch ?? 1.05;
@@ -51,8 +96,29 @@ export function speakPrompt(
   }
 }
 
+export function speakPrompt(
+  text: string,
+  opts?: { rate?: number; pitch?: number; onEnd?: () => void },
+): void {
+  if (typeof window === 'undefined') return;
+  // A backgrounded tab must never start speaking — this guards against a
+  // delayed callback (e.g. an async chapter-load resolving after the child
+  // has already switched apps) firing speakPrompt() while hidden.
+  if (typeof document !== 'undefined' && document.hidden) return;
+
+  if (VOICE_PROVIDER === 'elevenlabs') {
+    _speakElevenLabs(text, opts);
+  } else {
+    _speakWebSpeech(text, opts);
+  }
+}
+
 export function stopSpeaking(): void {
   if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+  if (_elevenLabsEl) {
+    _elevenLabsEl.pause();
+    _elevenLabsEl = null;
+  }
 }
 
 /** Chapter-aware welcome line for Screen 3 (falls back to a generic line if
