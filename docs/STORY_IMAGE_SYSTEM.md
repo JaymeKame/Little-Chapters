@@ -153,3 +153,94 @@ for the full finding.
   `<img>`) to rule out a suspected legibility artifact (traced to a one-off
   screenshot-capture timing issue, not a real rendering bug — reproduced
   the exact same scene 3 times afterward, always fully opaque/legible).
+
+## Replacing a scene with a higher-resolution regenerated asset (2026-08-21)
+
+The 57 scenes were cropped from 6 multi-panel composite sheets, so their
+native resolution is low (324–718px wide, 185–536px tall across the
+manifest — see the stats below). Individually-regenerated, higher-resolution
+art is planned to replace them. **The manifest and selector need zero
+architectural changes to accept this** — confirmed by inspection, not
+assumption:
+
+- `lib/scene-selector.ts` never reads `width`, `height`, or any pixel data
+  of an asset — its entire scoring function (`scoreAsset`) only touches
+  `keywords`, `theme`, `environment`, `ambience`, `characters`,
+  `dogPresent`. Grepped to confirm: no `.width`/`.height` reference exists
+  anywhere in that file.
+- `components/SceneBackground.tsx` never reads an asset's intrinsic
+  dimensions either — it renders a plain `<img>` sized entirely by its CSS
+  container (`object-fit: cover`), so a higher-resolution file just gives
+  that same `cover` crop more real pixels to work with (sharper, not
+  differently laid out).
+- `width`/`height` in `SceneAsset` are metadata-only today (present for
+  provenance/documentation, matching `sourceFile`/`sourcePanel`).
+
+**Therefore the replacement workflow is exactly:**
+
+```
+existing scene ID (e.g. "pair-girl-dog-beach-lighthouse-sunset-01")
+  → generate the new individual high-res asset depicting the SAME scene
+  → save it as public/images/scenes/pair-girl-dog-beach-lighthouse-sunset-01.jpg
+    (same filename → zero code changes; a different filename only requires
+    updating that one entry's `src` string)
+  → update that manifest entry's `width`/`height` to the new file's real
+    pixel dimensions (documentation accuracy only — not required for the
+    selector or renderer to keep working)
+  → leave id, theme, environment, characters, keywords, ambience, focal
+    UNCHANGED — they describe what the scene DEPICTS, which hasn't
+    changed; only its resolution/crop-source has
+```
+
+No selector scoring logic was touched to make this true — it was already
+architecturally decoupled from asset resolution before this task, because
+the scoring function only ever reasoned about semantic metadata, never
+pixels. `scripts/test-scene-system.ts`'s asset-integrity checks (file
+exists, not corrupt/tiny, path lives under `public/images/scenes/`) remain
+the right regression check to run after every batch of replacements — they
+don't hard-code dimensions, so they pass unchanged regardless of the new
+files' resolution.
+
+### Recommended target dimensions / aspect ratio
+
+Current crops (all 57, from `lib/scene-manifest.ts`):
+
+| | min | max | average |
+|---|---|---|---|
+| width | 324px | 718px | 441px |
+| height | 185px | 536px | 320px |
+| aspect ratio (w/h) | 1.15 | 1.94 | 1.41 |
+
+Every current crop is **landscape** (wider than tall, average ratio 1.41 ≈
+7:5) — inherited from the source composite sheets, whose individual panels
+were all landscape illustrations. But `SceneBackground` always renders into
+`.screen`, a **portrait** column by design (max-width capped at 430–620px
+across every breakpoint in `app/globals.css`, height unconstrained/full
+device height) — the child screens are one-column "by design" per
+`CLAUDE.md`. A landscape source in a portrait container means
+`object-fit: cover` has to crop away a large fraction of the image's width
+on every phone/tablet render, which is exactly why `focal.x` exists as a
+manifest field today — it's compensating for a source/container aspect-
+ratio mismatch, not a stylistic choice.
+
+**Recommendation: generate the replacements in portrait orientation,
+around 2:3 to 3:4 (width:height), at minimum 1024×1536px.** Reasoning:
+
+- 1024×1536 is a native output size for GPT-Image-1 (the tool implied by
+  the source filenames, `ChatGPT Image ...png`) — directly achievable
+  without a separate upscale/crop step.
+- Portrait framing needs much less aggressive side-cropping to fill
+  `.screen`'s column at any breakpoint, meaning less reliance on precise
+  `focal` tuning and less risk of cropping out the subject.
+  1536px height covers real device heights at up to ~2x DPI without
+  upscaling (a 768px-tall CSS viewport at 2x = 1536 physical px); the
+  tallest tested breakpoint (1024×1366) would still crop some at the very
+  extremes on a 3x display, but never upscale — `cover` degrades to a
+  slightly tighter crop, never a blurry stretch.
+- Keep the JPEG-at-quality-93 encoding convention already used for the
+  current 57 assets (`scripts` used PIL's `save(..., "JPEG", quality=93)`)
+  for consistent file size/quality — a 1024×1536 photo-real illustration
+  at that quality is typically 200–500KB, in line with the current assets.
+
+None of this requires a single code change — it's guidance for whoever
+generates the replacement art, not a constraint the selector enforces.
