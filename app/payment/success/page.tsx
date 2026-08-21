@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
+import { clearEntitlementCache } from '@/lib/use-entitlement';
 
 export default function PaymentSuccessPage() {
   const router = useRouter();
@@ -27,6 +28,10 @@ export default function PaymentSuccessPage() {
           headers: { Authorization: `Bearer ${await user.getIdToken()}` },
         });
         if (!response.ok) throw new Error('verification failed');
+        // The paywall memoises "not subscribed" per uid for the tab's
+        // lifetime; without this the parent pays and /home still sends them
+        // back to /unlock until they hard-reload.
+        clearEntitlementCache(user.uid);
         if (!cancelled) router.replace('/home');
       } catch {
         if (!cancelled) setMessage('We could not confirm the payment yet. Please try again shortly.');

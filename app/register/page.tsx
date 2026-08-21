@@ -82,6 +82,26 @@ export default function RegisterPage() {
         </div>
       )}
 
+      {/* Signed-in confirmation. The provider buttons below stay visible (a
+          parent may want to switch accounts), so without this the screen
+          looks identical before and after a successful sign-in — which is
+          exactly how the onAuthStateChanged bug used to present itself. */}
+      {isAuthenticated && (
+        <div
+          style={{
+            padding: '10px 14px',
+            borderRadius: 10,
+            background: 'oklch(0.78 0.14 155 / 0.12)',
+            color: 'var(--ink)',
+            fontSize: 14,
+            marginBottom: '16px',
+            textAlign: 'center',
+          }}
+        >
+          Signed in{user?.email ? ` as ${user.email}` : ''} ✓
+        </div>
+      )}
+
       {/* Google and Apple sign-in buttons */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px' }}>
         <button
