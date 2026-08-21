@@ -14,7 +14,7 @@
  * tests use, not plain node. */
 
 import configDoc from '../reading-tutor/content/config.json';
-import { STAGES, clampStage, type Grapheme } from '../reading-tutor/content/stages';
+import { STAGES, STAGES_DOC, clampStage, type Grapheme, type SightWordProvenance } from '../reading-tutor/content/stages';
 
 export interface HelpLadderConfig {
   confidence_floor: number;
@@ -148,6 +148,43 @@ export function segmentWord(word: string, stage: number): WordSegment[] | null {
     if (isSingleVowel && isSingleConsonant && eSeg.text === 'e') return null;
   }
 
+  return segments;
+}
+
+/* sight_word_provenance keyed lowercase — the JSON's own keys keep their
+ * typeset casing ("I"), but every caller here compares against a lowercased
+ * word. Built once; the source table is small and static. */
+const provenanceByLowerWord = new Map<string, SightWordProvenance>(
+  Object.entries(STAGES_DOC.sight_word_provenance).map(([w, p]) => [w.toLowerCase(), p]),
+);
+
+/** Whether `word` is safe to TEACH via the slide-through grapheme-blending
+ *  interaction at `stage` — segmentability alone is not enough. segmentWord()
+ *  only knows whether known graphemes happen to cover the letters; it has no
+ *  notion of true linguistic irregularity, so a permanently-irregular sight
+ *  word ("the", "was", "said"...) can still parse cleanly letter-by-letter
+ *  and "succeed" even though blending it produces the wrong sound (sliding
+ *  "the" as t-h-e teaches a sound nothing like the real, irregular "thuh").
+ *
+ *  Rather than inventing a new irregularity ruleset, this cross-references
+ *  the curriculum's own sight_word_provenance (already the source of truth
+ *  for the allowed-word set elsewhere — reading-tutor/content/stages.ts). A
+ *  word is blocked from the slider when the curriculum itself says it is
+ *  still irregular at this stage: `becomes_decodable_at_stage` is null (it
+ *  never becomes safe to blend), or the child hasn't reached that stage yet.
+ *  A word with no provenance entry at all is a purely decodable word — only
+ *  segmentWord()'s own answer governs it, unchanged.
+ *
+ *  This is the actual slider-eligibility gate; segmentWord() itself is
+ *  intentionally untouched — everywhere in app/read/page.tsx that used to
+ *  ask "can this be segmented?" should ask this instead. */
+export function canTeachWithSlider(word: string, stage: number): WordSegment[] | null {
+  const segments = segmentWord(word, stage);
+  if (!segments) return null;
+  const provenance = provenanceByLowerWord.get(word.toLowerCase());
+  if (provenance && (provenance.becomes_decodable_at_stage === null || stage < provenance.becomes_decodable_at_stage)) {
+    return null;
+  }
   return segments;
 }
 

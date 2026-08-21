@@ -28,6 +28,7 @@ import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
 import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, loadProfile, type ChildProfile } from '@/lib/profile';
+import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
 import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
 import { wasChapterCompleted } from '@/lib/chapter-history';
 import {
@@ -263,7 +264,7 @@ export default function ChildHomePage() {
             }}
           >
             {alreadyRead ? "You read today's chapter! See you tomorrow" : "There's a new chapter ready for you!"}
-            <img src="/icons/speaker-audio.png" alt="" style={{ height: 16, width: 'auto' }} />
+            <SpeakerIcon size={16} color="var(--blue)" />
           </button>
 
           {/* Momo: small, secondary, last to arrive — never competes with

@@ -24,6 +24,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { speakPrompt } from '@/lib/audio';
+import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
+import { MicIcon } from '@/components/icons/MicIcon';
 
 export function AudioWordHelp({
   word,
@@ -73,11 +75,11 @@ export function AudioWordHelp({
         aria-hidden
         className={`lc-audio-icon-wrap${yourTurn ? ' lc-invite-pulse' : speaking ? ' lc-speaking-active' : ''}`}
       >
-        <img
-          src={yourTurn ? '/icons/mic-listening.png' : '/icons/speaker-audio.png'}
-          alt=""
-          className="lc-audio-icon"
-        />
+        {yourTurn ? (
+          <MicIcon className="lc-audio-icon" color="var(--leaf)" />
+        ) : (
+          <SpeakerIcon className="lc-audio-icon" color="var(--blue)" />
+        )}
       </span>
       <p className="lc-slide-caption" role="status">
         {yourTurn ? 'Your turn!' : 'Listen…'}
