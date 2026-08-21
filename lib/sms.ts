@@ -23,23 +23,34 @@ export interface SendSMSParams {
   message: string;
 }
 
-export async function sendSMS({ to, message }: SendSMSParams): Promise<{ success: boolean; error?: string }> {
+/* Coarse, caller-safe outcome. Deliberately NOT the provider's error text:
+ * this value is returned to the browser, and Twilio's messages name our
+ * account state and env vars (the old code handed the client the literal
+ * string "Missing Twilio credentials. Set TWILIO_ACCOUNT_SID, ..."). The
+ * detail is logged server-side where it belongs. */
+export type SmsStatus = 'sent' | 'not_configured' | 'failed';
+
+export async function sendSMS({ to, message }: SendSMSParams): Promise<{ success: boolean; status: SmsStatus }> {
+  // Checked BEFORE the attempt so an unconfigured deployment is a known,
+  // reportable state rather than an exception that looks like a send
+  // failure — the two want very different responses from an operator.
+  if (!isSMSConfigured()) {
+    console.warn('[sms] skipped: TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER not set');
+    return { success: false, status: 'not_configured' };
+  }
   try {
     const twilio = getClient();
-    
+
     await twilio.messages.create({
       body: message,
       from: fromNumber,
       to: to,
     });
 
-    return { success: true };
+    return { success: true, status: 'sent' };
   } catch (error) {
     console.error('Failed to send SMS:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
+    return { success: false, status: 'failed' };
   }
 }
 

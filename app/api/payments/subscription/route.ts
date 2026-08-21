@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
 import { adminUnconfiguredResponse } from '@/lib/route-auth';
-import { getCustomerSubscription, subscriptionPeriod } from '@/lib/stripe';
+import { customerBelongsTo, getCustomerSubscription, subscriptionPeriod } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,6 +38,18 @@ export async function GET(request: NextRequest) {
     const customerId = parentData?.stripeCustomerId;
 
     if (!customerId) {
+      return NextResponse.json({ subscribed: false, subscription: null });
+    }
+
+    // The stored id is client-writable until Firestore rules land, and this
+    // route hands back a customer's subscription id, status, period end and
+    // price ids — and now also decides whether the paywall opens. Without
+    // this check, planting someone else's customer id in your own parent doc
+    // both reads their billing state back to you and unlocks the app. An id
+    // that is not ours is answered exactly like no id at all — never a
+    // distinct error, which would confirm the id exists.
+    if (!(await customerBelongsTo(customerId, uid, decodedToken.email ?? null))) {
+      console.warn('[payments/subscription] stored stripeCustomerId does not belong to uid:', uid);
       return NextResponse.json({ subscribed: false, subscription: null });
     }
 

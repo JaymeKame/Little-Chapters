@@ -20,6 +20,7 @@ import { SlideWordHelp } from '@/components/SlideWordHelp';
 import { AudioWordHelp } from '@/components/AudioWordHelp';
 import { chapterFor, requestTutorChapter, selectStoryScene, stageForAge, type Chapter } from '@/lib/chapters';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
+import { useEntitlement } from '@/lib/use-entitlement';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
@@ -250,6 +251,18 @@ export default function ReadPage() {
   const pageInterventionsRef = useRef<boolean[] | null>(null);
   const pageAssistedRef = useRef(false);
   const pageRereadRef = useRef(false);
+
+  /* Paywall. /home already routes a locked tap to /unlock, so this only
+   * catches a deep link, a back-button return, or a refresh mid-flow. It
+   * never interrupts a chapter in progress (startedReadingRef) — a child
+   * whose subscription lapses between page one and page five finishes the
+   * story, and the gate applies to the next one. */
+  const { locked: chapterLocked, subscribed, signedIn } = useEntitlement(chapter?.id ?? null);
+  useEffect(() => {
+    // `chapter &&` matters: with no chapter yet there is no id to recognise
+    // as already-owned, so a free chapter being RE-read would look locked.
+    if (chapter && chapterLocked && !startedReadingRef.current) router.replace('/unlock');
+  }, [chapter, chapterLocked, router]);
 
   useEffect(() => {
     disposedRef.current = false;
@@ -1095,57 +1108,67 @@ export default function ReadPage() {
             ✦
           </div>
 
-          {/* Account creation prompt after free chapter */}
-          <div
-            style={{
-              marginTop: 40,
-              background: 'rgba(255,255,255,0.95)',
-              borderRadius: 16,
-              padding: '20px 24px',
-              maxWidth: 320,
-              boxShadow: '0 4px 16px rgba(43,43,43,0.15)',
-            }}
-          >
-            <p style={{ fontFamily: 'var(--serif)', fontSize: 16, margin: '0 0 12px', color: 'var(--ink)' }}>
-              Great job on the first chapter!
-            </p>
-            <p style={{ fontSize: 14, margin: '0 0 16px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
-              Create an account to get daily progress updates via SMS with specific wins from each reading session.
-            </p>
-            <button
-              onClick={() => router.push('/register')}
-              className="btn-primary"
+          {/* The upgrade moment. A subscriber has nothing to do here, so they
+              get no card at all — the cliffhanger is the ending. Everyone
+              else has just spent the free chapter, and this is the one place
+              in the app where asking for the sale is honest: they have seen
+              exactly what they would be buying. Still no urgency and no
+              guilt — "Maybe tomorrow" is a real option, and the free chapter
+              stays re-readable either way. */}
+          {subscribed !== true && (
+            <div
               style={{
-                width: '100%',
-                padding: '12px',
-                fontSize: 15,
-                fontWeight: 600,
-                borderRadius: 10,
-                border: 0,
-                background: 'var(--leaf)',
-                color: '#fff',
-                cursor: 'pointer',
+                marginTop: 40,
+                background: 'rgba(255,255,255,0.95)',
+                borderRadius: 16,
+                padding: '20px 24px',
+                maxWidth: 320,
+                boxShadow: '0 4px 16px rgba(43,43,43,0.15)',
               }}
             >
-              Create Free Account
-            </button>
-            <button
-              onClick={() => router.push('/home')}
-              style={{
-                width: '100%',
-                padding: '10px',
-                fontSize: 13,
-                marginTop: 8,
-                borderRadius: 10,
-                border: 0,
-                background: 'transparent',
-                color: 'var(--ink-soft)',
-                cursor: 'pointer',
-              }}
-            >
-              Maybe Later
-            </button>
-          </div>
+              <p style={{ fontFamily: 'var(--serif)', fontSize: 16, margin: '0 0 12px', color: 'var(--ink)' }}>
+                That was the free chapter — and they read it.
+              </p>
+              <p style={{ fontSize: 14, margin: '0 0 16px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
+                {signedIn
+                  ? 'Subscribe to get a new chapter every day, at their level, plus a short note for you after each session.'
+                  : 'Create an account to keep the story going — a new chapter every day, at their level, plus a short note for you after each session.'}
+              </p>
+              <button
+                onClick={() => router.push('/unlock')}
+                className="btn-primary"
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  fontSize: 15,
+                  fontWeight: 600,
+                  borderRadius: 10,
+                  border: 0,
+                  background: 'var(--leaf)',
+                  color: '#fff',
+                  cursor: 'pointer',
+                }}
+              >
+                Keep the story going
+              </button>
+              <button
+                onClick={() => router.push('/home')}
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  fontSize: 13,
+                  marginTop: 8,
+                  borderRadius: 10,
+                  border: 0,
+                  background: 'transparent',
+                  color: 'var(--ink-soft)',
+                  cursor: 'pointer',
+                }}
+              >
+                Maybe tomorrow
+              </button>
+            </div>
+          )}
         </main>
       </div>
       </div>
