@@ -24,7 +24,33 @@ export function avatarEmoji(id: AvatarId | undefined): string {
   return AVATARS.find((a) => a.id === id)?.emoji ?? '🧒';
 }
 
+/** Illustrated avatar asset — null only when no avatar has been chosen yet
+ *  (avatar is optional at setup), in which case callers fall back to the
+ *  emoji above. */
+export function avatarImageSrc(id: AvatarId | undefined): string | null {
+  return id ? `/images/setup/avatar-${id}.png` : null;
+}
+
+export function interestImageSrc(id: InterestId): string {
+  return `/images/setup/interest-${id}.png`;
+}
+
+/** CSS object-position for the avatar image inside its circular frame.
+ *  Per-avatar because the source art isn't framed consistently: the boy
+ *  portrait is centered with even headroom, but the girl portrait's hair
+ *  bun sits right at the top edge of the canvas — a centered crop (the
+ *  default 50% 50%) clips into it. Shifting the visible window up (lower
+ *  Y%) keeps the bun fully in frame without touching the source asset. */
+export function avatarImageObjectPosition(id: AvatarId | undefined): string {
+  return id === 'girl' ? '50% 18%' : '50% 50%';
+}
+
 export interface ChildProfile {
+  /** Stable, opaque identity for this child — generated once at setup, never
+   *  derived from the name (names collide and are mutable; see
+   *  docs/PERSISTENCE.md for why this is the Firestore partition key under
+   *  the owning parent's uid, not childName). */
+  childId: string;
   childName: string;
   age: number;
   interests: InterestId[];
@@ -34,19 +60,33 @@ export interface ChildProfile {
 
 const KEY = 'little-chapters-profile';
 
+export function newChildId(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `child-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function loadProfile(): ChildProfile | null {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Partial<ChildProfile> | null;
     if (!raw || typeof raw.childName !== 'string' || !raw.childName.trim() || !Array.isArray(raw.interests)) {
       return null;
     }
-    return {
+    // Backfill: profiles saved before childId existed get one generated once,
+    // here, and persisted immediately so it's stable on every later load —
+    // never re-derived (a fresh UUID on every load would silently orphan
+    // that child's progress/session history each time).
+    const childId = typeof raw.childId === 'string' && raw.childId ? raw.childId : newChildId();
+    const profile: ChildProfile = {
+      childId,
       childName: raw.childName.slice(0, 40),
       age: typeof raw.age === 'number' && Number.isFinite(raw.age) ? Math.min(12, Math.max(3, Math.round(raw.age))) : 6,
       interests: raw.interests.filter((i): i is InterestId => INTERESTS.some((x) => x.id === i)).slice(0, 3),
       avatar: AVATARS.some((a) => a.id === raw.avatar) ? (raw.avatar as AvatarId) : undefined,
       createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
     };
+    if (childId !== raw.childId) saveProfile(profile);
+    return profile;
   } catch {
     return null;
   }
@@ -64,6 +104,10 @@ export function saveProfile(p: ChildProfile): void {
 
 export interface SessionReport {
   date: string; // YYYY-MM-DD
+  /** Ties the report to the specific chapter it came from (lib/chapters.ts
+   *  chapterIdFor) — lets /home tell "today's chapter" apart from "today's
+   *  chapter, already read" instead of just checking the date. */
+  chapterId: string;
   childName: string;
   newWords: string[];
   practiced: { word: string; hint: string }[];

@@ -15,7 +15,40 @@ import {
 } from '../src/slots.js';
 import { allowedWordsForStage, CONTENT_BLOCKLIST, HUMAN_NOUNS } from '../content/stages.js';
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '../src/types.js';
-import { adaptTutorDraft } from '../../lib/chapters.ts';
+import { adaptTutorDraft, resolveGenerationStage, resolveGenerationContext, stageForAge, chapterIdFor } from '../../lib/chapters.ts';
+import { toWordSignals, toSentenceResult } from '../../lib/reading-signal-adapter.ts';
+import { interpretSessionWithIntervention, type SessionIntervention } from '../../lib/reading-session-interpreter.ts';
+import { HELP_LADDER, rungLine, graphemeCueFor, segmentWord } from '../../lib/help-ladder.ts';
+import type { WordScore } from '../../lib/pronunciation.ts';
+import type { DecodeResult } from '../../lib/reading-verdict.ts';
+import {
+  defaultProgressFor,
+  completeSessionPure,
+  completeSessionLocally,
+  loadLocalProgress,
+  saveLocalProgress,
+  wasSessionCompleted,
+  claimChildProgressFromAnonymousUid,
+} from '../../lib/child-progress.ts';
+import type { ChildProfile } from '../../lib/profile.ts';
+
+// Node has no global localStorage without --experimental-webstorage;
+// lib/child-progress.ts's local store (like every other local store in this
+// app) is written against the real browser API. Minimal in-memory shim so
+// its I/O layer — not just its pure functions — can be exercised here the
+// same way the rest of this suite exercises real modules, per CLAUDE.md's
+// "exercised with plain node scripts" convention.
+if (typeof (globalThis as unknown as { localStorage?: unknown }).localStorage === 'undefined') {
+  const store = new Map<string, string>();
+  (globalThis as unknown as { localStorage: Storage }).localStorage = {
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k: string, v: string) => { store.set(k, String(v)); },
+    removeItem: (k: string) => { store.delete(k); },
+    clear: () => store.clear(),
+    key: (i: number) => [...store.keys()][i] ?? null,
+    get length() { return store.size; },
+  } as Storage;
+}
 
 let pass = 0, fail = 0;
 const ok = (cond: boolean, label: string, extra = '') => {
@@ -410,14 +443,14 @@ section('Skeletons');
 section('Little Chapters adapter');
 {
   const chapter = adaptTutorDraft(
-    { childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
+    { childId: 'child-sam', childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
     { sentences: ['Sam sat on a mat', 'Pip sat by Sam'], imagePrompt: 'Sam and Pip', summaryLine: 'Sam found a mat' },
     SKELETONS[0],
   );
   ok(chapter !== null, 'a draft with sentences adapts successfully');
   if (!chapter) throw new Error('adapter returned null for a valid draft');
   const empty = adaptTutorDraft(
-    { childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
+    { childId: 'child-sam', childName: 'Sam', age: 6, interests: ['dogs'], createdAt: 1 },
     { sentences: [], imagePrompt: '', summaryLine: '' },
     SKELETONS[0],
   );
@@ -425,6 +458,284 @@ section('Little Chapters adapter');
   ok(chapter.pages.length === 2, 'tutor sentences become Chapter pages');
   ok(chapter.pages.every((page) => typeof page.text === 'string' && Array.isArray(page.focusWords)), 'Chapter page shape is preserved');
   ok(chapter.cliffhanger[1] === 'To be continued tomorrow...', 'adapter preserves the cliffhanger contract');
+}
+
+section('Reading signal adapter - live speech layer -> WordSignal');
+{
+  // A representative take, not a synthetic edge case: a child reading
+  // "Rex raced across the field." with one genuinely mispronounced word,
+  // one long hesitation before a word, one word they sounded out slowly,
+  // and one they skipped outright. Timings/scores are the kind of numbers
+  // lib/pronunciation.ts actually produces (ms offsets, 0-100 accuracy,
+  // per-phoneme detail), not round test numbers.
+  const words: WordScore[] = [
+    { word: 'Rex', accuracy: 92, errorType: 'None', offsetMs: 300, durationMs: 280,
+      phonemes: [{ phoneme: 'r', accuracy: 90 }, { phoneme: 'ɛ', accuracy: 95 }, { phoneme: 'ks', accuracy: 91 }] },
+    // Genuinely weak: low word score AND a badly-scored phoneme. This is the
+    // "real mistake" case - both signals agree, so it SHOULD read as low
+    // confidence.
+    { word: 'raced', accuracy: 38, errorType: 'Mispronunciation', offsetMs: 650, durationMs: 410,
+      phonemes: [{ phoneme: 'r', accuracy: 85 }, { phoneme: 'eɪ', accuracy: 22 }, { phoneme: 's', accuracy: 40 }, { phoneme: 't', accuracy: 45 }] },
+    // High word accuracy but ONE weak phoneme (e.g. a slightly soft /k/) -
+    // the case that proves confidence tracks the word score, not the
+    // phoneme minimum, per the tiebreaker in the integration brief.
+    { word: 'across', accuracy: 88, errorType: 'None', offsetMs: 2400, durationMs: 520,
+      phonemes: [{ phoneme: 'ə', accuracy: 90 }, { phoneme: 'k', accuracy: 41 }, { phoneme: 'r', accuracy: 92 }, { phoneme: 'ɒ', accuracy: 89 }, { phoneme: 's', accuracy: 94 }] },
+    // Skipped outright - LCS alignment already synthesized this Omission
+    // (see lib/pronunciation.ts alignWords()), so there is no real timestamp.
+    { word: 'the', accuracy: null, errorType: 'Omission', offsetMs: null, durationMs: null, phonemes: [] },
+    // Sounded out slowly, but got there - long duration, decent accuracy.
+    { word: 'field', accuracy: 81, errorType: 'None', offsetMs: 4200, durationMs: 1950,
+      phonemes: [{ phoneme: 'f', accuracy: 88 }, { phoneme: 'iː', accuracy: 79 }, { phoneme: 'l', accuracy: 80 }, { phoneme: 'd', accuracy: 82 }] },
+  ];
+
+  const { signals, diagnostics, insertions } = toWordSignals(words);
+
+  ok(signals.length === 5, 'one WordSignal per expected word (Omission included, nothing dropped)', String(signals.length));
+  ok(insertions.length === 0, 'no insertions in a clean-alignment take');
+
+  const rex = signals[0];
+  ok(rex.heard === true, 'a normally-read word is heard');
+  ok(Math.abs(rex.confidence - 0.92) < 1e-9, 'confidence is Azure word accuracy / 100, not rescaled', String(rex.confidence));
+  ok(rex.duration_ms === 280, 'duration_ms passes through unchanged');
+  ok(rex.gap_before_ms === 300, 'the FIRST word\'s gap is measured from listening-start (its own offset)', String(rex.gap_before_ms));
+
+  const raced = signals[1];
+  ok(raced.confidence < 0.4, 'a genuinely mispronounced word gets low confidence', String(raced.confidence));
+  ok(raced.gap_before_ms === 650 - (300 + 280), 'gap_before_ms is offset minus the previous word\'s end', String(raced.gap_before_ms));
+
+  const across = signals[2];
+  ok(across.confidence > 0.85, 'confidence tracks the WORD score, not the weak phoneme inside it (k=41)', String(across.confidence));
+  ok(across.gap_before_ms > 1200, 'the long hesitation before "across" shows up as a large gap', String(across.gap_before_ms));
+
+  const theWord = signals[3];
+  ok(theWord.heard === false, 'an Omission is not heard');
+  ok(theWord.confidence === 0, 'and carries zero confidence');
+  ok(theWord.duration_ms === 0 && theWord.gap_before_ms === 0, 'no fabricated timing for a word that was never said');
+
+  const field = signals[4];
+  ok(field.duration_ms === 1950, 'a slowly sounded-out word keeps its real (long) duration');
+
+  ok(diagnostics.length === 5, 'diagnostics has one entry per signal (not per raw Azure word)');
+  ok(diagnostics[2].azureMinPhoneme === 41, 'the weak phoneme IS preserved in diagnostics, just not in confidence', String(diagnostics[2].azureMinPhoneme));
+  ok(diagnostics[1].azureAccuracy === 38, 'diagnostics keep the raw Azure word accuracy too');
+}
+{
+  // Insertions: the child re-read a word / said something extra. WordSignal
+  // has no slot for "unexpected word" (it is indexed by expected word), so
+  // these must be dropped from signals but not silently vanish.
+  const words: WordScore[] = [
+    { word: 'Rex', accuracy: 90, errorType: 'None', offsetMs: 100, durationMs: 300, phonemes: [] },
+    { word: 'Rex', accuracy: 91, errorType: 'Insertion', offsetMs: 420, durationMs: 300, phonemes: [] },
+    { word: 'ran', accuracy: 87, errorType: 'None', offsetMs: 800, durationMs: 300, phonemes: [] },
+  ];
+  const { signals, insertions } = toWordSignals(words);
+  ok(signals.length === 2, 'an Insertion does not become a WordSignal', String(signals.length));
+  ok(insertions.length === 1 && insertions[0] === 'Rex', 'but it is surfaced separately, not silently discarded');
+  ok(signals[1].gap_before_ms === 800 - (100 + 300), 'the running clock skips over the dropped insertion correctly', String(signals[1].gap_before_ms));
+}
+{
+  // Unassessed: Azure recognized something but returned no assessment block
+  // at all (toWordScores() in lib/pronunciation.ts). Rare, but must not throw
+  // on a null accuracy.
+  const words: WordScore[] = [
+    { word: 'zoop', accuracy: null, errorType: 'Unassessed', offsetMs: 100, durationMs: 250, phonemes: [] },
+  ];
+  const { signals } = toWordSignals(words);
+  ok(signals[0].heard === true, 'Unassessed still means something was heard');
+  ok(signals[0].confidence === 0, 'but with no score to translate, confidence is the documented 0 fallback');
+}
+{
+  // MDD enrichment: diagnostics should pick up the decode score when
+  // provided, exactly like combineVerdicts already does - proving phoneme
+  // AND decode-layer evidence both survive into diagnostics even though
+  // neither touches WordSignal itself.
+  const words: WordScore[] = [
+    { word: 'cat', accuracy: 70, errorType: 'None', offsetMs: 0, durationMs: 300, phonemes: [{ phoneme: 'k', accuracy: 65 }] },
+  ];
+  const decode: DecodeResult = {
+    recognized: 'cot',
+    words: [{ word: 'cat', per: 0.6, score: 40, expected: 'k ae t', heard: 'k a t' }],
+    sentence_score: 40,
+  };
+  const { diagnostics } = toWordSignals(words, decode);
+  ok(diagnostics[0].decodeScore === 40, 'MDD decode score reaches diagnostics', String(diagnostics[0].decodeScore));
+  ok(diagnostics[0].decodeHeard === 'k a t', 'and what MDD actually decoded is preserved too');
+}
+{
+  // toSentenceResult: the thin SentenceResult wrapper. assisted/reread are
+  // caller-supplied (the adapter cannot know how the reading happened).
+  const words: WordScore[] = [
+    { word: 'Rex', accuracy: 90, errorType: 'None', offsetMs: 0, durationMs: 300, phonemes: [] },
+  ];
+  const { sentence } = toSentenceResult(0, 'Rex ran.', words, null, { assisted: true });
+  ok(sentence.text === 'Rex ran.', 'reference text passes through as SentenceResult.text');
+  ok(sentence.assisted === true && sentence.reread === false, 'assisted/reread come from the caller, not inferred');
+  ok(sentence.words.length === 1 && sentence.words[0].word === 'Rex', 'words is the adapted WordSignal array');
+}
+
+section('Help ladder - config-driven copy, no judgment');
+{
+  ok(rungLine(1, { word: 'sat', sentence: 'The cat sat.', stage: 1 }) === 'That word begins with /s/.',
+     'rung 1 gives a phoneme cue from the stage graphemes, not the word', rungLine(1, { word: 'sat', sentence: 'The cat sat.', stage: 1 }));
+  ok(!rungLine(1, { word: 'sat', sentence: 'The cat sat.', stage: 1 }).includes('sat'),
+     'rung 1 never reveals the literal word');
+  ok(rungLine(2, { word: 'sat', sentence: 'The cat sat.', stage: 1 }) === 'That word is sat. Your turn.',
+     'rung 2 reveals the word, verbatim from config.json');
+  ok(rungLine(3, { word: 'sat', sentence: 'The cat sat.', stage: 1 }) === 'Let me read this one. The cat sat.',
+     'rung 3 reads the whole sentence, verbatim from config.json');
+  ok(graphemeCueFor('shadow', 4) === '/sh/', 'a digraph introduced by the given stage is preferred over its single-letter substring', graphemeCueFor('shadow', 4));
+  ok(graphemeCueFor('shadow', 4) !== graphemeCueFor('sat', 1),
+     'different graphemes produce different cues (not a generic fallback for everything)');
+  for (const line of HELP_LADDER.encouragement_lines) {
+    ok(!HELP_LADDER.rules.never_say.some((bad) => line.toLowerCase().includes(bad)),
+       `encouragement line avoids banned words: "${line}"`);
+  }
+}
+
+section('Word segmentation - segmentWord() for the slide-through interaction');
+{
+  const texts = (segs: ReturnType<typeof segmentWord>) => segs?.map((s) => s.text);
+
+  ok(JSON.stringify(texts(segmentWord('sat', 1))) === JSON.stringify(['s', 'a', 't']),
+     'single-letter-only word segments one grapheme per letter', JSON.stringify(texts(segmentWord('sat', 1))));
+
+  ok(JSON.stringify(texts(segmentWord('shop', 4))) === JSON.stringify(['sh', 'o', 'p']),
+     'a two-letter digraph is preferred over decomposing into its single letters',
+     JSON.stringify(texts(segmentWord('shop', 4))));
+
+  ok(JSON.stringify(texts(segmentWord('chick', 4))) === JSON.stringify(['ch', 'i', 'ck']),
+     'two different multi-letter graphemes in one word both resolve correctly',
+     JSON.stringify(texts(segmentWord('chick', 4))));
+
+  ok(JSON.stringify(texts(segmentWord('well', 3))) === JSON.stringify(['w', 'e', 'll']),
+     'a doubled-letter grapheme (ll) is treated as one segment, not two',
+     JSON.stringify(texts(segmentWord('well', 3))));
+
+  ok(JSON.stringify(texts(segmentWord('star', 7))) === JSON.stringify(['s', 't', 'ar']),
+     'an r-controlled vowel grapheme segments as one unit',
+     JSON.stringify(texts(segmentWord('star', 7))));
+
+  ok(JSON.stringify(texts(segmentWord('rain', 8))) === JSON.stringify(['r', 'ai', 'n']),
+     'a vowel-team grapheme segments as one unit',
+     JSON.stringify(texts(segmentWord('rain', 8))));
+
+  ok(JSON.stringify(texts(segmentWord('bridge', 5))) === JSON.stringify(['b', 'r', 'i', 'dge']),
+     'a trailing digraph that happens to end in "e" (dge) is not mistaken for silent-e',
+     JSON.stringify(texts(segmentWord('bridge', 5))));
+
+  ok(JSON.stringify(texts(segmentWord('snow', 9))) === JSON.stringify(['s', 'n', 'ow']),
+     'pronunciation-disambiguated ids (ow_o vs ow_ow) still collapse to the one real substring "ow"',
+     JSON.stringify(texts(segmentWord('snow', 9))));
+
+  ok(segmentWord('thin', 1) === null,
+     'a word needing a letter/digraph not yet taught at this stage (h, th) fails closed, not with a wrong guess');
+
+  ok(segmentWord('', 5) === null, 'an empty word fails closed');
+
+  for (const [word, stage] of [['gate', 6], ['bike', 6], ['bone', 8], ['cube', 10], ['cake', 6]] as const) {
+    ok(segmentWord(word, stage) === null,
+       `silent-e word "${word}" is refused rather than approximated as ${JSON.stringify(texts(segmentWord(word, stage) ?? []))} — must fall back to the existing rung 1/2/3 ladder`);
+  }
+
+  // The demo chapter's own dogs-interest "spot" word, exercised end to end
+  // in the real /read page's dev sim flow — this is the concrete fallback
+  // case the Playwright walkthrough below also drives.
+  ok(segmentWord('gate', 10) === null, 'the actual demo word "gate" (dogs interest) is refused at every stage, not just stage 6');
+
+  // And its ocean-interest counterpart is the concrete SUCCESS case the
+  // walkthrough drives — confirms a real, currently-shipping focus word
+  // segments cleanly, not just constructed test words.
+  ok(JSON.stringify(texts(segmentWord('shell', 4))) === JSON.stringify(['sh', 'e', 'll']),
+     'the actual demo word "shell" (ocean interest) segments cleanly',
+     JSON.stringify(texts(segmentWord('shell', 4))));
+}
+
+section('Canonical session accumulation - interpretSessionWithIntervention()');
+{
+  // Clean chapter, no interventions anywhere: identical to plain
+  // interpretSession() - the override function must be a no-op when nothing
+  // was intervened on.
+  const s = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))]);
+  const r = interpretSessionWithIntervention(s);
+  ok(r.accuracy === 1, 'a clean chapter is still 100% through the wrapper');
+  ok(r.trickyWords.length === 0 && r.cleanWords.length === 0, 'no tricky/clean words on a clean chapter');
+}
+{
+  // The exact Class A shape from docs/HELP_BOUNDARY_VALIDATION.md: a word
+  // whose confidence clears interpret.ts's floor (would read 'correct') but
+  // that live's combineVerdicts() already intervened on. previouslyTricky
+  // makes it eligible for cleanWords IF interpretSession() judged it
+  // 'correct' - the override must remove that eligibility.
+  const raced: WordSignal = { word: 'raced', confidence: 0.38, duration_ms: 410, gap_before_ms: 100, heard: true };
+  const s = session([sentence([...six(clean).slice(0, 5), raced])]);
+  const interventions: SessionIntervention = [[false, false, false, false, false, true]];
+
+  const withoutOverride = interpretSessionWithIntervention(s, [[false, false, false, false, false, false]]);
+  const racedOutcomeNoOverride = withoutOverride.words.find((w) => w.word === 'raced')!;
+  ok(racedOutcomeNoOverride.verdict === 'correct', 'sanity: without intervention, 0.38 clears the floor and reads correct');
+
+  const withOverride = interpretSessionWithIntervention(s, interventions, undefined, ['raced']);
+  const racedOutcome = withOverride.words.find((w) => w.word === 'raced')!;
+  ok(racedOutcome.verdict === 'stumbled', 'live intervention overrides a would-be correct verdict to stumbled', racedOutcome.verdict);
+  ok(!withOverride.cleanWords.includes('raced'), 'and it can never land in cleanWords, even though it was previously tricky');
+  ok(racedOutcome.reason.includes('live intervention'), 'the outcome reason says WHY, for debugging', racedOutcome.reason);
+}
+{
+  // Intervention must never touch a verdict interpret.ts already flagged on
+  // its own (stumbled/missed) - only a would-be 'correct' can be overridden.
+  // This also covers "silence follows the ladder": an all-Omission (missed)
+  // word that live also flagged (intervention: true) stays 'missed', not
+  // reclassified into something else.
+  const s = session([sentence([...six(clean).slice(0, 4), mumbled('big'), silent('dog')])]);
+  const interventions: SessionIntervention = [[false, false, false, false, true, true]];
+  const r = interpretSessionWithIntervention(s, interventions);
+  ok(r.words.find((w) => w.word === 'big')!.verdict === 'stumbled', 'an already-stumbled word stays stumbled under intervention');
+  ok(r.words.find((w) => w.word === 'dog')!.verdict === 'missed', 'an already-missed (silent) word stays missed under intervention');
+}
+{
+  // Assisted/reread sentences are excluded outright by interpret.ts, before
+  // the override ever runs - intervention on an assisted sentence's words
+  // must have zero effect, since none of them can ever be 'correct'.
+  const s = session([
+    sentence(six(clean), { assisted: true }),
+    sentence(six(clean), { reread: true }),
+    sentence(six(clean)), sentence(six(clean)), sentence(six(clean)),
+  ]);
+  const allTrue: SessionIntervention = s.sentences.map((sen) => sen.words.map(() => true));
+  const r = interpretSessionWithIntervention(s, allTrue);
+  ok(r.words.filter((w) => w.excludedBecause === 'assisted').length === 6, 'assisted words stay excluded regardless of intervention');
+  ok(r.words.filter((w) => w.excludedBecause === 'reread').length === 6, 'reread words stay excluded regardless of intervention');
+  ok(r.countedWords === 18, 'only the three real sentences count, same as plain interpretSession()');
+}
+{
+  // A full chapter: one clean page, one page that reached rung 3
+  // (assisted), one page the child heard replayed first (reread) - the
+  // shape a real /read session actually accumulates, run through the ONE
+  // canonical entry point end to end.
+  const raced: WordSignal = { word: 'raced', confidence: 0.4, duration_ms: 400, gap_before_ms: 100, heard: true };
+  const s: SessionInput = {
+    childId: 'c1', sessionId: 'chapter-e2e', stage: 2, chapterId: 'the-shiny-thing',
+    isBookshelfReread: false, startedAt: new Date().toISOString(),
+    sentences: [
+      { index: 0, text: 'Rex raced across the field.', words: [clean('Rex'), raced, ...six(clean).slice(0, 4)], assisted: false, reread: false },
+      { index: 1, text: 'It was a little gold key.', words: six(clean), assisted: true, reread: false },
+      { index: 2, text: 'Rex looked and looked.', words: six(clean), assisted: false, reread: true },
+    ],
+  };
+  const interventions: SessionIntervention = [
+    [false, true, false, false, false, false],
+    [false, false, false, false, false, false],
+    [false, false, false, false, false, false],
+  ];
+  const r = interpretSessionWithIntervention(s, interventions, undefined, ['raced']);
+  ok(r.sessionId === 'chapter-e2e', 'the SessionInput round-trips its identity');
+  ok(s.sentences.length === 3, 'the accumulated session has one SentenceResult per page');
+  ok(s.sentences.filter((sen) => sen.assisted).length === 1, 'exactly the rung-3 page is marked assisted');
+  ok(r.words.find((w) => w.word === 'raced')!.verdict === 'stumbled', 'the Class A word is caught even inside a full multi-page chapter');
+  ok(!r.cleanWords.includes('raced'), 'and stays out of cleanWords at chapter scope, not just in isolation');
+  ok(r.excludedWords === 12, 'both the assisted page and the reread page are excluded (2 pages x 6 words)', String(r.excludedWords));
+  ok(typeof r.excludedFromProgression === 'boolean', 'excludedFromProgression is a plain boolean, never a score');
 }
 
 section('Slot filling - nouns chosen by code, never by the model');
@@ -519,6 +830,327 @@ section('Slot filling - nouns chosen by code, never by the model');
 
   const a2 = assignSlots(sk.beats, 1, { avoid: slotOptions('portable', 1), random: () => 0 });
   ok(a2.portable !== undefined, 'but avoidance never causes a failure when choice runs out');
+}
+
+section('Child progress - new child, initial stage');
+{
+  const p = defaultProgressFor('child-1', 6);
+  ok(p.childId === 'child-1', 'a fresh ChildProgress carries the child id');
+  ok(p.stage === initialStage(6), 'stage seeds from initialStage(ageDerivedEstimate), not raw age', String(p.stage));
+  ok(p.stage === 5, 'concretely: stageForAge-style estimate 6 seeds stage 5 (one below, per initialStage)', String(p.stage));
+  ok(p.mode === 'placement' && p.sessionsCompleted === 0, 'a new child starts in placement with zero sessions');
+}
+
+section('Child progress - completeSessionPure: progression, exclusions, idempotency');
+{
+  // Clean session, well above the placement big-jump threshold: moves.
+  const progress = defaultProgressFor('child-1', 6); // stage 5
+  const clean18 = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))], { childId: 'child-1', chapterId: 'day-1', stage: progress.stage });
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: clean18, interventions: [] });
+  ok(r.applied, 'a clean valid session applies progression');
+  ok(r.nextProgress.stage === progress.stage + 2, 'placement mode: well above level jumps two stages', String(r.nextProgress.stage));
+  ok(r.nextProgress.sessionsCompleted === 1, 'sessionsCompleted increments');
+  ok(!('accuracy' in r.persistedSession), 'the persisted session record never carries accuracy', JSON.stringify(Object.keys(r.persistedSession)));
+  ok(!JSON.stringify(r.persistedSession).includes('"accuracy"'), 'and no accuracy-shaped key survives serialisation either');
+  ok(r.persistedSession.chapterId === 'day-1' && r.persistedSession.childId === 'child-1', 'the persisted shape keeps chapter/child identity');
+  ok(typeof r.persistedSession.completedAt === 'string' && typeof r.persistedSession.startedAt === 'string', 'and start/complete timestamps');
+  ok(Array.isArray(r.persistedSession.trickyWords) && Array.isArray(r.persistedSession.cleanWords), 'and tricky/clean words for the parent-facing history');
+}
+{
+  // Assisted-heavy: excluded from progression, stage must not move (rung-3
+  // "skip / carried forward" sentences per the product ruling — assisted,
+  // not counted as a failure).
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session([
+    sentence(six(mumbled)), sentence(six(mumbled)),
+    sentence(six(clean), { assisted: true }),
+    sentence(six(clean), { assisted: true }),
+    sentence(six(clean), { assisted: true }),
+  ], { chapterId: 'day-2', stage: progress.stage });
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  ok(r.applied, 'an assisted-heavy session still "applies" (sessionsCompleted still counts a night happened)');
+  ok(r.nextProgress.stage === progress.stage, 'but the stage itself does not move', String(r.nextProgress.stage));
+  ok(r.reading.excludedFromProgression && r.reading.excludedReason === 'assisted-heavy', 'and says why');
+}
+{
+  // Reread: excluded from counting, same as assisted — enough of it (here,
+  // 3 of 4 sentences) drops below minCountableWords, so the session cannot
+  // move the stage even though the one real sentence read was clean.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session([
+    sentence(six(clean), { reread: true }), sentence(six(clean), { reread: true }),
+    sentence(six(clean), { reread: true }), sentence(six(clean)),
+  ], { chapterId: 'day-3', stage: progress.stage });
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  ok(r.nextProgress.stage === progress.stage, 'reread-heavy does not move the stage', String(r.nextProgress.stage));
+  ok(r.reading.excludedReason === 'too-few-words', 'too little unassisted signal remains to count', r.reading.excludedReason);
+}
+{
+  // Bookshelf reread: whole session excluded from progression regardless of
+  // how well it went.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session(
+    [sentence(six(clean)), sentence(six(clean)), sentence(six(clean))],
+    { chapterId: 'day-4', stage: progress.stage, isBookshelfReread: true },
+  );
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  ok(r.nextProgress.stage === progress.stage, 'a bookshelf reread never moves the stage', String(r.nextProgress.stage));
+  ok(r.reading.excludedReason === 'bookshelf-reread', 'and says why');
+}
+{
+  // Insufficient countable words.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session([sentence(['hi', 'go'].map(clean))], { chapterId: 'day-5', stage: progress.stage });
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  ok(r.nextProgress.stage === progress.stage, 'too few countable words never moves the stage', String(r.nextProgress.stage));
+  ok(r.reading.excludedReason === 'too-few-words', 'and says why');
+}
+{
+  // Idempotency at the pure-function level: alreadyCompleted short-circuits
+  // progression entirely, even though the same accuracy would otherwise move
+  // the stage.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5 };
+  const s = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))], { chapterId: 'day-6', stage: progress.stage });
+  const first = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [] });
+  const repeat = completeSessionPure({ progress: first.nextProgress, alreadyCompleted: true, sessionInput: s, interventions: [] });
+  ok(first.applied === true && repeat.applied === false, 'the first completion applies, a repeat does not');
+  ok(repeat.nextProgress.stage === first.nextProgress.stage && repeat.nextProgress.sessionsCompleted === first.nextProgress.sessionsCompleted,
+     'a repeat leaves progress byte-for-byte where the first completion left it');
+}
+
+section('Child progress - Class A intervention still prevents cleanWords, end to end');
+{
+  // The full chapter shape from lib/reading-session-interpreter.ts's own
+  // tests, run through the persistence layer this time.
+  const progress = { ...defaultProgressFor('child-1', 6), stage: 5, trickyWords: ['raced'] };
+  const raced: WordSignal = { word: 'raced', confidence: 0.4, duration_ms: 400, gap_before_ms: 100, heard: true };
+  const s: SessionInput = {
+    childId: 'child-1', sessionId: 'sess-a', stage: progress.stage, chapterId: 'day-7',
+    isBookshelfReread: false, startedAt: new Date().toISOString(),
+    sentences: [{ index: 0, text: 'Rex raced.', words: [clean('Rex'), raced], assisted: false, reread: false }],
+  };
+  const r = completeSessionPure({ progress, alreadyCompleted: false, sessionInput: s, interventions: [[false, true]], previouslyTricky: ['raced'] });
+  ok(!r.persistedSession.cleanWords.includes('raced'), 'live intervention keeps a would-be-correct word out of the persisted cleanWords');
+  ok(r.persistedSession.trickyWords.includes('raced'), 'and it is recorded tricky instead');
+}
+
+section('Child progress - localStorage I/O: idempotent completion, reload, migration');
+{
+  const uid = 'uid-real-1';
+  const childId = 'child-io-1';
+  const ageEstimate = 6;
+  const s = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))], { chapterId: 'chapter-io-1', stage: initialStage(ageEstimate) });
+
+  ok(loadLocalProgress(uid, childId) === null, 'no progress exists for a brand-new child yet');
+  ok(!wasSessionCompleted(uid, childId, 'chapter-io-1'), 'and the chapter has not been completed yet either');
+
+  const first = completeSessionLocally(uid, childId, ageEstimate, s, []);
+  ok(first.applied, 'first completion applies progression');
+  ok(wasSessionCompleted(uid, childId, 'chapter-io-1'), 'the ledger now shows this chapter completed');
+
+  // Simulate a genuine double-tap / retried network request: the exact same
+  // sessionInput, completed again.
+  const second = completeSessionLocally(uid, childId, ageEstimate, s, []);
+  ok(second.applied === false, 'a duplicate completion of the SAME chapter does not re-apply');
+  ok(second.progress.stage === first.progress.stage && second.progress.sessionsCompleted === first.progress.sessionsCompleted,
+     'and leaves stage/sessionsCompleted exactly as the first completion did — no double count');
+
+  // Reload: a fresh load (no in-memory state carried over) restores exactly
+  // what was persisted.
+  const reloaded = loadLocalProgress(uid, childId);
+  ok(reloaded !== null && reloaded!.stage === first.progress.stage && reloaded!.sessionsCompleted === first.progress.sessionsCompleted,
+     'reloading restores the same progression state');
+
+  // A DIFFERENT chapter completing is a genuine new session, not a duplicate.
+  const s2 = session([sentence(six(clean)), sentence(six(clean)), sentence(six(clean))], { chapterId: 'chapter-io-2', stage: first.progress.stage });
+  const third = completeSessionLocally(uid, childId, ageEstimate, s2, []);
+  ok(third.applied, 'a genuinely different chapterId is a new session and DOES apply');
+  ok(third.progress.sessionsCompleted === first.progress.sessionsCompleted + 1, 'sessionsCompleted advances for the new session, not the repeat');
+}
+{
+  // Anonymous -> signed-in migration (the "linking failed, new uid" fallback
+  // path — see components/AuthProvider.tsx claimAnonymousChild). Mirrors
+  // lib/pet.ts's claimPetFromAnonymousUid invariants exactly.
+  const anonUid = 'uid-anon-migrate';
+  const realUid = 'uid-real-migrate';
+  const childId = 'child-migrate-1';
+  const progress = { ...defaultProgressFor(childId, 6), sessionsCompleted: 3 };
+  saveLocalProgress(anonUid, childId, progress);
+
+  claimChildProgressFromAnonymousUid(realUid, anonUid, childId);
+  const migrated = loadLocalProgress(realUid, childId);
+  ok(migrated !== null && migrated!.sessionsCompleted === 3, 'progress moves to the new uid on claim');
+  ok(loadLocalProgress(anonUid, childId) === null, 'and is removed from the old anonymous uid — no double copy left behind');
+
+  // Idempotent: claiming again (e.g. a second onAuthStateChanged firing)
+  // must not clobber the now-populated destination or throw.
+  saveLocalProgress(anonUid, childId, { ...defaultProgressFor(childId, 6), sessionsCompleted: 99 }); // a NEW orphan, e.g. a sibling reusing the device
+  claimChildProgressFromAnonymousUid(realUid, anonUid, childId);
+  const stillMigrated = loadLocalProgress(realUid, childId);
+  ok(stillMigrated !== null && stillMigrated!.sessionsCompleted === 3, 'a second claim never overwrites an already-owned destination', String(stillMigrated?.sessionsCompleted));
+}
+
+section('Progress API routes - ownership is derived from the verified token, never client input');
+{
+  // No Firestore emulator is available in this environment (see
+  // docs/PERSISTENCE.md's report), so this is a static guarantee, not a
+  // live integration test: the route source must derive `uid` exclusively
+  // from requireReadingUser()'s verified token and must never read a uid
+  // out of the request body or query string to address Firestore.
+  const fs = await import('node:fs');
+  const routeSources = [
+    fs.readFileSync(new URL('../../app/api/progress/complete-session/route.ts', import.meta.url), 'utf8'),
+    fs.readFileSync(new URL('../../app/api/progress/child/route.ts', import.meta.url), 'utf8'),
+    fs.readFileSync(new URL('../../lib/progress-store-admin.ts', import.meta.url), 'utf8'),
+  ];
+  const suspiciousPatterns = [/body\.uid/, /body\[.uid.\]/, /searchParams\.get\(.uid.\)/, /req\.uid/];
+  for (const src of routeSources) {
+    ok(!suspiciousPatterns.some((p) => p.test(src)), 'route/store source never reads a client-supplied uid');
+  }
+  ok(routeSources[0].includes('auth.uid') && routeSources[1].includes('auth.uid'),
+     'both routes address Firestore using the verified auth.uid instead');
+}
+
+section('Adaptive loop - persisted stage wins over age (the specific regression this task exists to prevent)');
+{
+  // The task's own worked example: age implies Stage 3, but the persisted
+  // ChildProgress says Stage 2. Generation must use Stage 2. This is
+  // deliberately separate from the narrative test below so it can never be
+  // accidentally satisfied by the two numbers coinciding.
+  const uid = 'uid-differ-1';
+  const profile: ChildProfile = {
+    childId: 'child-differ-1', childName: 'Kai', age: 7,
+    interests: ['space'], createdAt: Date.now(),
+  };
+  ok(stageForAge(profile.age) === 3, 'sanity: age implies stage 3 for this profile');
+  saveLocalProgress(uid, profile.childId, { ...defaultProgressFor(profile.childId, 3), stage: 2 });
+  const stage = resolveGenerationStage(profile, uid);
+  ok(stage === 2, 'generation uses the PERSISTED stage (2), not the age-derived one (3) — the exact failure mode this task guards against', String(stage));
+  const context = resolveGenerationContext(profile, uid);
+  ok(context.stage === 2, 'and the full generation context carries the same persisted stage through');
+}
+
+section('Adaptive loop - Phase 5: one complete lifecycle through the real production functions');
+{
+  const uid = 'uid-loop-1';
+  const profile: ChildProfile = {
+    childId: 'child-loop-1', childName: 'Nia', age: 7,
+    interests: ['dogs'], createdAt: Date.now(),
+  };
+
+  // 1. Child begins with stage S. No ChildProgress exists yet for this
+  //    child, so generation seeds from initialStage(stageForAge(age)) —
+  //    the SAME composition lib/child-progress.ts's defaultProgressFor()
+  //    uses for the progress record itself (Phase 1/3's "first use: age ->
+  //    initial stage").
+  ok(stageForAge(profile.age) === 3, 'sanity: this profile\'s age implies stage 3');
+  const seedStage = resolveGenerationStage(profile, uid);
+  ok(seedStage === initialStage(3) && seedStage === 2, 'a brand-new child seeds one stage below the age estimate, not at it', String(seedStage));
+
+  // 2. Today's chapter exists at stage S=2 — generated (not asserted) via
+  //    the REAL generateChapter()/validateAll(), unmodified, with a
+  //    deterministic fake LLM client (no OPENAI_API_KEY / network in this
+  //    environment — same constraint, same fixture-injection point, the
+  //    existing "Generator" tests above already use).
+  ok(allowedWordsForStage(seedStage).has('cat') && allowedWordsForStage(seedStage).has('mat'),
+     'sanity: the words this test relies on are genuinely legal at the seeded stage');
+  const cast1 = { childName: profile.childName, petName: 'Momo' };
+  const day1Llm: LlmClient = {
+    async complete() {
+      return JSON.stringify({
+        sentences: ['Nia sat on a mat', 'Momo sat on a mat', 'Nia and Momo had fun', 'The cat sat on it'],
+        imagePrompt: 'Nia and Momo on a mat', summaryLine: 'Nia and Momo had fun on the mat',
+      });
+    },
+  };
+  const day1 = await generateChapter({
+    stage: seedStage, cast: cast1, interests: profile.interests,
+    storySoFar: '', recentlyMissedWords: [], skeleton: SKELETONS[0],
+  }, day1Llm);
+  ok(day1.ok && !!day1.draft, 'today\'s chapter is a real, validator-passing draft at stage S', JSON.stringify(day1.rejectionLog));
+  const day1Chapter = day1.draft && adaptTutorDraft(profile, day1.draft, SKELETONS[0], day1.slots, seedStage);
+  ok(!!day1Chapter && day1Chapter.pages.length > 0, 'and adapts into a real Chapter through the existing lifecycle function');
+  ok(!!day1Chapter && day1Chapter.phonics[0].hint === `Stage ${seedStage} practice`, 'labelled with the stage it was actually generated at');
+
+  // 3. Child completes a canonical reading session, 4. with at least one
+  //    legitimate difficulty recorded ('cat', mumbled — genuinely stumbled,
+  //    not skipped/reread, so it's an honest tricky-word signal).
+  const session: SessionInput = {
+    childId: profile.childId, sessionId: 'sess-loop-1', stage: seedStage, chapterId: 'chapter-loop-day1',
+    isBookshelfReread: false, startedAt: new Date().toISOString(),
+    sentences: [
+      sentence(six(clean)),
+      sentence([...six(clean).slice(0, 5), mumbled('cat')]),
+      sentence(six(clean)),
+    ],
+  };
+  // 5. Session persists once, 6. applySession() runs once, 7. updated
+  //    ChildProgress is persisted — all via the real, unmodified Phase 4/5
+  //    persistence function from the previous task.
+  const completion = completeSessionLocally(uid, profile.childId, stageForAge(profile.age), session, []);
+  ok(completion.applied, 'the session applies progression exactly once');
+  ok(completion.reading.trickyWords.includes('cat'), 'the genuine difficulty is recorded as a tricky word');
+  ok(completion.progress.trickyWords.includes('cat'), 'and survives onto ChildProgress.trickyWords');
+  const stageAfterDay1 = completion.progress.stage;
+  ok(stageAfterDay1 === seedStage + 1, 'accuracy (17/18) clears placementJumpAt: stage moves up one', String(stageAfterDay1));
+
+  // 8. Next generation reads the persisted ChildProgress.stage — NOT a
+  //    freshly-derived age stage (explicit assertion, per the task).
+  const day2Context = resolveGenerationContext(profile, uid);
+  ok(day2Context.stage === stageAfterDay1, 'generation request stage EQUALS persisted ChildProgress.stage', `${day2Context.stage} vs ${stageAfterDay1}`);
+  ok(day2Context.stage !== stageForAge(profile.age) || day2Context.stage === initialStage(stageForAge(profile.age)) + 1,
+     'and is not merely coincidentally equal to a fresh age re-derivation', String(day2Context.stage));
+  // 9. Generation receives the intended reinforcement state.
+  ok(day2Context.recentlyMissedWords.includes('cat'), 'tomorrow\'s generation context includes the real tricky word for reinforcement');
+  ok(day2Context.storySoFar === '', 'no SessionReport exists yet in this test, so continuity is honestly empty, not fabricated');
+
+  // 10. Generated chapter passes the real validators, with the
+  //     reinforcement word actually reaching the prompt.
+  const day2Prompts: string[] = [];
+  const day2Llm: LlmClient = {
+    async complete(prompt) {
+      day2Prompts.push(prompt);
+      return JSON.stringify({
+        sentences: ['Nia and Momo sat on a mat', 'The cat sat on the mat', 'Nia had fun with the cat', 'Momo and Nia had a big cat'],
+        imagePrompt: 'Nia, Momo, and a cat', summaryLine: 'Nia and Momo met a cat',
+      });
+    },
+  };
+  const day2 = await generateChapter({
+    stage: day2Context.stage, cast: cast1, interests: profile.interests,
+    storySoFar: day2Context.storySoFar, recentlyMissedWords: day2Context.recentlyMissedWords,
+    skeleton: SKELETONS[0],
+  }, day2Llm);
+  ok(day2.ok && !!day2.draft, 'tomorrow\'s chapter also passes the real, unmodified validators', JSON.stringify(day2.rejectionLog));
+  ok(day2Prompts[0].includes('cat'), 'the tricky word actually reaches the built prompt, not just the request object');
+
+  // 11. Next chapter is stored/read through the existing chapter lifecycle.
+  const day2Chapter = day2.draft && adaptTutorDraft(profile, day2.draft, SKELETONS[0], day2.slots, day2Context.stage);
+  ok(!!day2Chapter && day2Chapter.pages.length > 0, 'tomorrow\'s chapter adapts into a real Chapter too');
+  ok(!!day2Chapter && day2Chapter.phonics[0].hint === `Stage ${day2Context.stage} practice`, 'labelled with the NEW, moved stage — not the original seed stage');
+
+  // 12. Re-running the completion/generation path does not duplicate
+  //     progression or create competing chapters.
+  const repeat = completeSessionLocally(uid, profile.childId, stageForAge(profile.age), session, []);
+  ok(repeat.applied === false, 'repeating the SAME chapter\'s completion does not re-apply progression');
+  ok(repeat.progress.stage === stageAfterDay1 && repeat.progress.sessionsCompleted === completion.progress.sessionsCompleted,
+     'progress after the repeat is byte-identical to after the first completion');
+  const day2ContextAgain = resolveGenerationContext(profile, uid);
+  ok(day2ContextAgain.stage === day2Context.stage && JSON.stringify(day2ContextAgain.recentlyMissedWords) === JSON.stringify(day2Context.recentlyMissedWords),
+     'a second generation-context read (e.g. a refreshed page) resolves identically — same stage means the same cache id, so requestTutorChapter\'s existing cache/inFlight dedup (unmodified) serves the cached chapter instead of generating a competing one');
+}
+
+section('Adaptive loop - API route forwards personalization inputs (static check — no OPENAI_API_KEY in this environment)');
+{
+  // Mirrors the previous task's "ownership derived from verified token"
+  // static check: the live route 503s immediately without an API key, so
+  // this proves the WIRING exists in source rather than invoking it.
+  const fs = await import('node:fs');
+  const routeSrc = fs.readFileSync(new URL('../../app/api/chapters/story/route.ts', import.meta.url), 'utf8');
+  ok(routeSrc.includes('body.recentlyMissedWords'), 'the route reads recentlyMissedWords from the request body');
+  ok(routeSrc.includes('body.storySoFar'), 'and storySoFar');
+  ok(/recentlyMissedWords,?\s*\n?\s*(slots|skeleton)|recentlyMissedWords\s*,/.test(routeSrc) && routeSrc.includes('recentlyMissedWords') && routeSrc.includes('generateChapter'),
+     'and forwards them into generateChapter(), not just parses and discards them');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

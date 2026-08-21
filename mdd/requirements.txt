@@ -6,4 +6,3 @@ pronouncing
 protobuf
 fastapi
 uvicorn
-twilio

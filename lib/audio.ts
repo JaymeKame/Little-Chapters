@@ -32,6 +32,10 @@ export function speakPrompt(
   opts?: { rate?: number; pitch?: number; onEnd?: () => void },
 ): void {
   if (typeof window === 'undefined' || !window.speechSynthesis) return;
+  // A backgrounded tab must never start speaking — this guards against a
+  // delayed callback (e.g. an async chapter-load resolving after the child
+  // has already switched apps) firing speakPrompt() while hidden.
+  if (typeof document !== 'undefined' && document.hidden) return;
   try {
     window.speechSynthesis.cancel(); // one voice line at a time
     const u = new SpeechSynthesisUtterance(text);
@@ -52,8 +56,10 @@ export function stopSpeaking(): void {
 }
 
 /** Chapter-aware welcome line for Screen 3 (falls back to a generic line if
- *  no chapter is available yet). */
-export function welcomeLine(childName: string, chapter?: Chapter | null): string {
+ *  no chapter is available yet). `alreadyRead` covers the "came back later
+ *  today" case — no chapter prompt, since there isn't a new one to start. */
+export function welcomeLine(childName: string, chapter?: Chapter | null, alreadyRead = false): string {
+  if (alreadyRead) return `You already read today's chapter, ${childName}! Come back tomorrow for a new one.`;
   if (chapter) return `Ready to see what happens to ${chapter.character} today, ${childName}?`;
   return `Hi ${childName}, your new chapter is ready.`;
 }
@@ -128,6 +134,7 @@ export function prepareStoryAudio(theme: string | null | undefined): void {
 
 export function playTheme(): void {
   if (!themeEl) return;
+  if (typeof document !== 'undefined' && document.hidden) return; // see speakPrompt()'s guard for why
   themeEl.volume = ducked ? AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.theme;
   void themeEl.play().then(() => audioLog(`theme -> ${themeAsset?.replace('/audio/', '').replace('.mp3', '')}`)).catch(() => {});
 }
@@ -159,6 +166,7 @@ export function ambienceAssetFor(kind: Chapter['ambience']): string {
  *  the asset does not exist — never generates a substitute tone. */
 export function playAmbience(asset: string | null | undefined): void {
   if (typeof window === 'undefined' || !asset) return;
+  if (typeof document !== 'undefined' && document.hidden) return; // see speakPrompt()'s guard for why
   if (ambienceAsset === asset && ambienceEl) return; // already prepared/playing this track
   stopAmbience();
   try {
@@ -203,10 +211,32 @@ export function restoreAmbience(): void {
   audioLog('restore');
 }
 
+/** Tab/app backgrounded (visibilitychange -> hidden, or pagehide): pause
+ *  every playing track and cancel speech immediately. Deliberately does NOT
+ *  clear themeEl/ambienceEl/musicEl — that would drop the loaded asset and
+ *  force a reload on return. Also deliberately has no matching "resume"
+ *  counterpart here: whether anything should come back is a decision only
+ *  the current page/phase can make (see each page's visibilitychange
+ *  handler), never this module guessing on its own. */
+export function pauseForBackground(): void {
+  stopSpeaking();
+  for (const el of [themeEl, ambienceEl, musicEl]) {
+    if (!el) continue;
+    const timer = fadeTimers.get(el);
+    if (timer) {
+      clearInterval(timer);
+      fadeTimers.delete(el);
+    }
+    el.pause();
+  }
+  audioLog('paused for background');
+}
+
 /** A short one-shot musical moment (e.g. the cliffhanger cue). Silent no-op
  *  if the asset is missing — never synthesized. */
 export function playMusic(asset: string | null | undefined): void {
   if (typeof window === 'undefined' || !asset) return;
+  if (typeof document !== 'undefined' && document.hidden) return; // see speakPrompt()'s guard for why
   stopMusic();
   try {
     const el = new Audio(asset);
@@ -219,6 +249,16 @@ export function playMusic(asset: string | null | undefined): void {
   }
 }
 
+/** Resumes the currently-loaded one-shot (e.g. cliffhanger) from wherever
+ *  pauseForBackground() left it — never restarts from 0, unlike calling
+ *  playMusic() again. No-op if nothing is loaded, so it's safe for a page to
+ *  call unconditionally on foregrounding without checking musicEl itself. */
+export function resumeMusic(): void {
+  if (!musicEl) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  void musicEl.play().catch(() => {});
+}
+
 export function stopMusic(): void {
   clearTrack(musicEl);
   musicEl = null;
@@ -228,6 +268,7 @@ export function stopMusic(): void {
  *  the asset is missing — no negative/"wrong" sound exists on purpose. */
 export function playUISound(asset: string | null | undefined): void {
   if (typeof window === 'undefined' || !asset) return;
+  if (typeof document !== 'undefined' && document.hidden) return; // see speakPrompt()'s guard for why
   try {
     const el = new Audio(asset);
     el.volume = AUDIO_VOLUMES.ui;
@@ -256,5 +297,21 @@ export function playListeningStart(): void {
 export function playCliffhanger(): void {
   playMusic('/audio/cliffhanger.mp3');
   audioLog('cliffhanger');
+}
+
+/* ── Dev-only debug hook — never referenced by production UX, exists only
+ * so a real-browser test can inspect actual playback state (module-level
+ * Audio elements aren't in the DOM, so there's no other way to query them
+ * from outside this file). Dead-code-eliminated from production bundles by
+ * the same NODE_ENV check every other dev-only branch in this file uses. */
+if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
+  (window as unknown as { __audioDebug: () => Record<string, unknown> }).__audioDebug = () => ({
+    ducked,
+    theme: themeEl && { asset: themeAsset, paused: themeEl.paused, volume: themeEl.volume },
+    ambience: ambienceEl && { asset: ambienceAsset, paused: ambienceEl.paused, volume: ambienceEl.volume },
+    music: musicEl && { paused: musicEl.paused, volume: musicEl.volume },
+    speaking: typeof window.speechSynthesis !== 'undefined' && window.speechSynthesis.speaking,
+    activeFadeTimers: fadeTimers.size,
+  });
 }
 

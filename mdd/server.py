@@ -6,13 +6,15 @@
 First run downloads the ~1.3 GB phoneme model from HuggingFace. CPU inference
 takes ~1-2 s per clip. The Next.js app talks to this via
 /api/reading/decode (env MDD_SERVER_URL, default http://127.0.0.1:8010) —
-this service itself should never be exposed to the public internet.
+protect hosted inference with MDD_API_KEY; browsers should never call it
+directly.
 
     POST /assess?text=<reference text>   body: WAV bytes (any rate, 16-bit)
     -> {recognized, words: [{word, per, score, expected, heard}], sentence_score}
     GET /healthz -> {ok, model}
 """
 import os
+import secrets
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -26,6 +28,7 @@ MAX_TEXT_CHARS = 600  # alignment is O(text·audio) pure Python
 
 app = FastAPI()
 grader = None
+API_KEY = os.environ.get('MDD_API_KEY', '')
 
 
 @app.on_event('startup')
@@ -41,6 +44,11 @@ def healthz():
 
 @app.post('/assess')
 async def assess(request: Request):
+    if API_KEY:
+        authorization = request.headers.get('authorization', '')
+        scheme, _, supplied = authorization.partition(' ')
+        if scheme.lower() != 'bearer' or not secrets.compare_digest(supplied, API_KEY):
+            return JSONResponse({'error': 'UNAUTHORIZED'}, status_code=401)
     # query_params is already percent-decoded — do NOT unquote again.
     text = (request.query_params.get('text') or '').strip()
     if not text:
@@ -67,4 +75,8 @@ async def assess(request: Request):
 
 
 if __name__ == '__main__':
-    uvicorn.run(app, host='127.0.0.1', port=int(os.environ.get('MDD_PORT', '8010')))
+    uvicorn.run(
+        app,
+        host=os.environ.get('MDD_HOST', '127.0.0.1'),
+        port=int(os.environ.get('PORT', os.environ.get('MDD_PORT', '8010'))),
+    )

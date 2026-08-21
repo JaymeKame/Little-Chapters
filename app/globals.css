@@ -151,6 +151,18 @@ a {
   font-weight: 700;
 }
 
+/* Success beat: the page's own focus word(s) get a brief warm glow instead
+ * of a written "you did it" — the reading card itself gains this class only
+ * during a REAL celebrate (never the quiet assisted-continuation variant). */
+@keyframes lc-focus-word-glow {
+  0%, 100% { text-shadow: 0 0 0 rgba(244, 201, 93, 0); }
+  50% { text-shadow: 0 0 12px rgba(244, 201, 93, 0.9); }
+}
+
+.lc-celebrate-glow .lc-focus-word {
+  animation: lc-focus-word-glow 700ms ease-out both;
+}
+
 /* Live karaoke highlight while the mic is on: unread words dim, heard words
  * return to full strength, the most recent one glows sunshine. */
 .lc-page-text .lc-word {
@@ -267,14 +279,27 @@ a {
   opacity: 0;
 }
 
-/* ── Screen 3 motion (restrained, per handoff) ───────────────────────── */
+/* ── Screen 3 motion (restrained, per handoff) ─────────────────────────
+ * Sequenced, not simultaneous: Play fades in only once the title card has
+ * mostly settled (350ms), and only starts its own idle breathing once IT
+ * has settled in turn (550ms) — never both firing the moment the screen
+ * mounts. The two animations are split across properties (opacity-only
+ * entrance vs. transform+shadow breathe) so they never fight for the same
+ * property during their brief overlap. */
+@keyframes lc-play-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @keyframes lc-breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.025); }
+  0%, 100% { transform: scale(1); filter: drop-shadow(0 6px 10px rgba(43, 43, 43, 0.22)); }
+  50% { transform: scale(1.02); filter: drop-shadow(0 9px 14px rgba(43, 43, 43, 0.3)); }
 }
 
 .lc-play-btn {
-  animation: lc-breathe 3.2s ease-in-out infinite;
+  animation:
+    lc-play-enter 350ms ease 350ms both,
+    lc-breathe 3s ease-in-out 550ms infinite both;
   transition: transform 100ms ease;
 }
 
@@ -316,43 +341,46 @@ a {
   animation: lc-fade-in 300ms ease both;
 }
 
-/* Momo stays visually secondary: small, delayed, no bounce. */
+/* Momo stays visually secondary: small, last to arrive, no bounce — and
+ * must never grow to rival the invitation pill above it, so the message
+ * bubble is capped to two lines. */
 .lc-momo-compact {
-  animation: lc-fade-up 400ms ease 300ms both;
-  transform: scale(0.92);
+  animation: lc-fade-up 400ms ease 1050ms both;
+  transform: scale(0.82);
   transform-origin: top center;
 }
 
 .lc-momo-compact > section {
   margin-bottom: 0 !important;
-  padding: 6px 8px !important;
+  padding: 5px 8px !important;
   gap: 6px !important;
-  border: 1px solid rgba(255, 253, 248, 0.65) !important;
-  background: rgba(255, 253, 248, 0.72) !important;
+  border: 1px solid rgba(255, 253, 248, 0.6) !important;
+  background: rgba(255, 253, 248, 0.6) !important;
   box-shadow: 0 2px 8px rgba(43, 43, 43, 0.08);
 }
 
 .lc-momo-compact .pet-emoji {
-  font-size: 34px !important;
+  font-size: 26px !important;
 }
 
 .lc-momo-compact .pet-xp {
   display: none;
 }
 
+.lc-momo-compact > section > div:last-child > div {
+  font-size: 11.5px !important;
+  padding: 5px 9px !important;
+  max-width: 150px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Short screens (iPhone SE class, and phones in landscape): tighten the child
  * home column so Momo lands above the fold rather than ~60px below it. The
  * spacing being overridden is set inline on the elements, hence !important. */
 @media (max-height: 700px) {
-  .lc-home-scene .lc-storybook {
-    margin-top: 4px !important;
-    /* The cover is the tallest block; letting it take 40vh instead of its
-     * 0.72 aspect ratio is what actually buys the room. */
-    max-height: 40vh;
-  }
-  .lc-home-scene .lc-play-btn {
-    margin-top: 14px !important;
-  }
   .lc-home-scene .lc-voice-prompt {
     margin-top: 12px !important;
   }
@@ -363,21 +391,6 @@ a {
 
 .lc-voice-prompt {
   max-width: min(82vw, 270px);
-}
-
-.lc-storybook {
-  position: relative;
-  isolation: isolate;
-}
-
-.lc-storybook::after {
-  content: '';
-  position: absolute;
-  inset: 8px -8px -8px 8px;
-  z-index: -1;
-  border-radius: 4px;
-  background: #d8b978;
-  box-shadow: 5px 6px 0 rgba(43, 43, 43, 0.18);
 }
 
 /* ── Screen 4: calm green listening animation ────────────────────────── */
@@ -471,6 +484,306 @@ a {
   animation: lc-fade-in 300ms ease both;
 }
 
+/* ── Slide-through word help (rung 2 only, components/SlideWordHelp.tsx) ── */
+.lc-slide-help {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.lc-slide-letters {
+  display: flex;
+  width: 100%;
+  max-width: 320px;
+  justify-content: center;
+}
+
+.lc-slide-letter {
+  flex: 1;
+  text-align: center;
+  font-weight: 700;
+  font-size: 38px;
+  color: var(--ink-soft);
+  opacity: 0.45;
+  transition: color 150ms ease, opacity 150ms ease;
+}
+
+.lc-slide-letter.is-lit {
+  color: var(--blue);
+  opacity: 1;
+}
+
+.lc-slide-track-wrap {
+  width: 100%;
+  max-width: 320px;
+}
+
+.lc-slide-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 56px;
+  border-radius: 999px;
+  outline: none;
+  touch-action: none;
+  box-shadow: 0 2px 8px rgba(43, 43, 43, 0.12);
+  cursor: pointer;
+}
+
+.lc-slide-range::-webkit-slider-runnable-track {
+  height: 56px;
+  border-radius: 999px;
+  background: inherit; /* per-word gradient set inline via trackGradient() */
+}
+
+.lc-slide-range::-moz-range-track {
+  height: 56px;
+  border-radius: 999px;
+  background: inherit;
+}
+
+.lc-slide-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 2px 6px rgba(43, 43, 43, 0.3), 0 0 0 3px var(--blue) inset;
+  cursor: grab;
+}
+
+.lc-slide-range::-moz-range-thumb {
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 2px 6px rgba(43, 43, 43, 0.3), 0 0 0 3px var(--blue) inset;
+  cursor: grab;
+}
+
+.lc-slide-range:focus-visible {
+  box-shadow: 0 0 0 3px rgba(7, 93, 173, 0.35);
+}
+
+/* Idle invitation to drag — restrained (6px) and slow, gone the instant a
+ * real drag starts (the class is removed as soon as value > 0). This is the
+ * only non-text hint that the thumb moves, so it must actually read as
+ * motion, not just a barely-there shimmer. */
+@keyframes lc-slide-nudge {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(6px); }
+}
+
+.lc-slide-idle::-webkit-slider-thumb {
+  animation: lc-slide-nudge 1.4s ease-in-out infinite;
+}
+
+.lc-slide-idle::-moz-range-thumb {
+  animation: lc-slide-nudge 1.4s ease-in-out infinite;
+}
+
+.lc-slide-caption {
+  font-size: 14px;
+  color: var(--ink-soft);
+  margin: 0;
+  text-align: center;
+}
+
+/* Completion: one brief settle, never a loop or a second effect stacked on
+ * top of it — the caption text change already carries the "you did it". */
+@keyframes lc-slide-complete {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+  100% { transform: scale(1); }
+}
+
+.lc-slide-complete {
+  animation: lc-slide-complete 380ms ease-out 1;
+}
+
+/* AudioWordHelp — the unsegmentable-word fallback. Shares .lc-tricky-word
+ * (the word) and .lc-slide-caption (the small supplementary caption) with
+ * SlideWordHelp on purpose, so both help interactions read as one family. */
+.lc-audio-help {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.lc-audio-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 999px;
+  background: var(--sky-soft);
+}
+
+.lc-audio-icon {
+  width: 34px;
+  height: 34px;
+}
+
+/* Honestly synced to the SPEECH DURATION, not per-phoneme (no cross-browser
+ * TTS API exposes reliable per-phoneme boundary timing) — starts the instant
+ * speaking starts, stops the instant it ends. */
+@keyframes lc-audio-word-glow {
+  0%, 100% { text-shadow: 0 0 0 rgba(244, 201, 93, 0); }
+  50% { text-shadow: 0 0 18px rgba(244, 201, 93, 0.85); }
+}
+
+.lc-audio-word-glow {
+  animation: lc-audio-word-glow 900ms ease-in-out infinite;
+}
+
+@media (min-width: 600px) {
+  .lc-slide-letter {
+    font-size: 52px;
+  }
+  .lc-slide-letters,
+  .lc-slide-track-wrap {
+    max-width: 380px;
+  }
+  .lc-slide-range,
+  .lc-slide-range::-webkit-slider-runnable-track,
+  .lc-slide-range::-moz-range-track {
+    height: 64px;
+  }
+  .lc-slide-range::-webkit-slider-thumb,
+  .lc-slide-range::-moz-range-thumb {
+    width: 48px;
+    height: 48px;
+  }
+  .lc-audio-icon-wrap {
+    width: 88px;
+    height: 88px;
+  }
+  .lc-audio-icon {
+    width: 42px;
+    height: 42px;
+  }
+}
+
+/* Ready-state invite: a single restrained pulse on the mic icon draws the
+ * eye to the one action available — never a loop, so it never nags. Re-fires
+ * on its own because the button (and this icon) remounts fresh each time
+ * the child lands back in the ready state. */
+@keyframes lc-invite-pulse {
+  0% { transform: scale(0.96); opacity: 0.85; }
+  50% { transform: scale(1.04); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.lc-invite-pulse {
+  display: inline-block;
+  animation: lc-invite-pulse 550ms ease-out 150ms both;
+}
+
+/* Scoring: a slow, quiet spin — "I heard you, give me a moment," nothing more. */
+@keyframes lc-processing-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.lc-processing-spin {
+  display: inline-block;
+  animation: lc-processing-spin 1.4s linear infinite;
+}
+
+/* Success: one brief pop-and-settle on the star, never a loop. Motion is
+ * the primary signal here (see .lc-celebrate-praise below for why the text
+ * next to it stays small) — the star is the thing a child who can't yet
+ * read is meant to actually understand as "you got it". */
+@keyframes lc-success-pop {
+  0% { transform: scale(0.7); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.lc-success-pop {
+  display: inline-block;
+  animation: lc-success-pop 420ms ease-out both;
+}
+
+/* 2-3 restrained sparkles drifting away from the star — deliberately NOT a
+ * particle burst: individually positioned/timed (lc-sparkle-1/2/3) rather
+ * than a uniform ring, small, and gone well before the celebrate beat ends. */
+.lc-sparkle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sunshine);
+  box-shadow: 0 0 6px var(--sunshine);
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes lc-sparkle-drift-1 {
+  0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: translate(-32px, -34px) scale(1); opacity: 0; }
+}
+
+@keyframes lc-sparkle-drift-2 {
+  0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: translate(30px, -20px) scale(1); opacity: 0; }
+}
+
+@keyframes lc-sparkle-drift-3 {
+  0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: translate(4px, -42px) scale(1); opacity: 0; }
+}
+
+.lc-sparkle-1 { animation: lc-sparkle-drift-1 620ms ease-out 80ms both; }
+.lc-sparkle-2 { animation: lc-sparkle-drift-2 620ms ease-out 160ms both; }
+.lc-sparkle-3 { animation: lc-sparkle-drift-3 620ms ease-out 40ms both; }
+
+/* Praise stays small and secondary on purpose — the star + sparkles + word
+ * glow are what a child who can't read this text yet actually understands.
+ * The quiet variant (assisted rung-3 continuation) is the SAME size, just
+ * slightly muted — reassuring, never smaller/lesser in a way that could
+ * read as a lower-tier outcome. */
+.lc-celebrate-praise {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-top: 6px;
+}
+
+.lc-celebrate-praise-quiet {
+  opacity: 0.85;
+}
+
+/* System-speaking (TTS replay) cue: sky blue and its own steady pulse so a
+ * child can never mistake "the app is talking" for "the app is listening"
+ * (that's the green .lc-listen-bars, a different color in a different spot). */
+@keyframes lc-speak-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(126, 183, 230, 0.55); }
+  50% { box-shadow: 0 0 0 5px rgba(126, 183, 230, 0.25); }
+}
+
+.lc-speaking-active {
+  animation: lc-speak-pulse 900ms ease-in-out infinite;
+  border-radius: 999px;
+}
+
+/* While the mic is actively listening, decorative background motion stops —
+ * nothing should compete for attention with reading + the listening cue. */
+.lc-listening .lc-scene-bg img {
+  animation-play-state: paused;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lc-scene-bg img,
   .lc-play-btn,
@@ -487,8 +800,34 @@ a {
   .lc-cliff-continue,
   .lc-top-controls,
   .lc-help-pulse,
-  .lc-listen-bars span {
+  .lc-listen-bars span,
+  .lc-invite-pulse,
+  .lc-speaking-active,
+  .lc-processing-spin,
+  .lc-success-pop,
+  .lc-slide-complete {
     animation: none !important;
+  }
+  .lc-slide-letter {
+    transition: none !important;
+  }
+  .lc-slide-idle::-webkit-slider-thumb,
+  .lc-slide-idle::-moz-range-thumb {
+    animation: none !important;
+  }
+  .lc-audio-word-glow {
+    animation: none !important;
+    text-shadow: 0 0 12px rgba(244, 201, 93, 0.85) !important;
+  }
+  .lc-sparkle-1,
+  .lc-sparkle-2,
+  .lc-sparkle-3 {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+  .lc-celebrate-glow .lc-focus-word {
+    animation: none !important;
+    text-shadow: 0 0 10px rgba(244, 201, 93, 0.85) !important;
   }
   .lc-leaving .lc-scene-bg img,
   .lc-leaving .lc-scene-content {
@@ -504,10 +843,6 @@ a {
 
   .lc-home-scene main {
     padding-top: 18px !important;
-  }
-
-  .lc-home-scene .lc-storybook {
-    width: 260px !important;
   }
 }
 
@@ -683,9 +1018,19 @@ a {
 .lc-cta {
   max-width: 340px;
   margin: 0 auto;
+  /* Explicit, not inherited: at the 900px+ breakpoint .lc-landing-main
+   * switches to text-align:left for the two-column layout, which was
+   * leaking into this button's own label (measured ~24px left padding vs.
+   * ~96px right padding around the text) since nothing here set its own
+   * alignment. */
+  text-align: center;
 }
 
 .lc-cta-caption {
+  /* Same content column as .lc-feature-grid (660px) — otherwise this and the
+   * grid above it are two independently-centered blocks of different
+   * widths, which reads as detached rather than one stacked section. */
+  width: min(100%, 660px);
   margin: 12px auto 0;
   text-align: center;
 }
@@ -719,7 +1064,11 @@ a {
 .lc-landing-main { grid-template-areas: 'copy' 'art' 'cta'; }
 .lc-landing-art { background: #eadfcf; border: 1px solid rgba(43,43,43,.08); box-shadow: 0 18px 44px rgba(80,59,29,.14); }
 .lc-landing-art-wrap + .lc-landing-cta { margin-top: 42px; }
-.lc-feature-graphic { height: 112px; min-height: 112px; align-items: end; }
+/* align-items: center (not end) — the three source icons have different
+ * intrinsic heights at the fixed 84px width (86.8 / 88.5 / 99.1px measured),
+ * so bottom-alignment left their visual centers ~6px apart even though their
+ * bottoms matched. Centering makes the row read as one aligned set. */
+.lc-feature-graphic { height: 112px; min-height: 112px; align-items: center; }
 .lc-feature-image { width: 84px; height: auto; max-width: 112px; object-fit: contain; }
 
 @media (min-width: 600px) {
