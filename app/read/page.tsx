@@ -12,7 +12,7 @@
  *    to return. XP quietly feeds Momo; the parent gets the detail instead.  */
 
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
@@ -21,7 +21,8 @@ import { AudioWordHelp } from '@/components/AudioWordHelp';
 import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
 import { MicIcon } from '@/components/icons/MicIcon';
 import { QuietCheckIcon } from '@/components/icons/QuietCheckIcon';
-import { chapterFor, requestTutorChapter, selectStoryScene, stageForAge, type Chapter } from '@/lib/chapters';
+import { chapterFor, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
+import { selectSceneForPage } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
 import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
@@ -112,10 +113,14 @@ function pickDemoWord(requested: string | null, page: { text: string; focusWords
   return null;
 }
 
-/* Scene background: the SAME real curated story scene selection as Screen 3
- * (lib/chapters.ts selectStoryScene — interest-aware, stable per chapter.id)
- * → .lc-scenic/.lc-cliff gradient. The automatic AI-generation path remains
- * intentionally unused here — see lib/chapters.ts requestChapterVisuals. */
+/* Scene background: lib/scene-selector.ts's selectSceneForPage() against the
+ * real curated manifest (lib/scene-manifest.ts) → .lc-scenic/.lc-cliff
+ * gradient if a chosen asset ever 404s. Unlike Home (which shows the
+ * chapter's page-0 opening scene as a single cover image), this runs PER
+ * PAGE — see this file's sceneSelection useMemo below — so the art
+ * progresses through the chapter instead of freezing on one image. The
+ * automatic AI-generation path remains intentionally unused here — see
+ * lib/chapters.ts requestChapterVisuals. */
 
 /* Mandatory calm listening animation: 6 small organic bars gently changing
  * scaleY (~900ms cycle) — no waveform, no neon, no frantic movement. */
@@ -510,9 +515,21 @@ export default function ReadPage() {
     };
   }, [phase]);
 
+  // Memoized: selectSceneForPage() writes to the recent-scene localStorage
+  // history as a side effect (see lib/scene-selector.ts) — must run once per
+  // actual (chapter, page) change, not on every unrelated re-render (called
+  // before the profile/chapter null-guard below, per rules of hooks). Runs
+  // PER PAGE (not once per chapter) so a multi-page chapter progresses
+  // through different, thematically-related art instead of one static image.
+  const sceneSelection = useMemo(
+    () => (chapter ? selectSceneForPage(chapter, chapter.pages[pageIdx] ?? chapter.pages[0], pageIdx, profile?.avatar, user?.uid ?? null) : null),
+    [chapter, pageIdx, profile?.avatar, user?.uid],
+  );
+
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
-  const sceneBg = selectStoryScene(chapter.id, profile.interests);
+  const sceneBg = sceneSelection?.asset.src ?? null;
+  const sceneFocal = sceneSelection?.asset.focal;
   // Computed for the current tricky word at ANY rung < 3, not just rung 2:
   // with the escalation remap below, a segmentable word now shows the slide
   // interaction at rung 1 (the first stumble) and never actually visits
@@ -1239,7 +1256,7 @@ export default function ReadPage() {
   if (phase === 'chapter-end') {
     return (
       <div className="scene lc-cliff" style={{ position: 'relative' }}>
-      <SceneBackground src={sceneBg} cliff />
+      <SceneBackground src={sceneBg} focal={sceneFocal} cliff />
       <div className="screen lc-scene-content">
         <header className="lc-top-controls" style={{ display: 'flex', padding: '16px 18px' }}>
           <button
@@ -1357,7 +1374,7 @@ export default function ReadPage() {
   /* ── Screen 4: reading ── */
   return (
     <div className={`scene lc-scenic lc-reading-scene${phase === 'listening' ? ' lc-listening' : ''}`} style={{ position: 'relative' }}>
-    <SceneBackground src={sceneBg} />
+    <SceneBackground src={sceneBg} focal={sceneFocal} />
     <div className="screen lc-scene-content">
       <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
         <button
