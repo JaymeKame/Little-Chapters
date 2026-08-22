@@ -63,11 +63,76 @@ const VOICE_PROVIDER = process.env.NEXT_PUBLIC_VOICE_PROVIDER;
 const VOICE_LOG_MAX = 20;
 const _voiceHistory: Record<string, unknown>[] = [];
 
+/** The terminal outcome of the MOST RECENT speakPrompt() call — a flat,
+ *  no-history-digging answer to "what actually just happened", requested by
+ *  product for diagnosing a live "still sounds mechanical" report without
+ *  needing sandbox/Vercel access. Updated once per utterance, at the point
+ *  the outcome is known (audio handed to the player, or fallback decided —
+ *  see the voiceLog() call sites below, which double-write here). Never
+ *  includes the synthesized text or any credential. */
+export interface LastUtteranceDebug {
+  requestedProvider: 'elevenlabs' | 'web-speech';
+  playedProvider: 'elevenlabs' | 'web-speech' | null; // null until the outcome is known
+  httpStatus: number | null; // /api/speech/model's response status, when a request was made
+  fallbackOccurred: boolean;
+  fallbackReason: string | null;
+  retried: boolean;
+  voiceId: string | null;
+  modelId: string | null;
+  ts: number;
+}
+let _lastUtterance: LastUtteranceDebug | null = null;
+
 function voiceLog(event: Record<string, unknown>): void {
   const entry = { ...event, ts: Date.now() };
   console.debug('[Voice]', entry);
   _voiceHistory.push(entry);
   if (_voiceHistory.length > VOICE_LOG_MAX) _voiceHistory.shift();
+}
+
+/** Server-reported voice configuration — GET /api/speech/model returns
+ *  whether ELEVENLABS_API_KEY is set server-side (never the key itself) plus
+ *  the active voice/model IDs, so __voiceDebug() can answer "is ElevenLabs
+ *  actually configured in THIS deployment" directly, instead of inferring it
+ *  from whether calls happen to succeed. Fetched lazily and cached — see
+ *  ensureServerVoiceConfig(), called only from __voiceDebug() itself (NOT
+ *  from speakPrompt()/_speakElevenLabs()): an earlier version fired this GET
+ *  eagerly on every utterance, which raced the real synthesis POST against
+ *  the same /api/speech/model endpoint — harmless in production, but it
+ *  broke deterministic request-count assertions in tests that mock that
+ *  endpoint, and more importantly ties a diagnostic side-effect to the
+ *  latency-sensitive playback path for no reason. This never changes
+ *  mid-session once resolved. */
+interface ServerVoiceConfig {
+  checked: boolean;
+  provider: 'elevenlabs' | 'web-speech' | null;
+  voiceId: string | null;
+  modelId: string | null;
+  error: string | null;
+}
+let _serverVoiceConfig: ServerVoiceConfig = { checked: false, provider: null, voiceId: null, modelId: null, error: null };
+let _serverVoiceConfigFetch: Promise<void> | null = null;
+
+function ensureServerVoiceConfig(): void {
+  if (_serverVoiceConfigFetch || typeof window === 'undefined') return;
+  _serverVoiceConfigFetch = fetch('/api/speech/model')
+    .then(async (res) => {
+      if (!res.ok) {
+        _serverVoiceConfig = { checked: true, provider: null, voiceId: null, modelId: null, error: `GET ${res.status}` };
+        return;
+      }
+      const data = (await res.json()) as { provider?: string; voiceId?: string; modelId?: string };
+      _serverVoiceConfig = {
+        checked: true,
+        provider: data.provider === 'elevenlabs' ? 'elevenlabs' : 'web-speech',
+        voiceId: data.voiceId ?? null,
+        modelId: data.modelId ?? null,
+        error: null,
+      };
+    })
+    .catch((err) => {
+      _serverVoiceConfig = { checked: true, provider: null, voiceId: null, modelId: null, error: err instanceof Error ? err.message : String(err) };
+    });
 }
 
 /** ElevenLabs' turbo_v2 tends toward a flat, clipped read for input with no
@@ -190,19 +255,32 @@ function _speakElevenLabs(
   const cached = _cacheGet(text);
   if (cached) {
     voiceLog({ provider: 'elevenlabs', cache: 'hit', chars: text.length });
+    _lastUtterance = {
+      requestedProvider: 'elevenlabs',
+      playedProvider: 'elevenlabs',
+      httpStatus: null, // served from cache — no request this time
+      fallbackOccurred: false,
+      fallbackReason: null,
+      retried: false,
+      voiceId: _serverVoiceConfig.voiceId,
+      modelId: _serverVoiceConfig.modelId,
+      ts: Date.now(),
+    };
     playBlob(cached);
     return;
   }
 
-  // One attempt: resolves with the audio blob, or throws an Error tagged
-  // with `.retryable` — true for a transient blip (network-level failure,
-  // our own client timeout, or ElevenLabs' own 502 in lib/elevenlabs.server.ts's
-  // synthesize()), false for something retrying can't fix (503 = not
-  // configured; 400 = bad request — the same text will fail the same way
-  // every time). Kept as its own function so speakPrompt()'s single call
-  // site (below) can retry once without duplicating the fetch/timeout
-  // bookkeeping.
-  function attempt(): Promise<Blob> {
+  // One attempt: resolves with the audio blob + the response's HTTP status
+  // (so a diagnostic can report exactly what /api/speech/model returned,
+  // not just "it worked"), or throws an Error tagged with `.retryable` and
+  // `.status` — retryable true for a transient blip (network-level failure,
+  // our own client timeout, or ElevenLabs' own 502 in
+  // lib/elevenlabs.server.ts's synthesize()), false for something retrying
+  // can't fix (503 = not configured; 400 = bad request — the same text will
+  // fail the same way every time). Kept as its own function so
+  // speakPrompt()'s single call site (below) can retry once without
+  // duplicating the fetch/timeout bookkeeping.
+  function attempt(): Promise<{ blob: Blob; status: number }> {
     const controller = new AbortController();
     _elevenLabsAbort = controller;
     const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
@@ -214,16 +292,23 @@ function _speakElevenLabs(
     })
       .then(async (res) => {
         if (!res.ok) {
-          const err = new Error(`model route ${res.status}`) as Error & { retryable: boolean };
+          const err = new Error(`model route ${res.status}`) as Error & { retryable: boolean; status: number };
           err.retryable = res.status >= 500 && res.status !== 503; // 503 = not configured, static, never worth retrying
+          err.status = res.status;
           throw err;
         }
-        return res.blob();
+        return { blob: await res.blob(), status: res.status };
       })
       .catch((err) => {
         if (err instanceof Error && 'retryable' in err) throw err; // already tagged above
         const tagged = err instanceof Error ? err : new Error(String(err));
-        (tagged as Error & { retryable: boolean }).retryable = true; // network error or our own timeout (AbortError) — both transient
+        // Network error or our own timeout (AbortError) — both transient,
+        // and neither one ever reached the server, so there is no real
+        // HTTP status; 0 is the diagnostic's "no response" signal (kept
+        // distinct from `null`, which means "no request was attempted at
+        // all", e.g. a cache hit).
+        (tagged as Error & { retryable: boolean; status: number }).retryable = true;
+        (tagged as Error & { retryable: boolean; status: number }).status = 0;
         throw tagged;
       })
       .finally(() => {
@@ -235,22 +320,41 @@ function _speakElevenLabs(
   function fallback(err: unknown, afterRetry: boolean): void {
     if (myGeneration !== _speechGeneration) return; // superseded — the newer call already owns what happens next
     const timedOut = err instanceof Error && err.name === 'AbortError';
-    voiceLog({
-      provider: 'elevenlabs',
-      fallback: 'web-speech',
+    const status = err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : null;
+    const reason = timedOut ? `timeout (${ELEVENLABS_TIMEOUT_MS}ms)` : err instanceof Error ? err.message : String(err);
+    voiceLog({ provider: 'elevenlabs', fallback: 'web-speech', retried: afterRetry, reason, httpStatus: status });
+    _lastUtterance = {
+      requestedProvider: 'elevenlabs',
+      playedProvider: 'web-speech',
+      httpStatus: status,
+      fallbackOccurred: true,
+      fallbackReason: reason,
       retried: afterRetry,
-      reason: timedOut ? `timeout (${ELEVENLABS_TIMEOUT_MS}ms)` : err instanceof Error ? err.message : String(err),
-    });
+      voiceId: _serverVoiceConfig.voiceId,
+      modelId: _serverVoiceConfig.modelId,
+      ts: Date.now(),
+    };
     _speakWebSpeech(text, opts);
   }
 
   attempt()
-    .then((blob) => {
+    .then(({ blob, status }) => {
       _cacheSet(text, blob);
-      voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length });
+      voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, httpStatus: status });
+      _lastUtterance = {
+        requestedProvider: 'elevenlabs',
+        playedProvider: 'elevenlabs',
+        httpStatus: status,
+        fallbackOccurred: false,
+        fallbackReason: null,
+        retried: false,
+        voiceId: _serverVoiceConfig.voiceId,
+        modelId: _serverVoiceConfig.modelId,
+        ts: Date.now(),
+      };
       playBlob(blob);
     })
-    .catch((err: Error & { retryable?: boolean }) => {
+    .catch((err: Error & { retryable?: boolean; status?: number }) => {
       if (myGeneration !== _speechGeneration) return; // superseded — do not retry a call nobody wants anymore
       if (!err.retryable) {
         fallback(err, false);
@@ -260,12 +364,23 @@ function _speakElevenLabs(
       // Vercel function must not be indistinguishable from "ElevenLabs is
       // broken" and silently downgrade the whole utterance to the
       // mechanical voice. A second failure falls back for real.
-      voiceLog({ provider: 'elevenlabs', retry: 1, reason: err.message });
+      voiceLog({ provider: 'elevenlabs', retry: 1, reason: err.message, httpStatus: err.status ?? null });
       attempt()
-        .then((blob) => {
+        .then(({ blob, status }) => {
           if (myGeneration !== _speechGeneration) return;
           _cacheSet(text, blob);
-          voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, afterRetry: true });
+          voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, afterRetry: true, httpStatus: status });
+          _lastUtterance = {
+            requestedProvider: 'elevenlabs',
+            playedProvider: 'elevenlabs',
+            httpStatus: status,
+            fallbackOccurred: false,
+            fallbackReason: null,
+            retried: true,
+            voiceId: _serverVoiceConfig.voiceId,
+            modelId: _serverVoiceConfig.modelId,
+            ts: Date.now(),
+          };
           playBlob(blob);
         })
         .catch((err2) => fallback(err2, true));
@@ -313,7 +428,19 @@ export function speakPrompt(
   // ELEVENLABS_API_KEY returns a fast 503 from /api/speech/model, not a
   // hang) and is strictly better when it is.
   if (VOICE_PROVIDER === 'web-speech') {
-    voiceLog({ provider: 'web-speech', chars: prompt.length, reason: 'forced via NEXT_PUBLIC_VOICE_PROVIDER=web-speech' });
+    const reason = 'forced via NEXT_PUBLIC_VOICE_PROVIDER=web-speech';
+    voiceLog({ provider: 'web-speech', chars: prompt.length, reason });
+    _lastUtterance = {
+      requestedProvider: 'web-speech',
+      playedProvider: 'web-speech',
+      httpStatus: null,
+      fallbackOccurred: false,
+      fallbackReason: reason,
+      retried: false,
+      voiceId: null,
+      modelId: null,
+      ts: Date.now(),
+    };
     _speakWebSpeech(prompt, opts);
   } else {
     _speakElevenLabs(prompt, opts);
@@ -623,29 +750,54 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
     speaking: typeof window.speechSynthesis !== 'undefined' && window.speechSynthesis.speaking,
     activeFadeTimers: fadeTimers.size,
   });
+}
 
-  /* Same reasoning as __audioDebug above, but for the speech/TTS side: which
-   * provider actually served the last N utterances, cache hit/miss, and the
-   * exact fallback reason when ElevenLabs didn't serve the call (network
-   * error, non-2xx from /api/speech/model, or a timeout — see
-   * ELEVENLABS_TIMEOUT_MS). Never includes the synthesized text itself or
-   * any credential — only character counts and provider/error metadata, the
-   * same fields voiceLog() already sends to console.debug. Answers "did
-   * that correction line actually use ElevenLabs, and if not, why" from a
-   * real browser/Playwright session without needing DevTools' Verbose log
-   * level switched on. */
-  (window as unknown as { __voiceDebug: () => Record<string, unknown> }).__voiceDebug = () => ({
+/* Same reasoning as __audioDebug above, but for the speech/TTS side: which
+ * provider actually served the last N utterances, cache hit/miss, and the
+ * exact fallback reason when ElevenLabs didn't serve the call (network
+ * error, non-2xx from /api/speech/model, or a timeout — see
+ * ELEVENLABS_TIMEOUT_MS). Never includes the synthesized text itself or any
+ * credential — only character counts and provider/error/status metadata,
+ * the same fields voiceLog() already sends to console.debug.
+ *
+ * Deliberately NOT gated on NODE_ENV === 'development', unlike __audioDebug
+ * above: `next build` always sets NODE_ENV=production, including on every
+ * Vercel deployment — a dev-only gate made this diagnostic invisible on
+ * exactly the environment ("is ElevenLabs actually the thing that just
+ * played, on the REAL deployment") it exists to answer, which is the whole
+ * reason the "still sounds mechanical" live-production report couldn't be
+ * self-diagnosed from the browser without sandbox/Vercel access. Answers
+ * that from any real browser/DevTools console, no build flag needed. */
+if (typeof window !== 'undefined') {
+  (window as unknown as { __voiceDebug: () => Record<string, unknown> }).__voiceDebug = () => {
+    // Fired here, not from speakPrompt() — see ensureServerVoiceConfig's doc
+    // comment for why. The FIRST call to __voiceDebug() on a page kicks this
+    // off and returns before it resolves (serverConfig.checked stays false
+    // that one time); call it again a moment later for the resolved value.
+    ensureServerVoiceConfig();
+    return {
     // ElevenLabs is the default now (see speakPrompt()) — VOICE_PROVIDER
     // unset/anything-but-'web-speech' means every call ATTEMPTS ElevenLabs,
     // not that web-speech is configured. Report the actual effective
     // default, not the raw (usually-unset) env var.
     effectiveDefaultProvider: VOICE_PROVIDER === 'web-speech' ? 'web-speech' : 'elevenlabs',
     rawEnvVar: VOICE_PROVIDER ?? null,
+    // Server-reported truth: is ELEVENLABS_API_KEY actually set on THIS
+    // deployment, and what voice/model would it use. `checked: false` means
+    // this is the first __voiceDebug() call this page load and the fetch
+    // just started — call
+    // speakPrompt() once (or tap anything that speaks) and re-check.
+    serverConfig: { ..._serverVoiceConfig },
+    // The single clearest answer to "what just happened" — see
+    // LastUtteranceDebug's doc comment. null until the first utterance
+    // resolves.
+    lastUtterance: _lastUtterance ? { ..._lastUtterance } : null,
     cacheSize: _elevenLabsCache.size,
     elevenLabsPlaying: _elevenLabsEl != null && !_elevenLabsEl.paused,
     elevenLabsRequestInFlight: _elevenLabsAbort != null,
     generation: _speechGeneration,
     recent: [..._voiceHistory],
-  });
+    };
+  };
 }
 
