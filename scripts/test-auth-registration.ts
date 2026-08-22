@@ -1,20 +1,26 @@
 /* Regression tests for the "Google returns to /register with no
  * confirmation, Continue to Payment does nothing" live-production report
- * (see components/AuthProvider.tsx and app/register/page.tsx).
+ * (see components/AuthProvider.tsx and app/register/page.tsx). The root
+ * cause was traced (via a live window.__authDebug() capture) to
+ * signInWithRedirect()/getRedirectResult() being unreliable for this app's
+ * hosting shape (Vercel origin, separate Firebase authDomain) — replaced
+ * with popup-based credential recovery (recoverExistingAccount in
+ * AuthProvider.tsx); redirect is no longer used anywhere in the Google/
+ * Apple flow.
  *
  * This environment has NO Firebase web config (no NEXT_PUBLIC_FIREBASE_*
- * env vars), so a real Google popup/redirect/link flow cannot be driven
- * here — that requires either real credentials or the Firebase Auth
- * Emulator, neither available in this sandbox. What CAN be verified
- * without Firebase configured at all is exactly the class of bug this task
- * fixes: an unauthenticated state (here: Firebase never initialized, same
- * end result — isAuthenticated stays false) must never present a
- * "Continue to Payment" button that looks clickable but silently no-ops,
- * and window.__authDebug() must exist and report that state accurately.
+ * env vars), so a real Google popup/link flow cannot be driven here — that
+ * requires either real credentials or the Firebase Auth Emulator, neither
+ * available in this sandbox. What CAN be verified without Firebase
+ * configured at all is exactly the class of bug this task fixes: an
+ * unauthenticated state (here: Firebase never initialized, same end result
+ * — isAuthenticated stays false) must never present a "Continue to
+ * Payment" button that looks clickable but silently no-ops, and
+ * window.__authDebug() must exist and report that state accurately.
  *
  * See the final report for what could only be verified by careful code
- * reading (the linkWithPopup/redirect/publish() wiring itself) rather than
- * a live run, and what still needs one real-device check.
+ * reading (the linkWithPopup/credential-recovery/publish() wiring itself)
+ * rather than a live run, and what still needs one real-device check.
  *
  *   node --experimental-strip-types scripts/test-auth-registration.ts
  */
@@ -50,8 +56,8 @@ async function main() {
     } else {
       if (debug.isAuthenticated === false) ok('__authDebug reports isAuthenticated: false for a fresh/unauthenticated session');
       else fail('expected isAuthenticated: false', JSON.stringify(debug));
-      if ('lastOperation' in debug && 'lastError' in debug && 'redirectResultFound' in debug && 'idTokenChangedFired' in debug) {
-        ok('__authDebug exposes lastOperation/lastError/redirectResultFound/idTokenChangedFired');
+      if ('lastOperation' in debug && 'lastError' in debug && 'idTokenChangedFired' in debug && 'uid' in debug && 'providerIds' in debug) {
+        ok('__authDebug exposes lastOperation/lastError/idTokenChangedFired/uid/isAnonymous/email/providerIds');
       } else {
         fail('__authDebug is missing required diagnostic fields', JSON.stringify(debug));
       }

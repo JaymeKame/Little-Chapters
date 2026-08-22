@@ -4,38 +4,16 @@
  * Follows the pattern from inzone-games but requires both authentication
  * and phone number for SMS notifications after the free chapter experience. */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
 
 export default function RegisterPage() {
   const router = useRouter();
-  const {
-    user,
-    loading: authLoading,
-    isAuthenticated,
-    redirectError,
-    clearRedirectError,
-    signInWithGoogle,
-    signInWithApple,
-    saveParentPhoneNumber,
-  } = useAuth();
+  const { user, loading: authLoading, isAuthenticated, signInWithGoogle, signInWithApple, saveParentPhoneNumber } = useAuth();
   const [phoneNumber, setPhoneNumber] = useState('');
   const [busy, setBusy] = useState<'google' | 'apple' | 'submit' | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  /* A REAL Firebase error can surface here with nothing awaiting it: the
-   * redirect path (see AuthProvider's finishRedirectSignIn) completes on a
-   * full-page reload, well after this component's own handleProvider() has
-   * already returned — this used to be silently discarded, so the parent
-   * saw Google's account picker complete and then... nothing. Surfaced the
-   * same way a direct popup failure is: in the same `error` banner. */
-  useEffect(() => {
-    if (redirectError) {
-      setError(redirectError);
-      clearRedirectError();
-    }
-  }, [redirectError, clearRedirectError]);
 
   async function handleProvider(provider: 'google' | 'apple') {
     setError(null);
