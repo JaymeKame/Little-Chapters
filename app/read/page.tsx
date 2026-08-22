@@ -26,7 +26,7 @@ import { selectSceneForPage } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
-import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
+import { fetchRemoteProfile, loadProfile, mirrorProfileRemote, saveProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import {
   startReadingSession,
   type ReadingAssessmentResult,
@@ -288,23 +288,52 @@ export default function ReadPage() {
   const pageAssistedRef = useRef(false);
   const pageRereadRef = useRef(false);
 
+  // Boot flow: wait for Firebase auth to settle before concluding "no
+  // profile exists". loadProfile() is a single global (not uid-scoped)
+  // localStorage key, so on THIS device it resolves instantly regardless
+  // of auth — but a returning subscriber on a NEW browser/device, or one
+  // who cleared site data, has nothing there at all. Bouncing to '/'
+  // instantly on mount (as this used to, unconditionally) is exactly the
+  // bug this fixes: it cannot tell "genuinely new visitor" apart from
+  // "known subscriber, wrong device" without asking the server first. Same
+  // pattern as app/home/page.tsx's identical effect — see its comment for
+  // the full rationale.
   useEffect(() => {
+    if (authLoading) return;
+    let cancelled = false;
+    void (async () => {
+      const local = loadProfile();
+      if (local) {
+        setProfile(local);
+        if (user && !user.isAnonymous) {
+          void user.getIdToken().then((token) => mirrorProfileRemote(token, local)).catch(() => {});
+        }
+        return;
+      }
+      if (user && !user.isAnonymous) {
+        const token = await user.getIdToken().catch(() => null);
+        const remote = token ? await fetchRemoteProfile(token) : null;
+        if (remote && !cancelled) {
+          saveProfile(remote);
+          setProfile(remote);
+          return;
+        }
+      }
+      if (!cancelled) router.replace('/');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router, user, authLoading]);
+
+  useEffect(() => {
+    if (!profile) return;
     disposedRef.current = false;
-    const p = loadProfile();
-    if (!p) {
-      router.replace('/');
-      return;
-    }
-    setProfile(p);
-    setChapter(chapterFor(p.interests[0], p.childName));
-    sessionIdRef.current = `${p.childName}-${Date.now()}`;
+    setChapter(chapterFor(profile.interests[0], profile.childName));
+    sessionIdRef.current = `${profile.childName}-${Date.now()}`;
     startedAtRef.current = new Date().toISOString();
     sentenceResultsRef.current = [];
     interventionsRef.current = [];
-    // Unauthenticated early attempt (no uid yet — auth hasn't settled at
-    // mount) — in production this 401s and is swallowed, same as always;
-    // the auth-gated effect below does the real, correctly-staged fetch.
-    void requestTutorChapter(p, null).then((generated) => { if (generated) setChapter(generated); });
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
@@ -314,7 +343,7 @@ export default function ReadPage() {
       stopMusic();
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
     };
-  }, [router]);
+  }, [profile]);
 
   /* Deterministic test path for the slide-through help interaction:
    * /read?slideDemo forces a real, currently-segmentable word straight into

@@ -12,9 +12,10 @@ import type { ChildProfile, InterestId } from './profile';
 import { loadReport } from './profile';
 import { loadLocalProgress } from './child-progress';
 import { initialStage } from '../reading-tutor/src/progression';
-import { pickSkeleton, type Skeleton } from '../reading-tutor/src/skeletons';
+import { pickSkeleton, SKELETONS, type Skeleton } from '../reading-tutor/src/skeletons';
 import { assignSlots } from '../reading-tutor/src/slots';
 import type { StoryDraft } from '../reading-tutor/src/validators';
+import { chapterIdForDay, todayLocal } from './chapter-id';
 
 export interface ChapterPage {
   text: string;
@@ -201,11 +202,13 @@ function derivePhonics(pages: ChapterPage[], excludeWords: string[]): Chapter['p
 
 /** Deterministic per-day id: same profile + calendar day → same id, so the
  *  generated visual pack is created once and reused all day instead of
- *  drifting per session or per page load. */
+ *  drifting per session or per page load. Delegates to lib/chapter-id.ts
+ *  (a pure, zero-dependency module) so the server persistence route
+ *  (app/api/chapters/today/route.ts) can compute the exact same id from
+ *  the exact same (client-supplied) day string without importing this
+ *  file, which touches localStorage in several other exports. */
 export function chapterIdFor(interest: InterestId | undefined, childName: string): string {
-  const day = new Date().toLocaleDateString('en-CA');
-  const slug = childName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'reader';
-  return `${interest ?? 'dogs'}-${slug}-${day}`;
+  return chapterIdForDay(interest, childName, todayLocal());
 }
 
 export function chapterFor(interest: InterestId | undefined, childName = 'reader'): Chapter {
@@ -434,6 +437,47 @@ function loadCachedTutorChapter(id: string): Chapter | null {
  * without this, the first load of a day buys the same story twice. */
 const inFlight = new Map<string, Promise<Chapter | null>>();
 
+/* ── Chapter-source observability ─────────────────────────────────────────
+ * Module-level (not React state) diagnostics — mirrors AuthProvider's
+ * _authDiag/window.__authDebug and lib/audio.ts's _voiceHistory/
+ * window.__voiceDebug patterns. Answers, for the CURRENT chapter: did this
+ * actually come from OpenAI ('generated') or is the built-in deterministic
+ * skeleton pool standing in ('fallback')? Was it freshly generated this
+ * call, or served from the persisted today-cache (server, for a signed-in
+ * caller) or the local browser cache? Never records prompt text, model
+ * output, or any credential — only the id/stage/source/cache facts below. */
+export interface ChapterDiag {
+  chapterId: string;
+  stage: number;
+  source: 'generated' | 'fallback';
+  /** 'server' = persisted uid+childId+day record (already existed before
+   *  this call); 'local' = this browser's TUTOR_CACHE_PREFIX cache;
+   *  'fresh' = neither — generation (or its failure) just happened. */
+  cacheHit: 'server' | 'local' | 'fresh';
+  /** Whether this request went through the persisted /api/chapters/today
+   *  path at all (true for any signed-in caller with an ID token) or the
+   *  older direct /api/chapters/story call (anonymous/dev/no token —
+   *  never persisted server-side, so two devices could still diverge). */
+  persisted: boolean;
+  at: number;
+}
+
+let _lastChapterDiag: ChapterDiag | null = null;
+
+function recordChapterDiag(diag: Omit<ChapterDiag, 'at'>): void {
+  _lastChapterDiag = { ...diag, at: Date.now() };
+}
+
+/** Read by window.__chapterDebug() (wired in app/home/page.tsx, the screen
+ *  that actually renders "today's chapter") — deliberately NOT gated on
+ *  NODE_ENV, same rationale as __authDebug/__voiceDebug: `next build`
+ *  always sets NODE_ENV=production, and this exists specifically to answer
+ *  "is the live deployed app actually generating chapters, or silently
+ *  falling back?" from DevTools on the real app. */
+export function chapterDebugInfo(): ChapterDiag | null {
+  return _lastChapterDiag;
+}
+
 /** The two existing, already-supported GenerateRequest personalization
  *  inputs this task wires up (see docs/ADAPTIVE_LOOP.md, Phase 2) —
  *  factored out from generateTutorChapter() purely so stage resolution and
@@ -461,7 +505,18 @@ export function resolveGenerationContext(
 
 /** One generation per child per day: the tutor chapter is cached under the
  *  same stable per-day id the demo chapter uses, so a mid-day reload reads
- *  the SAME story instead of paying for (and waiting on) a new one. */
+ *  the SAME story instead of paying for (and waiting on) a new one.
+ *
+ *  For any signed-in caller with an ID token, this now goes through
+ *  /api/chapters/today — a persisted, uid+childId+day get-or-create record
+ *  (see lib/chapter-store-admin.ts) — instead of the older direct
+ *  /api/chapters/story call. That old path is a per-BROWSER localStorage
+ *  cache only: two devices (or a cleared browser) signed into the same
+ *  account could each independently call OpenAI and cache a DIFFERENT
+ *  generated chapter for the same child on the same day. It remains the
+ *  fallback for callers with no uid/token (local dev, or a request that
+ *  fires before auth has settled), where there is nothing to persist
+ *  under anyway. */
 export async function requestTutorChapter(profile: ChildProfile, uid: string | null, authToken?: string | null): Promise<Chapter | null> {
   // Stage is part of the cache key: a child whose progress has moved since
   // yesterday must not be served yesterday's-stage story for the rest of
@@ -470,15 +525,79 @@ export async function requestTutorChapter(profile: ChildProfile, uid: string | n
   const stage = resolveGenerationStage(profile, uid);
   const id = `${chapterIdFor(profile.interests[0], profile.childName)}:s${stage}`;
   const cached = loadCachedTutorChapter(id);
-  if (cached) return cached;
+  if (cached) {
+    recordChapterDiag({ chapterId: cached.id, stage, source: 'generated', cacheHit: 'local', persisted: Boolean(uid && authToken) });
+    return cached;
+  }
   const pending = inFlight.get(id);
   if (pending) return pending;
-  const run = generateTutorChapter(profile, uid, id, authToken);
+  const run = (async () => {
+    const chapter =
+      uid && authToken
+        ? await generateTutorChapterPersisted(profile, uid, stage, id, authToken)
+        : await generateTutorChapter(profile, uid, id, authToken);
+    recordChapterDiag({
+      chapterId: chapter?.id ?? id,
+      stage,
+      source: chapter ? 'generated' : 'fallback',
+      cacheHit: 'fresh',
+      persisted: Boolean(uid && authToken),
+    });
+    return chapter;
+  })();
   inFlight.set(id, run);
   try {
     return await run;
   } finally {
     inFlight.delete(id);
+  }
+}
+
+/** Persisted path: get-or-create against /api/chapters/today. Server-
+ *  authoritative on stage (re-resolved there from the persisted
+ *  ChildProgress record, not trusted from this call's `stage` — that's
+ *  only used for this function's own local cache key), so a stale client
+ *  copy can never fork the persisted record's stage from what the server
+ *  considers current. */
+async function generateTutorChapterPersisted(
+  profile: ChildProfile,
+  uid: string,
+  stage: number,
+  id: string,
+  authToken: string,
+): Promise<Chapter | null> {
+  const context = resolveGenerationContext(profile, uid);
+  const day = todayLocal();
+  try {
+    const response = await fetch('/api/chapters/today', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+      body: JSON.stringify({
+        profile,
+        day,
+        ageDerivedStageEstimate: stageForAge(profile.age),
+        skeletonId: context.skeleton.id,
+        recentlyMissedWords: context.recentlyMissedWords,
+        storySoFar: context.storySoFar,
+      }),
+    });
+    if (!response.ok) return null; // 402 (not subscribed) / 503 / etc — caller stays on the demo arc
+    const data = (await response.json()) as {
+      record?: { source: 'generated' | 'fallback'; stage: number; draft?: StoryDraft; skeletonId?: string; slots?: Record<string, string> };
+    };
+    const rec = data.record;
+    if (!rec || rec.source !== 'generated' || !rec.draft) return null;
+    const skeleton = SKELETONS.find((s) => s.id === rec.skeletonId) ?? context.skeleton;
+    const chapter = adaptTutorDraft(profile, rec.draft, skeleton, rec.slots, rec.stage);
+    if (!chapter) return null;
+    try {
+      localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));
+    } catch {
+      /* best-effort cache */
+    }
+    return chapter;
+  } catch {
+    return null;
   }
 }
 
