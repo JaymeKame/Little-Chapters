@@ -3,9 +3,12 @@
 ## Summary
 
 This audit compares voice-provider options for the Little Chapters TTS path
-(`speakPrompt()` in `lib/audio.ts`) and documents the decision to add
-ElevenLabs as an opt-in provider while keeping the browser's Web Speech API
-as the default.
+(`speakPrompt()` in `lib/audio.ts`). ElevenLabs is now the default child-
+facing tutor voice whenever `ELEVENLABS_API_KEY` is configured; the browser's
+Web Speech API is resilience-fallback only — see "2026-08-21: ElevenLabs
+became the default" below for why this changed from the original opt-in
+design, and `docs/VOICE_CALLSITE_INVENTORY.md` for the full callsite audit
+that prompted it.
 
 ---
 
@@ -20,12 +23,35 @@ as the default.
 | **Cost** | Free | Free tier: 10 000 chars/month; paid from $5/month |
 | **Setup** | None | `ELEVENLABS_API_KEY` in `.env.local` |
 
-### Verdict
+### Verdict (updated 2026-08-21 — see below)
 
-**Web Speech API remains the default** — zero-dependency, zero-latency, and
-works offline. ElevenLabs is available as an opt-in via
-`NEXT_PUBLIC_VOICE_PROVIDER=elevenlabs` for deployments that can accept the
-latency and privacy trade-offs, e.g. a future parent-managed hosted version.
+**ElevenLabs is now the default** whenever `ELEVENLABS_API_KEY` is
+configured — every `speakPrompt()` call attempts it first. Web Speech API
+remains available with zero setup and is the automatic fallback whenever
+ElevenLabs isn't configured or a call genuinely fails (network error,
+timeout, or a non-2xx response after one retry). `NEXT_PUBLIC_VOICE_PROVIDER`
+still exists but only as an explicit `web-speech` opt-OUT for local dev/
+testing the fallback path — it no longer needs to be set to `elevenlabs` to
+"activate" anything.
+
+### 2026-08-21: ElevenLabs became the default
+
+Originally this was an explicit opt-in (`NEXT_PUBLIC_VOICE_PROVIDER=elevenlabs`)
+kept separate from `ELEVENLABS_API_KEY` (server-only, never exposed to the
+client). That separation was a real bug: a deployment could set the API key
+— reasonably believing that "activates" ElevenLabs — and still get 100% Web
+Speech everywhere, silently, because the separate client-side flag was never
+also set. There was no error to notice; it just sounded mechanical. A live
+test session surfaced this as "ElevenLabs only heard during the sight-word/
+slider correction interaction, mechanical browser TTS everywhere else" —
+investigated in full in `docs/VOICE_CALLSITE_INVENTORY.md`, which also
+confirmed every child-facing speech callsite already funnels through the
+single `speakPrompt()`/`stopSpeaking()` contract (no direct
+`speechSynthesis` bypass anywhere in application code). The fix flips the
+default so ElevenLabs is attempted unconditionally, and separately adds one
+retry-on-transient-failure (network blip / 5xx) before falling back, so a
+single dropped packet or a cold serverless function no longer silently
+downgrades an entire utterance to the mechanical voice.
 
 ---
 
@@ -122,12 +148,16 @@ pilot. Revisit at scale.
 ```bash
 # .env.local
 ELEVENLABS_API_KEY=sk_...
-NEXT_PUBLIC_VOICE_PROVIDER=elevenlabs
 
 # Optional overrides
 ELEVENLABS_VOICE_ID=EXAVITQu4vr4xnSDxMaL
 ELEVENLABS_MODEL_ID=eleven_turbo_v2
 ```
+
+That's the whole activation — no separate client-side flag needed (see
+"2026-08-21: ElevenLabs became the default" above). To force Web Speech
+instead (e.g. testing the fallback path), set
+`NEXT_PUBLIC_VOICE_PROVIDER=web-speech`.
 
 Then verify with:
 
@@ -147,15 +177,17 @@ with `--speak "…"`, POSTs a sample phrase and saves the result as `output.mp3`
 ```
 Browser (lib/audio.ts)
   speakPrompt(text)
-    NEXT_PUBLIC_VOICE_PROVIDER === 'elevenlabs'?
-      ├─ YES → fetch POST /api/speech/model {text}
+    NEXT_PUBLIC_VOICE_PROVIDER === 'web-speech'? (explicit opt-out only)
+      ├─ NO (default) → fetch POST /api/speech/model {text}
       │           ↓
       │         app/api/speech/model/route.ts
       │           ↓
       │         lib/elevenlabs.server.ts → ElevenLabs REST API
+      │           (not configured → fast 503, no network hang)
       │           ↓ audio/mpeg stream
       │         HTMLAudioElement.play()
-      │         (falls back to Web Speech on any error)
+      │         (retries once on a transient failure, then falls back to
+      │          Web Speech — see _speakElevenLabs in lib/audio.ts)
       └─ NO  → window.speechSynthesis.speak()
 ```
 

@@ -9,12 +9,26 @@
  * anywhere in this file.
  *
  * Current behavior:
- *  - speakPrompt()/stopSpeaking() use either ElevenLabs (when
- *    NEXT_PUBLIC_VOICE_PROVIDER=elevenlabs) or the browser's Web Speech API.
- *    The ElevenLabs path fetches audio/mpeg from POST /api/speech/model and
- *    plays it via HTMLAudioElement; it falls back silently to Web Speech on
- *    any network or autoplay error. The public function signatures are
- *    unchanged — callers do not need to know which provider is active.
+ *  - speakPrompt()/stopSpeaking() are the ONLY child-facing speech entry
+ *    point in the app (every call site funnels through here — see
+ *    docs/VOICE_CALLSITE_INVENTORY.md for the full audit). ElevenLabs is the
+ *    default/normal provider: every call attempts it first. Browser Web
+ *    Speech is resilience-fallback ONLY, used when ElevenLabs genuinely
+ *    fails for that call (network error, timeout, non-2xx — including the
+ *    server reporting ELEVENLABS_API_KEY isn't configured, which returns a
+ *    fast 503, not a hang) or when NEXT_PUBLIC_VOICE_PROVIDER=web-speech
+ *    explicitly forces it off (a deliberate escape hatch for local dev/
+ *    testing the fallback path itself — see speakPrompt() below; this used
+ *    to be inverted, requiring NEXT_PUBLIC_VOICE_PROVIDER=elevenlabs to
+ *    OPT IN — a real 2026-08-21 bug: a deployment could have
+ *    ELEVENLABS_API_KEY configured server-side and still silently run 100%
+ *    Web Speech everywhere if that separate client-side flag was never set,
+ *    with no error anywhere to notice). The ElevenLabs path fetches
+ *    audio/mpeg from POST /api/speech/model and plays it via
+ *    HTMLAudioElement, retrying once on a transient failure (network error
+ *    or 5xx) before falling back — see _speakElevenLabs. The public
+ *    function signatures are unchanged — callers do not need to know which
+ *    provider is active.
  *  - playTheme()/playAmbience()/playMusic()/playUISound() are asset-based: they play a
  *    real audio file (HTMLAudioElement) at the given path if one exists.
  *    If the asset is missing (404/decode/autoplay-block error), they fail
@@ -180,41 +194,81 @@ function _speakElevenLabs(
     return;
   }
 
-  const controller = new AbortController();
-  _elevenLabsAbort = controller;
-  const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
+  // One attempt: resolves with the audio blob, or throws an Error tagged
+  // with `.retryable` — true for a transient blip (network-level failure,
+  // our own client timeout, or ElevenLabs' own 502 in lib/elevenlabs.server.ts's
+  // synthesize()), false for something retrying can't fix (503 = not
+  // configured; 400 = bad request — the same text will fail the same way
+  // every time). Kept as its own function so speakPrompt()'s single call
+  // site (below) can retry once without duplicating the fetch/timeout
+  // bookkeeping.
+  function attempt(): Promise<Blob> {
+    const controller = new AbortController();
+    _elevenLabsAbort = controller;
+    const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
+    return fetch('/api/speech/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const err = new Error(`model route ${res.status}`) as Error & { retryable: boolean };
+          err.retryable = res.status >= 500 && res.status !== 503; // 503 = not configured, static, never worth retrying
+          throw err;
+        }
+        return res.blob();
+      })
+      .catch((err) => {
+        if (err instanceof Error && 'retryable' in err) throw err; // already tagged above
+        const tagged = err instanceof Error ? err : new Error(String(err));
+        (tagged as Error & { retryable: boolean }).retryable = true; // network error or our own timeout (AbortError) — both transient
+        throw tagged;
+      })
+      .finally(() => {
+        clearTimeout(timeout);
+        if (_elevenLabsAbort === controller) _elevenLabsAbort = null;
+      });
+  }
 
-  fetch('/api/speech/model', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-    signal: controller.signal,
-  })
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`model route ${res.status}`);
-      const blob = await res.blob();
+  function fallback(err: unknown, afterRetry: boolean): void {
+    if (myGeneration !== _speechGeneration) return; // superseded — the newer call already owns what happens next
+    const timedOut = err instanceof Error && err.name === 'AbortError';
+    voiceLog({
+      provider: 'elevenlabs',
+      fallback: 'web-speech',
+      retried: afterRetry,
+      reason: timedOut ? `timeout (${ELEVENLABS_TIMEOUT_MS}ms)` : err instanceof Error ? err.message : String(err),
+    });
+    _speakWebSpeech(text, opts);
+  }
+
+  attempt()
+    .then((blob) => {
       _cacheSet(text, blob);
       voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length });
       playBlob(blob);
     })
-    .catch((err) => {
-      // Superseded (aborted by a newer call, or by stopSpeaking()) — the
-      // caller that superseded this one already owns whatever happens next;
-      // this call must not also fall back to Web Speech on top of it.
-      if (myGeneration !== _speechGeneration) return;
-      // ElevenLabs path failed — fall back to Web Speech so the child is not
-      // left in silence.
-      const timedOut = err instanceof Error && err.name === 'AbortError';
-      voiceLog({
-        provider: 'elevenlabs',
-        fallback: 'web-speech',
-        reason: timedOut ? `timeout (${ELEVENLABS_TIMEOUT_MS}ms)` : err instanceof Error ? err.message : String(err),
-      });
-      _speakWebSpeech(text, opts);
-    })
-    .finally(() => {
-      clearTimeout(timeout);
-      if (_elevenLabsAbort === controller) _elevenLabsAbort = null;
+    .catch((err: Error & { retryable?: boolean }) => {
+      if (myGeneration !== _speechGeneration) return; // superseded — do not retry a call nobody wants anymore
+      if (!err.retryable) {
+        fallback(err, false);
+        return;
+      }
+      // One retry for a transient blip — a single dropped packet or a cold
+      // Vercel function must not be indistinguishable from "ElevenLabs is
+      // broken" and silently downgrade the whole utterance to the
+      // mechanical voice. A second failure falls back for real.
+      voiceLog({ provider: 'elevenlabs', retry: 1, reason: err.message });
+      attempt()
+        .then((blob) => {
+          if (myGeneration !== _speechGeneration) return;
+          _cacheSet(text, blob);
+          voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, afterRetry: true });
+          playBlob(blob);
+        })
+        .catch((err2) => fallback(err2, true));
     });
 }
 
@@ -251,11 +305,18 @@ export function speakPrompt(
 
   const prompt = withTerminalPunctuation(text);
 
-  if (VOICE_PROVIDER === 'elevenlabs') {
-    _speakElevenLabs(prompt, opts);
-  } else {
-    voiceLog({ provider: 'web-speech', chars: prompt.length });
+  // ElevenLabs is the default for every call — NOT gated on a separate
+  // "did someone remember to opt in" flag. The only way to skip it is the
+  // explicit escape hatch below. _speakElevenLabs() itself handles "not
+  // configured"/network/timeout failures by falling back to Web Speech, so
+  // attempting it here costs nothing when it isn't available (a missing
+  // ELEVENLABS_API_KEY returns a fast 503 from /api/speech/model, not a
+  // hang) and is strictly better when it is.
+  if (VOICE_PROVIDER === 'web-speech') {
+    voiceLog({ provider: 'web-speech', chars: prompt.length, reason: 'forced via NEXT_PUBLIC_VOICE_PROVIDER=web-speech' });
     _speakWebSpeech(prompt, opts);
+  } else {
+    _speakElevenLabs(prompt, opts);
   }
 }
 
@@ -574,7 +635,12 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
    * real browser/Playwright session without needing DevTools' Verbose log
    * level switched on. */
   (window as unknown as { __voiceDebug: () => Record<string, unknown> }).__voiceDebug = () => ({
-    configuredProvider: VOICE_PROVIDER ?? 'web-speech',
+    // ElevenLabs is the default now (see speakPrompt()) — VOICE_PROVIDER
+    // unset/anything-but-'web-speech' means every call ATTEMPTS ElevenLabs,
+    // not that web-speech is configured. Report the actual effective
+    // default, not the raw (usually-unset) env var.
+    effectiveDefaultProvider: VOICE_PROVIDER === 'web-speech' ? 'web-speech' : 'elevenlabs',
+    rawEnvVar: VOICE_PROVIDER ?? null,
     cacheSize: _elevenLabsCache.size,
     elevenLabsPlaying: _elevenLabsEl != null && !_elevenLabsEl.paused,
     elevenLabsRequestInFlight: _elevenLabsAbort != null,

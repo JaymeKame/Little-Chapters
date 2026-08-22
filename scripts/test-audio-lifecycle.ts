@@ -16,11 +16,12 @@
  * server), using the dev-only __audioDebug()/__voiceDebug() hooks in
  * lib/audio.ts to inspect module-level state that has no DOM presence.
  *
- * Requires: `NEXT_PUBLIC_VOICE_PROVIDER=elevenlabs npm run dev` running on
- * localhost:3001 (the ElevenLabs code path never runs otherwise). No real
- * ELEVENLABS_API_KEY is needed — every /api/speech/model response is
- * intercepted and replaced with a fake audio/mpeg clip so this is fully
- * deterministic and offline.
+ * Requires: `npm run dev` running on localhost:3001. ElevenLabs is the
+ * default provider as of 2026-08-21 (see docs/VOICE_AND_PACING_AUDIT.md) —
+ * no NEXT_PUBLIC_VOICE_PROVIDER env var is needed to exercise this path
+ * anymore. No real ELEVENLABS_API_KEY is needed either — every
+ * /api/speech/model response is intercepted and replaced with a fake
+ * audio/mpeg clip so this is fully deterministic and offline.
  *
  *   node --experimental-strip-types scripts/test-audio-lifecycle.ts
  */
