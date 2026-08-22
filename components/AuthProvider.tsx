@@ -48,6 +48,11 @@ interface AuthContextValue {
   loading: boolean;
   isAuthenticated: boolean;
   configError: string | null;
+  /** A real Firebase error surfaced after the redirect sign-in path
+   *  completed — see finishRedirectSignIn. null when there is nothing to
+   *  show, or once clearRedirectError() has been called. */
+  redirectError: string | null;
+  clearRedirectError: () => void;
   signInWithGoogle: () => Promise<void>;
   signInWithApple: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -55,6 +60,40 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/* Module-level (not React state) auth diagnostics — mirrors lib/audio.ts's
+ * _voiceHistory/_lastUtterance pattern. Read by window.__authDebug() below.
+ * Exists because the "Google returns to /register with no confirmation"
+ * live-production report was, until now, genuinely undiagnosable from the
+ * browser: every operation that could fail (linkWithPopup, signInWithPopup,
+ * signInWithRedirect, getRedirectResult) either threw into a catch that
+ * silently discarded the error, or succeeded/failed with no visible trace.
+ * Never records the ID token, credentials, or the phone number. */
+interface AuthDiag {
+  lastOperation: 'link-popup' | 'signin-popup' | 'redirect' | 'redirect-result' | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  redirectResultFound: boolean | null; // null = getRedirectResult has not been checked yet this page load
+  idTokenChangedFired: boolean;
+}
+let _authDiag: AuthDiag = {
+  lastOperation: null,
+  lastErrorCode: null,
+  lastErrorMessage: null,
+  redirectResultFound: null,
+  idTokenChangedFired: false,
+};
+
+function recordAuthOp(op: AuthDiag['lastOperation']): void {
+  _authDiag = { ..._authDiag, lastOperation: op };
+}
+
+function recordAuthError(err: unknown): void {
+  const code = (err as { code?: string })?.code ?? null;
+  const message = err instanceof Error ? err.message : String(err);
+  _authDiag = { ..._authDiag, lastErrorCode: code, lastErrorMessage: message };
+  console.error('[Auth]', { operation: _authDiag.lastOperation, code, message });
+}
 
 /* Registering must UPGRADE the anonymous visitor, not replace them.
  * signInWithPopup on an anonymous user issues a brand-new uid and abandons the
@@ -82,12 +121,19 @@ async function upgradeOrSignIn(
    * call is allowed per tap, and anything after it must redirect instead.
    * Getting this wrong blocked the popup at the Create-Free-Account moment. */
   const redirect = async () => {
+    recordAuthOp('redirect');
     // Survives the full page reload a redirect causes.
     if (outgoingAnonUid) sessionStorage.setItem(PENDING_ANON_UID, outgoingAnonUid);
-    await signInWithRedirect(auth, provider);
+    try {
+      await signInWithRedirect(auth, provider);
+    } catch (err) {
+      recordAuthError(err);
+      throw err;
+    }
   };
 
   if (current?.isAnonymous) {
+    recordAuthOp('link-popup');
     try {
       await linkWithPopup(current, provider);
       // A link that succeeded means no redirect is coming; a stale marker
@@ -104,35 +150,71 @@ async function upgradeOrSignIn(
         code === 'auth/credential-already-in-use' ||
         code === 'auth/email-already-in-use' ||
         code === 'auth/provider-already-linked';
-      if (!recoverable) throw err;
+      if (!recoverable) {
+        recordAuthError(err);
+        throw err;
+      }
       // Linking is impossible: this account already belongs to another user.
       // The activation is spent, so a second popup would be blocked — redirect.
       return redirect();
     }
   }
 
+  recordAuthOp('signin-popup');
   try {
     const cred = await signInWithPopup(auth, provider);
     if (outgoingAnonUid) claimAnonymousChild(cred.user.uid, outgoingAnonUid);
     publish();
   } catch (err) {
     if ((err as { code?: string })?.code === 'auth/popup-blocked') return redirect();
+    recordAuthError(err);
     throw err;
   }
 }
 
-/** Completes a redirect sign-in after the page reloads. */
-async function finishRedirectSignIn(auth: ReturnType<typeof getFirebaseAuth>): Promise<void> {
+/** Completes a redirect sign-in after the page reloads.
+ *
+ *  getRedirectResult() resolves to `null` — never throws — when there is
+ *  simply no pending redirect; the `if (!result) return;` line below is
+ *  the ENTIRE handling for that ordinary case. The catch block therefore
+ *  only ever runs for a REAL Firebase error (account-exists-with-different-
+ *  credential, network failure, an expired/invalid pending-redirect state,
+ *  etc.) — it used to be discarded silently, which made a genuine failure
+ *  after the parent picked their Google account indistinguishable from
+ *  "nothing happened" (the exact live-production symptom this fixes):
+ *  logged via recordAuthError (visible in window.__authDebug()) and handed
+ *  to `onError` so the UI can show the parent something useful, instead of
+ *  bouncing them back to a silent /register with no explanation. `publish()`
+ *  on success is NOT optional here — see AuthSession's doc comment just
+ *  below: onIdTokenChanged usually re-publishes on its own once the token
+ *  refresh from this redirect lands, but that is a second, independent
+ *  listener with no ordering guarantee relative to this function returning,
+ *  and the popup-based sign-in paths above call publish() explicitly rather
+ *  than lean on that race — this path was the one place that didn't. */
+async function finishRedirectSignIn(
+  auth: ReturnType<typeof getFirebaseAuth>,
+  publish: () => void,
+  onError: (message: string) => void,
+): Promise<void> {
+  recordAuthOp('redirect-result');
   try {
     const result = await getRedirectResult(auth);
+    _authDiag = { ..._authDiag, redirectResultFound: Boolean(result) };
     if (!result) return;
     const pending = sessionStorage.getItem(PENDING_ANON_UID);
     if (pending) {
       claimAnonymousChild(result.user.uid, pending);
       sessionStorage.removeItem(PENDING_ANON_UID);
     }
-  } catch {
-    /* nothing pending, or the redirect was abandoned */
+    publish();
+  } catch (err) {
+    _authDiag = { ..._authDiag, redirectResultFound: false };
+    recordAuthError(err);
+    const code = (err as { code?: string })?.code;
+    // Cancellation isn't a failure worth alarming a parent over — they just
+    // closed the tab/backed out of Google's consent screen.
+    if (code === 'auth/cancelled-popup-request' || code === 'auth/user-cancelled') return;
+    onError(err instanceof Error ? err.message : 'Sign-in did not complete. Please try again.');
   }
 }
 
@@ -152,6 +234,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<AuthSession>({ user: null });
   const [loading, setLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
+  // A REAL Firebase error from the redirect completion (see
+  // finishRedirectSignIn) — distinct from configError (Firebase never
+  // initialized at all) and from the popup-path errors thrown directly back
+  // to the caller (those are still handled by the calling page's own
+  // try/catch). This is the one auth failure mode that happens on its own,
+  // after a full-page reload, with nothing awaiting it — so it needs its
+  // own place to land instead of vanishing into a resolved promise nobody
+  // is still listening to.
+  const [redirectError, setRedirectError] = useState<string | null>(null);
   const user = session.user;
 
   const publish = useCallback(() => {
@@ -177,7 +268,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           (t: string) => signInWithCustomToken(auth, t);
       }
 
-      void finishRedirectSignIn(auth);
+      void finishRedirectSignIn(auth, publish, setRedirectError);
 
       /* onIdTokenChanged, NOT onAuthStateChanged. The auth-state listener is
        * gated on the UID CHANGING (notifyAuthListeners compares
@@ -189,6 +280,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
        * /payment bouncing them straight back to /register. The id-token
        * listener fires on the token refresh that linking produces. */
       unsub = onIdTokenChanged(auth, async (u) => {
+        _authDiag = { ..._authDiag, idTokenChangedFired: true };
         if (!u) {
           try {
             await signInAnonymously(auth);
@@ -214,12 +306,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       isAuthenticated: Boolean(user && !user.isAnonymous),
       configError,
+      redirectError,
+      clearRedirectError: () => setRedirectError(null),
       async signInWithGoogle() {
+        setRedirectError(null); // a fresh attempt should not still show a stale failure
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({ prompt: 'select_account' });
         await upgradeOrSignIn(provider, publish);
       },
       async signInWithApple() {
+        setRedirectError(null);
         const provider = new OAuthProvider('apple.com');
         provider.addScope('email');
         provider.addScope('name');
@@ -256,8 +352,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // would rebuild nothing when the SAME instance is upgraded from
     // anonymous to Google, so isAuthenticated would stay stale even though
     // the component re-rendered.
-    [session, user, loading, configError, publish],
+    [session, user, loading, configError, redirectError, publish],
   );
+
+  /* window.__authDebug() — the auth-side twin of lib/audio.ts's
+   * window.__voiceDebug(), same rationale: deliberately NOT gated on
+   * NODE_ENV, because `next build` always sets NODE_ENV=production on every
+   * Vercel deployment, and this exists specifically to answer "what actually
+   * happened after the parent picked their Google account" on the real
+   * deployed app, from DevTools, without sandbox/Vercel access. Re-assigned
+   * on every render so it always reads the CURRENT configError/redirectError
+   * (component state) — _authDiag and the live auth.currentUser lookup are
+   * read fresh on each call regardless. Never exposes the ID token,
+   * credentials, or the phone number — only uid, isAnonymous, email,
+   * provider IDs, and the diagnostic fields listed below. */
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (window as unknown as { __authDebug: () => Record<string, unknown> }).__authDebug = () => {
+      let currentUser: User | null = null;
+      try {
+        currentUser = getFirebaseAuth().currentUser;
+      } catch {
+        /* Firebase never initialized — configError below already covers this */
+      }
+      return {
+        uid: currentUser?.uid ?? null,
+        isAnonymous: currentUser?.isAnonymous ?? null,
+        email: currentUser?.email ?? null,
+        providerIds: currentUser?.providerData.map((p) => p.providerId) ?? [],
+        isAuthenticated: Boolean(currentUser && !currentUser.isAnonymous),
+        loading,
+        configError,
+        redirectError,
+        lastOperation: _authDiag.lastOperation,
+        lastError: _authDiag.lastErrorCode ? { code: _authDiag.lastErrorCode, message: _authDiag.lastErrorMessage } : null,
+        redirectResultFound: _authDiag.redirectResultFound,
+        idTokenChangedFired: _authDiag.idTokenChangedFired,
+      };
+    };
+  }, [loading, configError, redirectError]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

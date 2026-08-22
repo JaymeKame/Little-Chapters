@@ -4,16 +4,38 @@
  * Follows the pattern from inzone-games but requires both authentication
  * and phone number for SMS notifications after the free chapter experience. */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
 
 export default function RegisterPage() {
   const router = useRouter();
-  const { user, loading: authLoading, isAuthenticated, signInWithGoogle, signInWithApple, saveParentPhoneNumber } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    isAuthenticated,
+    redirectError,
+    clearRedirectError,
+    signInWithGoogle,
+    signInWithApple,
+    saveParentPhoneNumber,
+  } = useAuth();
   const [phoneNumber, setPhoneNumber] = useState('');
   const [busy, setBusy] = useState<'google' | 'apple' | 'submit' | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  /* A REAL Firebase error can surface here with nothing awaiting it: the
+   * redirect path (see AuthProvider's finishRedirectSignIn) completes on a
+   * full-page reload, well after this component's own handleProvider() has
+   * already returned — this used to be silently discarded, so the parent
+   * saw Google's account picker complete and then... nothing. Surfaced the
+   * same way a direct popup failure is: in the same `error` banner. */
+  useEffect(() => {
+    if (redirectError) {
+      setError(redirectError);
+      clearRedirectError();
+    }
+  }, [redirectError, clearRedirectError]);
 
   async function handleProvider(provider: 'google' | 'apple') {
     setError(null);
@@ -186,10 +208,22 @@ export default function RegisterPage() {
           </p>
         </div>
 
+        {/* Deliberately NOT disabled for `!isAuthenticated` — a disabled
+            button that still LOOKS enabled (this one used to: `disabled`
+            included !isAuthenticated but the cursor/opacity styling below
+            never did) silently eats every click with no feedback, which is
+            indistinguishable from the app being broken. Staying clickable
+            lets handleSubmit's own `if (!isAuthenticated) throw ...` fire
+            and show "Please sign in before continuing." — a real answer
+            instead of nothing. Only busy/empty-phone genuinely block
+            submission (nothing useful to submit, or a submission already in
+            flight), so those are the only two conditions in EITHER prop —
+            kept identical on purpose so the button's look always matches
+            what a click will actually do. */}
         <button
           type="submit"
           className="btn-primary"
-          disabled={busy === 'submit' || !phoneNumber.trim() || !isAuthenticated}
+          disabled={busy === 'submit' || !phoneNumber.trim()}
           style={{
             padding: '14px',
             fontSize: 16,
