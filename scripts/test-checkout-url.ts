@@ -50,56 +50,65 @@ function withEnv<T>(value: string | undefined, fn: () => T): T {
   }
 }
 
-console.log('\n=== checkoutReturnUrl(): NEXT_PUBLIC_APP_URL configured and valid ===');
+console.log('\n=== checkoutReturnUrl(): request origin wins over a configured NEXT_PUBLIC_APP_URL (the cross-origin fix) ===');
 {
-  const url = withEnv('https://little-chapters.example.com', () =>
-    checkoutReturnUrl({ nextUrl: { origin: 'https://should-not-be-used.vercel.app' } }, '/payment/cancel'),
+  const url = withEnv('https://little-chapters-olive.vercel.app', () =>
+    checkoutReturnUrl({ nextUrl: { origin: 'https://little-chapters-abc123-preview.vercel.app' } }, '/payment/cancel'),
   );
   check(
-    'a valid configured NEXT_PUBLIC_APP_URL wins over the request origin (Production behavior preserved)',
-    url === 'https://little-chapters.example.com/payment/cancel',
+    'the initiating request origin (Preview or Production) wins over a fixed NEXT_PUBLIC_APP_URL — checkout always returns to the SAME origin it was opened from, so Firebase\'s origin-scoped session survives the round trip',
+    url === 'https://little-chapters-abc123-preview.vercel.app/payment/cancel',
     url,
   );
 }
 
-console.log('\n=== checkoutReturnUrl(): NEXT_PUBLIC_APP_URL missing/empty ===');
+console.log('\n=== checkoutReturnUrl(): Production origin is used as-is (not overridden) ===');
+{
+  const url = withEnv('https://little-chapters-olive.vercel.app', () =>
+    checkoutReturnUrl({ nextUrl: { origin: 'https://little-chapters-olive.vercel.app' } }, '/payment/cancel'),
+  );
+  check(
+    'checkout initiated from Production returns to Production (same origin, no behavior change there)',
+    url === 'https://little-chapters-olive.vercel.app/payment/cancel',
+    url,
+  );
+}
+
+console.log('\n=== checkoutReturnUrl(): NEXT_PUBLIC_APP_URL missing entirely ===');
 {
   const url = withEnv(undefined, () =>
     checkoutReturnUrl({ nextUrl: { origin: 'https://some-preview-abc123.vercel.app' } }, '/payment/cancel'),
   );
   check(
-    'an unset NEXT_PUBLIC_APP_URL falls back to the request origin',
+    'an unset NEXT_PUBLIC_APP_URL is fine — the request origin alone is sufficient',
     url === 'https://some-preview-abc123.vercel.app/payment/cancel',
     url,
   );
 }
 
-console.log('\n=== checkoutReturnUrl(): NEXT_PUBLIC_APP_URL malformed (the live bug) ===');
+console.log('\n=== checkoutReturnUrl(): request origin itself somehow malformed — falls back to NEXT_PUBLIC_APP_URL, then localhost ===');
 {
-  const url = withEnv('little-chapters-r6wuznbll-in-zone-s-projects.vercel.app', () =>
-    checkoutReturnUrl({ nextUrl: { origin: 'https://little-chapters-r6wuznbll-in-zone-s-projects.vercel.app' } }, '/payment/cancel'),
+  const urlWithConfigured = withEnv('https://little-chapters.example.com', () =>
+    checkoutReturnUrl({ nextUrl: { origin: '' } }, '/payment/cancel'),
   );
   check(
-    'a scheme-less (malformed) NEXT_PUBLIC_APP_URL — the actual live-reported value shape — is caught and falls back to the request origin instead of reaching Stripe',
-    url === 'https://little-chapters-r6wuznbll-in-zone-s-projects.vercel.app/payment/cancel',
-    url,
+    'an invalid request origin falls back to a configured NEXT_PUBLIC_APP_URL',
+    urlWithConfigured === 'https://little-chapters.example.com/payment/cancel',
+    urlWithConfigured,
   );
-}
 
-console.log('\n=== checkoutReturnUrl(): request origin itself somehow malformed ===');
-{
-  const url = withEnv(undefined, () => checkoutReturnUrl({ nextUrl: { origin: '' } }, '/payment/cancel'));
+  const urlNoFallback = withEnv(undefined, () => checkoutReturnUrl({ nextUrl: { origin: '' } }, '/payment/cancel'));
   check(
-    'even if the request origin were empty, checkoutReturnUrl() still returns a valid absolute URL (localhost fallback), never throws',
-    url === 'http://localhost:3000/payment/cancel',
-    url,
+    'with no valid origin and no configured fallback, checkoutReturnUrl() still returns a valid absolute URL (localhost), never throws',
+    urlNoFallback === 'http://localhost:3000/payment/cancel',
+    urlNoFallback,
   );
 }
 
 console.log('\n=== checkoutReturnUrl(): Stripe placeholder + trailing-slash correctness ===');
 {
-  const url = withEnv('https://little-chapters.example.com', () =>
-    checkoutReturnUrl({ nextUrl: { origin: 'https://unused.vercel.app' } }, '/payment/success?session_id={CHECKOUT_SESSION_ID}'),
+  const url = withEnv(undefined, () =>
+    checkoutReturnUrl({ nextUrl: { origin: 'https://little-chapters.example.com' } }, '/payment/success?session_id={CHECKOUT_SESSION_ID}'),
   );
   check(
     'the literal {CHECKOUT_SESSION_ID} placeholder Stripe substitutes server-side survives unencoded',
@@ -107,11 +116,11 @@ console.log('\n=== checkoutReturnUrl(): Stripe placeholder + trailing-slash corr
     url,
   );
 
-  const trailingSlashUrl = withEnv('https://little-chapters.example.com/', () =>
-    checkoutReturnUrl({ nextUrl: { origin: 'https://unused.vercel.app' } }, '/payment/success'),
+  const trailingSlashUrl = withEnv(undefined, () =>
+    checkoutReturnUrl({ nextUrl: { origin: 'https://little-chapters.example.com/' } }, '/payment/success'),
   );
   check(
-    'a trailing slash on the configured base does not produce a double slash',
+    'a trailing slash on the request origin does not produce a double slash',
     trailingSlashUrl === 'https://little-chapters.example.com/payment/success',
     trailingSlashUrl,
   );
