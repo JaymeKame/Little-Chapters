@@ -37,6 +37,33 @@ export function isStripeConfigured(): boolean {
   return !!stripe;
 }
 
+/** TEMPORARY diagnostic — presence-only booleans for the env vars checkout
+ *  depends on, NEVER the values themselves. Added to answer one question:
+ *  does the Vercel runtime actually see STRIPE_SECRET_KEY/
+ *  STRIPE_MONTHLY_PRICE_ID/STRIPE_YEARLY_PRICE_ID after they were added to
+ *  a Preview environment and it was redeployed, when "Stripe is not
+ *  configured" persisted anyway. `stripeSecretPresent` reflects the value
+ *  `stripe` above was actually constructed from at module load (not a
+ *  fresh re-read), which is itself diagnostic: if this endpoint later shows
+ *  the var present but checkout still fails the same way, the var arrived
+ *  too late for THIS running instance (e.g. a cached build reused an old
+ *  env snapshot) rather than being genuinely missing. Read fresh from
+ *  process.env for the other three, none of which this module caches. See
+ *  app/api/payments/debug/route.ts and the checkout route's 500 body. */
+export function stripeEnvDiagnostics(): {
+  stripeSecretPresent: boolean;
+  monthlyPricePresent: boolean;
+  yearlyPricePresent: boolean;
+  appUrlPresent: boolean;
+} {
+  return {
+    stripeSecretPresent: !!stripe,
+    monthlyPricePresent: Boolean(process.env.STRIPE_MONTHLY_PRICE_ID),
+    yearlyPricePresent: Boolean(process.env.STRIPE_YEARLY_PRICE_ID),
+    appUrlPresent: Boolean(process.env.NEXT_PUBLIC_APP_URL),
+  };
+}
+
 /**
  * Create a Stripe checkout session for subscription
  */

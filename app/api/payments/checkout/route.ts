@@ -10,6 +10,7 @@ import {
   getOrCreateCustomer,
   planById,
   priceIdForPlan,
+  stripeEnvDiagnostics,
 } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
@@ -120,9 +121,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ url: session.url });
   } catch (error) {
     console.error('Error creating checkout session:', error);
-    return NextResponse.json(
-      { error: 'Internal server error', message: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    // TEMPORARY: attach the same presence-only booleans as
+    // /api/payments/debug, but only for this specific failure — a normal
+    // 500 (bad customer id, Stripe API hiccup, etc.) doesn't need env-var
+    // noise attached to it. See lib/stripe.ts's stripeEnvDiagnostics().
+    const body: Record<string, unknown> = { error: 'Internal server error', message };
+    if (message === 'Stripe is not configured') Object.assign(body, stripeEnvDiagnostics());
+    return NextResponse.json(body, { status: 500 });
   }
 }
