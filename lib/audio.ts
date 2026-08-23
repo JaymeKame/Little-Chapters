@@ -486,7 +486,7 @@ export function welcomeLine(
 /* ── Ambience / music / UI sound (asset-based; silent if asset missing) ─ */
 
 const AUDIO_VOLUMES = {
-  theme: 0.045,
+  theme: 0.025,
   ambience: 0.03,
   music: 0.18,
   ui: 0.28,

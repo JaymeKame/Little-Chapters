@@ -874,7 +874,20 @@ export default function ReadPage() {
     practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
     setPhase('correction');
     duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why; every rung ducks now, not just the speaking ones
-    if (next === 3) {
+    if (next < 3 && canTeachWithSlider(word, stage) !== null) {
+      // This path previously waited for slider completion before speaking,
+      // so a grader-flagged mispronunciation entered correction visibly but
+      // could remain silent. Speak once as correction begins through the
+      // unified ElevenLabs/Web Speech path; slider completion only unlocks
+      // the child's retry and must not duplicate the utterance.
+      setSpeaking(true);
+      speakPrompt(word, {
+        onEnd: () => {
+          if (disposedRef.current) return;
+          setSpeaking(false);
+        },
+      });
+    } else if (next === 3) {
       pageAssistedRef.current = true;
       setSpeaking(true);
       speakPrompt(rungLine(3, { word, sentence: page.text, stage }), {
@@ -1501,18 +1514,9 @@ export default function ReadPage() {
                 word={tricky}
                 segments={slideSegments}
                 onComplete={() => {
-                  setSpeaking(true);
-                  speakPrompt(tricky, {
-                    onEnd: () => {
-                      if (disposedRef.current) return;
-                      setSpeaking(false);
-                      // Only NOW is it "the child's turn" — the mic button
-                      // stays disabled until the blended word has actually
-                      // finished playing, so sliding + hearing the blend
-                      // visibly precedes retrying aloud.
-                      setHelpDone(true);
-                    },
-                  });
+                  // The correction was spoken exactly once on ladder entry.
+                  // Completing the slider now hands the turn to the child.
+                  setHelpDone(true);
                 }}
               />
             ) : (

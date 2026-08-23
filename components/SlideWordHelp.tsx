@@ -3,7 +3,8 @@
 /* The help ladder's slide-through word help for a SEGMENTABLE word: the
  * child drags one handle left to right across the tricky word's graphemes
  * (segmentWord() in lib/help-ladder.ts), one coloured segment per grapheme,
- * then hears the whole word blended. Shown as soon as the word first becomes
+ * while the tutor speaks the whole-word correction on entry. Shown as soon
+ * as the word first becomes
  * tricky (rung 1) — see app/read/page.tsx's enterOrEscalateLadder for why a
  * second failure on an already-slid word skips straight to rung 3 rather
  * than repeating this. AudioWordHelp is its sibling for words segmentWord()
@@ -46,16 +47,12 @@ export function SlideWordHelp({
   segments,
   onComplete,
 }: {
-  /** The tricky word, exactly as it will be sent to speakPrompt() on
-   *  completion — audio only, never rendered as text here. */
+  /** The tricky word used for the accessible slider label. The parent
+   *  correction state owns its single speakPrompt() call. */
   word: string;
   segments: WordSegment[];
-  /** Called exactly once, the first time the child reaches the final
-   *  segment. The caller owns starting/ending `speaking` state around its
-   *  own speakPrompt(word) call — this component never touches it directly,
-   *  so the existing `phase === 'correction' && speaking` branch keeps
-   *  hiding the mic/keep-going buttons during the blend exactly as it
-   *  already does for rung 2/3's own lines. */
+  /** Called exactly once the first time the child reaches the final segment;
+   *  the parent uses it to unlock the child's retry after correction help. */
   onComplete: () => void;
 }) {
   const [value, setValue] = useState(0);

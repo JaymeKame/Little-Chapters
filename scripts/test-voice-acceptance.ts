@@ -137,13 +137,23 @@ async function main() {
     }
   }
 
-  console.log('\n=== Item 5: Slider/correction speech (forced via ?slideDemo) uses ElevenLabs ===');
+  console.log('\n=== Item 5: Entering slider correction speaks once through ElevenLabs ===');
   {
     const page2 = await successCtx.newPage();
     await seedProfile(page2);
     await page2.goto(`${BASE_URL}/read?slideDemo=1`);
     await page2.waitForSelector('input[type="range"]', { timeout: 15000 });
-    const mark = await page2.evaluate(() => (window as any).__voiceDebug?.().recent.length ?? 0);
+    await page2.waitForFunction(
+      () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.provider === 'elevenlabs'),
+      { timeout: 8000 },
+    );
+    const correctionEvents: VoiceEvent[] = await page2.evaluate(
+      () => (window as any).__voiceDebug?.().recent ?? [],
+    );
+    const correctionRequests = correctionEvents.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
+    if (correctionRequests.length === 1) ok('grader/help-state entry called the unified ElevenLabs speech path exactly once');
+    else fail('correction entry did not produce exactly one ElevenLabs request', JSON.stringify(correctionEvents));
+
     const slider = page2.locator('input[type="range"]');
     const box = await slider.boundingBox();
     if (box) {
@@ -157,11 +167,12 @@ async function main() {
         el.dispatchEvent(new Event('change', { bubbles: true }));
       });
       await page2.waitForTimeout(700);
-      const debug = await page2.evaluate(() => (window as any).__voiceDebug?.());
-      const newEvents: VoiceEvent[] = debug.recent.slice(mark);
-      const hit = newEvents.find((e) => e.provider === 'elevenlabs' && !('fallback' in e));
-      if (hit) ok('SlideWordHelp onComplete (slider blend) spoke via ElevenLabs');
-      else fail('SlideWordHelp onComplete did not produce an ElevenLabs success entry', JSON.stringify(newEvents));
+      const afterSlide: VoiceEvent[] = await page2.evaluate(
+        () => (window as any).__voiceDebug?.().recent ?? [],
+      );
+      const afterSlideRequests = afterSlide.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
+      if (afterSlideRequests.length === 1) ok('finishing the slider did not duplicate the correction utterance');
+      else fail('slider completion duplicated or lost correction speech', JSON.stringify(afterSlide));
     } else {
       fail('could not locate the slider control to drag');
     }
