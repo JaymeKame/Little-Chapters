@@ -36,6 +36,7 @@ import { wasChapterCompleted } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
 import {
   pauseForBackground,
+  primeTutorAudio,
   playHomeSound,
   playTheme,
   prepareStoryAudio,
@@ -211,6 +212,9 @@ export default function ChildHomePage() {
       router.push('/unlock');
       return;
     }
+    // Reuse this existing child gesture to unlock iOS audio output before
+    // asynchronous tutoring speech begins on the reading screen.
+    primeTutorAudio();
     // Presentation-only: compress the button, nudge the background, fade the
     // UI, THEN navigate — route/navigation logic is unchanged.
     playHomeSound('play.mp3');
@@ -371,4 +375,3 @@ export default function ChildHomePage() {
     </div>
   );
 }
-

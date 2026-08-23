@@ -80,6 +80,7 @@ export interface LastUtteranceDebug {
   voiceId: string | null;
   modelId: string | null;
   ts: number;
+  playbackStarted?: boolean;
 }
 let _lastUtterance: LastUtteranceDebug | null = null;
 
@@ -152,6 +153,51 @@ function withTerminalPunctuation(text: string): string {
 /** Module-level handle for a currently-playing ElevenLabs audio clip so
  *  stopSpeaking() can cancel it synchronously. */
 let _elevenLabsEl: HTMLAudioElement | null = null;
+let _tutorPlaybackEl: HTMLAudioElement | null = null;
+let _audioPrimed = false;
+let _microphoneActive = false;
+let _microphoneReleasedAt = 0;
+let _lastAudioLifecycleEvent = 'module-loaded';
+const MOBILE_OUTPUT_HANDOFF_MS = 120;
+const SILENT_WAV_DATA_URI = 'data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQgAAACAgICAgICA';
+
+function tutorPlaybackElement(): HTMLAudioElement {
+  if (_tutorPlaybackEl) return _tutorPlaybackEl;
+  const el = new Audio();
+  el.preload = 'auto';
+  el.setAttribute('playsinline', '');
+  _tutorPlaybackEl = el;
+  return el;
+}
+
+/** Called synchronously from existing child gestures. A silent PCM clip
+ * unlocks the reusable output element on iOS without adding audible UI. */
+export function primeTutorAudio(): void {
+  if (typeof window === 'undefined' || _audioPrimed) return;
+  try {
+    const el = tutorPlaybackElement();
+    el.muted = false;
+    el.src = SILENT_WAV_DATA_URI;
+    const played = el.play();
+    _lastAudioLifecycleEvent = 'prime-requested';
+    void played.then(() => {
+      el.pause();
+      el.currentTime = 0;
+      _audioPrimed = true;
+      _lastAudioLifecycleEvent = 'prime-succeeded';
+    }).catch((err) => {
+      _lastAudioLifecycleEvent = `prime-rejected:${err instanceof Error ? err.name : 'unknown'}`;
+    });
+  } catch (err) {
+    _lastAudioLifecycleEvent = `prime-failed:${err instanceof Error ? err.name : 'unknown'}`;
+  }
+}
+
+export function setTutorMicrophoneActive(active: boolean): void {
+  _microphoneActive = active;
+  if (!active) _microphoneReleasedAt = Date.now();
+  _lastAudioLifecycleEvent = active ? 'microphone-active' : 'microphone-released';
+}
 
 /** Bumped on every speakPrompt() call AND every stopSpeaking() call. A
  *  _speakElevenLabs() call captures the value at its own start and checks it
@@ -169,10 +215,13 @@ let _elevenLabsEl: HTMLAudioElement | null = null;
  *  abort). */
 let _speechGeneration = 0;
 type SpeechPriority = 'normal' | 'correction';
+type SpeechOptions = { rate?: number; pitch?: number; onEnd?: () => void; priority?: SpeechPriority; identity?: string };
 type ActiveSpeech = { token: number; priority: SpeechPriority; finish: (notifyCaller: boolean) => void };
 let _activeSpeech: ActiveSpeech | null = null;
 let _speechToken = 0;
 const _issuedCorrectionIds = new Set<string>();
+let _activeCorrectionReplay: { text: string; opts: SpeechOptions } | null = null;
+let _interruptedCorrection: { text: string; opts: SpeechOptions } | null = null;
 
 /** In-flight ElevenLabs request, if any — aborted whenever a newer
  *  speakPrompt() call or an explicit stopSpeaking() supersedes it, so a slow
@@ -246,27 +295,46 @@ function _speakElevenLabs(
     // from.
     if (myGeneration !== _speechGeneration) return;
     const url = URL.createObjectURL(blob);
-    const el = new Audio(url);
+    const el = tutorPlaybackElement();
+    el.muted = false;
+    el.src = url;
     _elevenLabsEl = el;
     let settled = false;
     const cleanup = () => {
       URL.revokeObjectURL(url);
       if (_elevenLabsEl === el) _elevenLabsEl = null;
     };
-    el.addEventListener('ended', () => {
+    el.onended = () => {
       if (settled) return;
       settled = true;
       cleanup();
       opts?.onEnd?.();
-    }, { once: true });
+    };
     const playbackFallback = (reason: unknown) => {
       if (settled || myGeneration !== _speechGeneration) return;
       settled = true;
       cleanup();
       fallback(reason, false);
     };
-    el.addEventListener('error', () => playbackFallback(new Error('ElevenLabs audio playback failed')), { once: true });
-    void el.play().catch(playbackFallback);
+    el.onerror = () => playbackFallback(new Error('ElevenLabs audio playback failed'));
+    const handoffWait = Math.max(0, MOBILE_OUTPUT_HANDOFF_MS - (Date.now() - _microphoneReleasedAt));
+    const startPlayback = () => {
+      if (settled || myGeneration !== _speechGeneration) return;
+      _lastAudioLifecycleEvent = 'elevenlabs-play-requested';
+      void el.play().then(() => {
+        _audioPrimed = true;
+        _lastAudioLifecycleEvent = 'elevenlabs-play-started';
+        if (myGeneration === _speechGeneration && _lastUtterance) {
+          _lastUtterance = { ..._lastUtterance, playedProvider: 'elevenlabs', playbackStarted: true };
+        }
+        voiceLog({ provider: 'elevenlabs', playbackStarted: true, chars: text.length });
+      }).catch((err) => {
+        _lastAudioLifecycleEvent = `elevenlabs-play-rejected:${err instanceof Error ? err.name : 'unknown'}`;
+        playbackFallback(err);
+      });
+    };
+    if (_microphoneActive || handoffWait > 0) setTimeout(startPlayback, Math.max(handoffWait, MOBILE_OUTPUT_HANDOFF_MS));
+    else startPlayback();
   };
 
   const cached = _cacheGet(text);
@@ -418,6 +486,7 @@ function _speakWebSpeech(
     const u = new SpeechSynthesisUtterance(text);
     u.rate = opts?.rate ?? 0.95; // slightly slower — early readers, not adults
     u.pitch = opts?.pitch ?? 1.05;
+    u.onstart = () => { _lastAudioLifecycleEvent = 'web-speech-started'; };
     if (opts?.onEnd) {
       u.onend = opts.onEnd;
       u.onerror = opts.onEnd; // blocked/unsupported mid-utterance — still clear the "speaking" state
@@ -430,7 +499,7 @@ function _speakWebSpeech(
 
 export function speakPrompt(
   text: string,
-  opts?: { rate?: number; pitch?: number; onEnd?: () => void; priority?: SpeechPriority; identity?: string },
+  opts?: SpeechOptions,
 ): boolean {
   if (typeof window === 'undefined') return false;
   const priority = opts?.priority ?? 'normal';
@@ -455,12 +524,18 @@ export function speakPrompt(
   const finish = (notifyCaller: boolean) => {
     if (finished) return;
     finished = true;
-    if (_activeSpeech?.token === token) _activeSpeech = null;
+    if (_activeSpeech?.token === token) {
+      _activeSpeech = null;
+      if (priority === 'correction') _activeCorrectionReplay = null;
+    }
     applyAmbiencePriority();
     if (notifyCaller) opts?.onEnd?.();
   };
   _activeSpeech = { token, priority, finish };
-  if (priority === 'correction' && opts?.identity) _issuedCorrectionIds.add(opts.identity);
+  if (priority === 'correction') {
+    if (opts?.identity) _issuedCorrectionIds.add(opts.identity);
+    _activeCorrectionReplay = { text, opts: { ...opts } };
+  }
   applyAmbiencePriority(); // duck BEFORE cache lookup/network TTS begins
   if (previous) previous.finish(false);
 
@@ -513,6 +588,8 @@ export function stopSpeaking(): void {
   }
   const active = _activeSpeech;
   _activeSpeech = null;
+  _activeCorrectionReplay = null;
+  _interruptedCorrection = null;
   active?.finish(false);
   applyAmbiencePriority();
 }
@@ -614,10 +691,21 @@ export function prepareStoryAudio(theme: string | null | undefined): void {
 }
 
 export function playTheme(): void {
+  resumeInterruptedCorrection();
   if (!themeEl) return;
   if (typeof document !== 'undefined' && document.hidden) return; // see speakPrompt()'s guard for why
   themeEl.volume = (ducked || speechHasPriority()) ? AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.theme;
   void themeEl.play().then(() => audioLog(`theme -> ${themeAsset?.replace('/audio/', '').replace('.mp3', '')}`)).catch(() => {});
+}
+
+function resumeInterruptedCorrection(): void {
+  if (typeof document !== 'undefined' && document.hidden) return;
+  const pending = _interruptedCorrection;
+  if (!pending) return;
+  _interruptedCorrection = null;
+  if (pending.opts.identity) _issuedCorrectionIds.delete(pending.opts.identity);
+  _lastAudioLifecycleEvent = 'correction-resumed-after-visibility';
+  speakPrompt(pending.text, pending.opts);
 }
 
 export function stopTheme(): void {
@@ -709,14 +797,18 @@ export function restoreAmbience(): void {
 }
 
 /** Tab/app backgrounded (visibilitychange -> hidden, or pagehide): pause
- *  every playing track and cancel speech immediately. Deliberately does NOT
+ *  every playing track. A priority correction is retained for one replay on
+ *  foreground; ordinary narration is cancelled. Deliberately does NOT
  *  clear themeEl/ambienceEl/musicEl — that would drop the loaded asset and
- *  force a reload on return. Also deliberately has no matching "resume"
- *  counterpart here: whether anything should come back is a decision only
- *  the current page/phase can make (see each page's visibilitychange
- *  handler), never this module guessing on its own. */
+ *  force a reload on return. The page's existing foreground playTheme()
+ *  call resumes only retained priority correction speech. */
 export function pauseForBackground(): void {
+  const correction = _activeSpeech?.priority === 'correction' ? _activeCorrectionReplay : null;
   stopSpeaking();
+  if (correction) {
+    _interruptedCorrection = correction;
+    _lastAudioLifecycleEvent = 'correction-paused-for-visibility';
+  }
   for (const el of [themeEl, ambienceEl, musicEl]) {
     if (!el) continue;
     const timer = fadeTimers.get(el);
@@ -853,6 +945,16 @@ if (typeof window !== 'undefined') {
     // LastUtteranceDebug's doc comment. null until the first utterance
     // resolves.
     lastUtterance: _lastUtterance ? { ..._lastUtterance } : null,
+    mobileAudio: {
+      mobile: /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent),
+      userAgent: navigator.userAgent,
+      visibility: document.visibilityState,
+      audioPrimed: _audioPrimed,
+      playbackStarted: _lastAudioLifecycleEvent === 'elevenlabs-play-started',
+      microphoneActive: _microphoneActive,
+      lastLifecycleEvent: _lastAudioLifecycleEvent,
+      interruptedCorrectionPending: _interruptedCorrection !== null,
+    },
     cacheSize: _elevenLabsCache.size,
     elevenLabsPlaying: _elevenLabsEl != null && !_elevenLabsEl.paused,
     elevenLabsRequestInFlight: _elevenLabsAbort != null,
@@ -861,4 +963,3 @@ if (typeof window !== 'undefined') {
     };
   };
 }
-
