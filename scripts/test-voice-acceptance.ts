@@ -141,8 +141,23 @@ async function main() {
   {
     const page2 = await successCtx.newPage();
     await seedProfile(page2);
+    let releaseCorrection!: () => void;
+    const correctionRelease = new Promise<void>((resolve) => { releaseCorrection = resolve; });
+    await page2.route('**/api/speech/model', async (route: any) => {
+      await correctionRelease;
+      await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
+    });
     await page2.goto(`${BASE_URL}/read?slideDemo=1`);
     await page2.waitForSelector('input[type="range"]', { timeout: 15000 });
+    await page2.waitForFunction(() => (window as any).__audioDebug?.().speechActive === true, { timeout: 5000 });
+    await page2.waitForTimeout(250); // allow the deliberate 200ms duck fade to settle
+    const pendingAudio = await page2.evaluate(() => (window as any).__audioDebug?.());
+    if (pendingAudio.theme && pendingAudio.theme.volume <= 0.0012) {
+      ok(`theme ducked before correction TTS response (volume=${pendingAudio.theme.volume})`);
+    } else {
+      fail('theme was not near-silent while correction TTS was pending', JSON.stringify(pendingAudio));
+    }
+    releaseCorrection();
     await page2.waitForFunction(
       () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.provider === 'elevenlabs'),
       { timeout: 8000 },
@@ -177,6 +192,23 @@ async function main() {
       fail('could not locate the slider control to drag');
     }
     await page2.close();
+  }
+
+  console.log('\n=== Item 5b: Unsegmentable correction entry also speaks exactly once ===');
+  {
+    const page2b = await successCtx.newPage();
+    await seedProfile(page2b);
+    await page2b.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
+    await page2b.waitForSelector('.lc-audio-help', { timeout: 15000 });
+    await page2b.waitForFunction(
+      () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.provider === 'elevenlabs'),
+      { timeout: 8000 },
+    );
+    const events: VoiceEvent[] = await page2b.evaluate(() => (window as any).__voiceDebug?.().recent ?? []);
+    const requests = events.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
+    if (requests.length === 1) ok('unsegmentable correction transition called unified speech exactly once');
+    else fail('unsegmentable correction did not issue exactly one speech request', JSON.stringify(events));
+    await page2b.close();
   }
 
   console.log('\n=== Item 6: Phrase retry (?fixtureTake, whole take judged unreliable) uses ElevenLabs ===');
