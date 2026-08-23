@@ -26,7 +26,7 @@
  * obvious from a static circle alone. Stops the instant a real drag starts. */
 
 import { useEffect, useRef, useState } from 'react';
-import { playUISound } from '@/lib/audio';
+import { playUISound, primeTutorAudio } from '@/lib/audio';
 import type { WordSegment } from '@/lib/help-ladder';
 
 const SEGMENT_COLORS = ['var(--leaf)', 'var(--sky)', 'var(--blue)', 'var(--sunshine)'];
@@ -81,6 +81,7 @@ export function SlideWordHelp({
   }, [word]);
 
   function handleChange(next: number) {
+    primeTutorAudio(); // existing slider gesture re-establishes mobile output permission
     // With step={1}, every onChange already represents landing on a genuinely
     // new segment (the browser only fires onChange at integer boundaries) —
     // no extra "did this actually change" bookkeeping needed. Skip only the

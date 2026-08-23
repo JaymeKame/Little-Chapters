@@ -49,6 +49,7 @@ import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '@/
 import {
   duckAmbience,
   pauseForBackground,
+  primeTutorAudio,
   playCliffhanger,
   playListeningStart,
   playReadingCue,
@@ -619,6 +620,9 @@ export default function ReadPage() {
   }
 
   async function beginListening(referenceText: string) {
+    // beginListening is reached directly from the child's mic tap. Prime the
+    // shared tutor output before getUserMedia moves iOS into record mode.
+    primeTutorAudio();
     setError(null);
     startedReadingRef.current = true;
     liveRef.current = createLiveProgress(referenceText);

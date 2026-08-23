@@ -211,6 +211,42 @@ async function main() {
     await page2b.close();
   }
 
+  console.log('\n=== Item 5c: Mobile media-play rejection falls back instead of marking success ===');
+  {
+    const mobileCtx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
+    });
+    await mobileCtx.route('**/api/speech/model', async (route: any) => {
+      await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
+    });
+    const mobilePage = await mobileCtx.newPage();
+    await mobilePage.addInitScript(() => {
+      const realPlay = HTMLMediaElement.prototype.play;
+      let rejectedTutorBlob = false;
+      HTMLMediaElement.prototype.play = function () {
+        if (!rejectedTutorBlob && this.src.startsWith('blob:')) {
+          rejectedTutorBlob = true;
+          return Promise.reject(new DOMException('mobile autoplay blocked', 'NotAllowedError'));
+        }
+        return realPlay.call(this);
+      };
+    });
+    await seedProfile(mobilePage);
+    await mobilePage.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
+    await mobilePage.waitForFunction(
+      () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.fallback === 'web-speech'),
+      { timeout: 8000 },
+    );
+    const mobileDebug = await mobilePage.evaluate(() => (window as any).__voiceDebug?.());
+    if (mobileDebug.lastUtterance?.fallbackOccurred && mobileDebug.lastUtterance?.playedProvider === 'web-speech') {
+      ok('mobile Audio.play() rejection produced Web Speech fallback');
+    } else {
+      fail('mobile playback rejection was incorrectly treated as successful ElevenLabs playback', JSON.stringify(mobileDebug));
+    }
+    await mobileCtx.close();
+  }
+
   console.log('\n=== Item 6: Phrase retry (?fixtureTake, whole take judged unreliable) uses ElevenLabs ===');
   {
     const page3 = await successCtx.newPage();
