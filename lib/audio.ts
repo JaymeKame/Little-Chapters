@@ -83,6 +83,13 @@ export interface LastUtteranceDebug {
   playbackStarted?: boolean;
 }
 let _lastUtterance: LastUtteranceDebug | null = null;
+type TransportDebug = {
+  requestProvider: 'elevenlabs' | 'web-speech'; httpStatus: number | null; bytesReceived: number;
+  audioLoaded: boolean; playAttempt1: boolean; playAttempt1Error: string | null;
+  playAttempt2: boolean; playAttempt2Error: string | null; playbackStarted: boolean;
+  finalProvider: 'elevenlabs' | 'web-speech' | null; fallbackOccurred: boolean; fallbackReason: string | null;
+};
+let _transportDebug: TransportDebug | null = null;
 
 function voiceLog(event: Record<string, unknown>): void {
   const entry = { ...event, ts: Date.now() };
@@ -166,6 +173,11 @@ function tutorPlaybackElement(): HTMLAudioElement {
   const el = new Audio();
   el.preload = 'auto';
   el.setAttribute('playsinline', '');
+  // WebKit is more reliable when the reusable media element remains in the
+  // document. Keep it non-interactive and visually absent, not display:none.
+  el.setAttribute('aria-hidden', 'true');
+  Object.assign(el.style, { position: 'fixed', width: '1px', height: '1px', opacity: '0', pointerEvents: 'none' });
+  document.body?.appendChild(el);
   _tutorPlaybackEl = el;
   return el;
 }
@@ -219,7 +231,7 @@ type SpeechOptions = { rate?: number; pitch?: number; onEnd?: () => void; priori
 type ActiveSpeech = { token: number; priority: SpeechPriority; finish: (notifyCaller: boolean) => void };
 let _activeSpeech: ActiveSpeech | null = null;
 let _speechToken = 0;
-const _issuedCorrectionIds = new Set<string>();
+const _correctionDelivery = new Map<string, 'requested' | 'started' | 'completed'>();
 let _activeCorrectionReplay: { text: string; opts: SpeechOptions } | null = null;
 let _interruptedCorrection: { text: string; opts: SpeechOptions } | null = null;
 
@@ -269,7 +281,7 @@ function _cacheSet(key: string, blob: Blob): void {
  *  Falls back to Web Speech API on any failure so callers are never blocked. */
 function _speakElevenLabs(
   text: string,
-  opts?: { onEnd?: () => void },
+  opts?: { onStart?: () => void; onEnd?: () => void },
 ): void {
   // This call supersedes anything still in flight — bump the generation
   // before doing anything else so a stale fetch/cache callback below (from a
@@ -297,7 +309,6 @@ function _speakElevenLabs(
     const url = URL.createObjectURL(blob);
     const el = tutorPlaybackElement();
     el.muted = false;
-    el.src = url;
     _elevenLabsEl = el;
     let settled = false;
     const cleanup = () => {
@@ -316,33 +327,105 @@ function _speakElevenLabs(
       cleanup();
       fallback(reason, false);
     };
-    el.onerror = () => playbackFallback(new Error('ElevenLabs audio playback failed'));
     const handoffWait = Math.max(0, MOBILE_OUTPUT_HANDOFF_MS - (Date.now() - _microphoneReleasedAt));
-    const startPlayback = () => {
-      if (settled || myGeneration !== _speechGeneration) return;
-      _lastAudioLifecycleEvent = 'elevenlabs-play-requested';
-      void el.play().then(() => {
-        _audioPrimed = true;
-        _lastAudioLifecycleEvent = 'elevenlabs-play-started';
-        if (myGeneration === _speechGeneration && _lastUtterance) {
-          _lastUtterance = { ..._lastUtterance, playedProvider: 'elevenlabs', playbackStarted: true };
-        }
-        voiceLog({ provider: 'elevenlabs', playbackStarted: true, chars: text.length });
-      }).catch((err) => {
-        _lastAudioLifecycleEvent = `elevenlabs-play-rejected:${err instanceof Error ? err.name : 'unknown'}`;
-        playbackFallback(err);
+    const errorText = (err: unknown) => err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+
+    const loadBlob = () => new Promise<boolean>((resolve, reject) => {
+      let done = false;
+      const finish = (err?: Error, loaded = false) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        el.oncanplay = null;
+        el.onloadeddata = null;
+        el.onerror = null;
+        if (err) reject(err); else resolve(loaded);
+      };
+      // Some iOS versions do not emit readiness until play() is requested.
+      // Record that fact, but still attempt playback rather than degrading.
+      const timer = setTimeout(() => finish(undefined, false), 1200);
+      el.oncanplay = () => finish(undefined, true);
+      el.onloadeddata = () => finish(undefined, true);
+      el.onerror = () => finish(new Error(el.error?.message || 'audio decode/load failed'));
+      el.pause();
+      el.removeAttribute('src');
+      el.load();
+      el.src = url;
+      el.load();
+    });
+
+    const playAttempt = async (attempt: 1 | 2) => {
+      if (settled || myGeneration !== _speechGeneration) throw new Error('speech superseded');
+      if (_transportDebug) {
+        if (attempt === 1) _transportDebug.playAttempt1 = true;
+        else _transportDebug.playAttempt2 = true;
+      }
+      const loaded = await loadBlob();
+      if (_transportDebug) _transportDebug.audioLoaded = loaded;
+      await new Promise<void>((resolve, reject) => {
+        let started = false;
+        const timer = setTimeout(() => reject(new Error('playback start timeout')), 4000);
+        el.onplaying = () => {
+          if (started) return;
+          started = true;
+          clearTimeout(timer);
+          resolve();
+        };
+        el.onerror = () => {
+          clearTimeout(timer);
+          reject(new Error(el.error?.message || 'audio playback error'));
+        };
+        void el.play().catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
       });
+      _audioPrimed = true;
+      _lastAudioLifecycleEvent = `elevenlabs-play-attempt-${attempt}-started`;
+      if (_transportDebug) {
+        _transportDebug.playbackStarted = true;
+        _transportDebug.finalProvider = 'elevenlabs';
+      }
+      if (_lastUtterance) _lastUtterance = { ..._lastUtterance, playedProvider: 'elevenlabs', playbackStarted: true };
+      opts?.onStart?.();
+      voiceLog({ provider: 'elevenlabs', playbackStarted: true, playAttempt: attempt, chars: text.length });
     };
-    if (_microphoneActive || handoffWait > 0) setTimeout(startPlayback, Math.max(handoffWait, MOBILE_OUTPUT_HANDOFF_MS));
-    else startPlayback();
+
+    const recoverAndRetry = async (firstError: unknown) => {
+      if (_transportDebug) _transportDebug.playAttempt1Error = errorText(firstError);
+      _lastAudioLifecycleEvent = `elevenlabs-play-attempt-1-rejected:${errorText(firstError)}`;
+      // Do not degrade on the first mobile media-session/autoplay rejection.
+      // Wait for recording teardown, reload the SAME blob on the SAME
+      // gesture-primed attached element, then make exactly one retry.
+      const wait = Math.max(MOBILE_OUTPUT_HANDOFF_MS, MOBILE_OUTPUT_HANDOFF_MS - (Date.now() - _microphoneReleasedAt));
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      try {
+        await playAttempt(2);
+      } catch (secondError) {
+        if (_transportDebug) _transportDebug.playAttempt2Error = errorText(secondError);
+        _lastAudioLifecycleEvent = `elevenlabs-play-attempt-2-rejected:${errorText(secondError)}`;
+        playbackFallback(new Error(`playback retry failed: ${errorText(secondError)} (first: ${errorText(firstError)})`));
+      }
+    };
+
+    const startPlayback = async () => {
+      try {
+        await playAttempt(1);
+      } catch (firstError) {
+        await recoverAndRetry(firstError);
+      }
+    };
+    if (_microphoneActive || handoffWait > 0) setTimeout(() => void startPlayback(), Math.max(handoffWait, MOBILE_OUTPUT_HANDOFF_MS));
+    else void startPlayback();
   };
 
   const cached = _cacheGet(text);
   if (cached) {
+    if (_transportDebug) _transportDebug.bytesReceived = cached.size;
     voiceLog({ provider: 'elevenlabs', cache: 'hit', chars: text.length });
     _lastUtterance = {
       requestedProvider: 'elevenlabs',
-      playedProvider: 'elevenlabs',
+      playedProvider: null,
       httpStatus: null, // served from cache — no request this time
       fallbackOccurred: false,
       fallbackReason: null,
@@ -376,13 +459,16 @@ function _speakElevenLabs(
       signal: controller.signal,
     })
       .then(async (res) => {
+        if (_transportDebug) _transportDebug.httpStatus = res.status;
         if (!res.ok) {
           const err = new Error(`model route ${res.status}`) as Error & { retryable: boolean; status: number };
           err.retryable = res.status >= 500 && res.status !== 503; // 503 = not configured, static, never worth retrying
           err.status = res.status;
           throw err;
         }
-        return { blob: await res.blob(), status: res.status };
+        const blob = await res.blob();
+        if (_transportDebug) _transportDebug.bytesReceived = blob.size;
+        return { blob, status: res.status };
       })
       .catch((err) => {
         if (err instanceof Error && 'retryable' in err) throw err; // already tagged above
@@ -407,10 +493,15 @@ function _speakElevenLabs(
     const timedOut = err instanceof Error && err.name === 'AbortError';
     const status = err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : null;
     const reason = timedOut ? `timeout (${ELEVENLABS_TIMEOUT_MS}ms)` : err instanceof Error ? err.message : String(err);
+    if (_transportDebug) {
+      _transportDebug.fallbackOccurred = true;
+      _transportDebug.fallbackReason = reason;
+      _transportDebug.finalProvider = 'web-speech';
+    }
     voiceLog({ provider: 'elevenlabs', fallback: 'web-speech', retried: afterRetry, reason, httpStatus: status });
     _lastUtterance = {
       requestedProvider: 'elevenlabs',
-      playedProvider: 'web-speech',
+      playedProvider: null,
       httpStatus: status,
       fallbackOccurred: true,
       fallbackReason: reason,
@@ -428,7 +519,7 @@ function _speakElevenLabs(
       voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, httpStatus: status });
       _lastUtterance = {
         requestedProvider: 'elevenlabs',
-        playedProvider: 'elevenlabs',
+        playedProvider: null,
         httpStatus: status,
         fallbackOccurred: false,
         fallbackReason: null,
@@ -457,7 +548,7 @@ function _speakElevenLabs(
           voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, afterRetry: true, httpStatus: status });
           _lastUtterance = {
             requestedProvider: 'elevenlabs',
-            playedProvider: 'elevenlabs',
+            playedProvider: null,
             httpStatus: status,
             fallbackOccurred: false,
             fallbackReason: null,
@@ -475,7 +566,7 @@ function _speakElevenLabs(
 /** Internal: speak via the browser's Web Speech API (original path). */
 function _speakWebSpeech(
   text: string,
-  opts?: { rate?: number; pitch?: number; onEnd?: () => void },
+  opts?: { rate?: number; pitch?: number; onStart?: () => void; onEnd?: () => void },
 ): void {
   if (typeof window === 'undefined' || !window.speechSynthesis) {
     opts?.onEnd?.();
@@ -486,7 +577,10 @@ function _speakWebSpeech(
     const u = new SpeechSynthesisUtterance(text);
     u.rate = opts?.rate ?? 0.95; // slightly slower — early readers, not adults
     u.pitch = opts?.pitch ?? 1.05;
-    u.onstart = () => { _lastAudioLifecycleEvent = 'web-speech-started'; };
+    u.onstart = () => {
+      _lastAudioLifecycleEvent = 'web-speech-started';
+      opts?.onStart?.();
+    };
     if (opts?.onEnd) {
       u.onend = opts.onEnd;
       u.onerror = opts.onEnd; // blocked/unsupported mid-utterance — still clear the "speaking" state
@@ -513,7 +607,12 @@ export function speakPrompt(
   // immediately and lets provider playback/fallback own the outcome.
   if (typeof document !== 'undefined' && document.hidden && priority !== 'correction') return false;
 
-  if (priority === 'correction' && opts?.identity && _issuedCorrectionIds.has(opts.identity)) return false;
+  if (priority === 'correction' && opts?.identity) {
+    const delivery = _correctionDelivery.get(opts.identity);
+    // An in-flight request or genuinely started/completed model is owned.
+    // A prior request whose playback never started is deliberately retryable.
+    if (delivery === 'started' || delivery === 'completed' || (delivery === 'requested' && _activeCorrectionReplay?.opts.identity === opts.identity)) return false;
+  }
   // Narration and incidental prompts may never supersede a correction that
   // is fetching or playing. A new correction, however, always wins.
   if (_activeSpeech?.priority === 'correction' && priority !== 'correction') return false;
@@ -521,6 +620,7 @@ export function speakPrompt(
   const token = ++_speechToken;
   const previous = _activeSpeech;
   let finished = false;
+  let playbackStarted = false;
   const finish = (notifyCaller: boolean) => {
     if (finished) return;
     finished = true;
@@ -528,19 +628,43 @@ export function speakPrompt(
       _activeSpeech = null;
       if (priority === 'correction') _activeCorrectionReplay = null;
     }
+    if (priority === 'correction' && opts?.identity) {
+      if (playbackStarted) _correctionDelivery.set(opts.identity, 'completed');
+      else _correctionDelivery.delete(opts.identity);
+    }
     applyAmbiencePriority();
     if (notifyCaller) opts?.onEnd?.();
   };
   _activeSpeech = { token, priority, finish };
   if (priority === 'correction') {
-    if (opts?.identity) _issuedCorrectionIds.add(opts.identity);
+    if (opts?.identity) _correctionDelivery.set(opts.identity, 'requested');
     _activeCorrectionReplay = { text, opts: { ...opts } };
   }
   applyAmbiencePriority(); // duck BEFORE cache lookup/network TTS begins
   if (previous) previous.finish(false);
 
   const prompt = withTerminalPunctuation(text);
-  const providerOpts = { rate: opts?.rate, pitch: opts?.pitch, onEnd: () => finish(true) };
+  _transportDebug = {
+    requestProvider: VOICE_PROVIDER === 'web-speech' ? 'web-speech' : 'elevenlabs',
+    httpStatus: null, bytesReceived: 0, audioLoaded: false,
+    playAttempt1: false, playAttempt1Error: null, playAttempt2: false, playAttempt2Error: null,
+    playbackStarted: false, finalProvider: null, fallbackOccurred: false, fallbackReason: null,
+  };
+  const providerOpts = {
+    rate: opts?.rate,
+    pitch: opts?.pitch,
+    onStart: () => {
+      playbackStarted = true;
+      const startedProvider = _transportDebug?.finalProvider ?? (VOICE_PROVIDER === 'web-speech' ? 'web-speech' : 'elevenlabs');
+      if (_lastUtterance) _lastUtterance = { ..._lastUtterance, playedProvider: startedProvider, playbackStarted: true };
+      if (priority === 'correction' && opts?.identity) _correctionDelivery.set(opts.identity, 'started');
+      if (_transportDebug) {
+        _transportDebug.playbackStarted = true;
+        if (!_transportDebug.finalProvider) _transportDebug.finalProvider = VOICE_PROVIDER === 'web-speech' ? 'web-speech' : 'elevenlabs';
+      }
+    },
+    onEnd: () => finish(true),
+  };
 
   // ElevenLabs is the default for every call — NOT gated on a separate
   // "did someone remember to opt in" flag. The only way to skip it is the
@@ -554,7 +678,7 @@ export function speakPrompt(
     voiceLog({ provider: 'web-speech', chars: prompt.length, reason });
     _lastUtterance = {
       requestedProvider: 'web-speech',
-      playedProvider: 'web-speech',
+      playedProvider: null,
       httpStatus: null,
       fallbackOccurred: false,
       fallbackReason: reason,
@@ -703,7 +827,7 @@ function resumeInterruptedCorrection(): void {
   const pending = _interruptedCorrection;
   if (!pending) return;
   _interruptedCorrection = null;
-  if (pending.opts.identity) _issuedCorrectionIds.delete(pending.opts.identity);
+  if (pending.opts.identity) _correctionDelivery.delete(pending.opts.identity);
   _lastAudioLifecycleEvent = 'correction-resumed-after-visibility';
   speakPrompt(pending.text, pending.opts);
 }
@@ -945,6 +1069,21 @@ if (typeof window !== 'undefined') {
     // LastUtteranceDebug's doc comment. null until the first utterance
     // resolves.
     lastUtterance: _lastUtterance ? { ..._lastUtterance } : null,
+    ...(_transportDebug ?? {
+      requestProvider: null, httpStatus: null, bytesReceived: 0, audioLoaded: false,
+      playAttempt1: false, playAttempt1Error: null, playAttempt2: false, playAttempt2Error: null,
+      playbackStarted: false, finalProvider: null, fallbackOccurred: false, fallbackReason: null,
+    }),
+    playedProvider: _lastUtterance?.playedProvider ?? null,
+    mobile: /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent),
+    audioPrimed: _audioPrimed,
+    micActive: _microphoneActive,
+    visibility: document.visibilityState,
+    correctionDelivery: {
+      requested: [..._correctionDelivery.values()].filter((state) => state === 'requested').length,
+      started: [..._correctionDelivery.values()].filter((state) => state === 'started').length,
+      completed: [..._correctionDelivery.values()].filter((state) => state === 'completed').length,
+    },
     mobileAudio: {
       mobile: /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent),
       userAgent: navigator.userAgent,

@@ -35,6 +35,7 @@ function info(label: string): void {
 }
 
 const FAKE_AUDIO_BYTES = Buffer.from([0xff, 0xfb, 0x90, 0x00]);
+const SILENT_WAV_BYTES = Buffer.from('UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQgAAACAgICAgICA', 'base64');
 
 type VoiceEvent = Record<string, unknown>;
 
@@ -211,14 +212,14 @@ async function main() {
     await page2b.close();
   }
 
-  console.log('\n=== Item 5c: Mobile media-play rejection falls back instead of marking success ===');
+  console.log('\n=== Item 5c: First mobile play rejection retries the same ElevenLabs blob ===');
   {
     const mobileCtx = await browser.newContext({
       viewport: { width: 390, height: 844 },
       userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
     });
     await mobileCtx.route('**/api/speech/model', async (route: any) => {
-      await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
+      await route.fulfill({ status: 200, contentType: 'audio/wav', body: SILENT_WAV_BYTES });
     });
     const mobilePage = await mobileCtx.newPage();
     await mobilePage.addInitScript(() => {
@@ -234,15 +235,53 @@ async function main() {
     });
     await seedProfile(mobilePage);
     await mobilePage.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
-    await mobilePage.waitForFunction(
-      () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.fallback === 'web-speech'),
-      { timeout: 8000 },
-    );
+    await mobilePage.waitForFunction(() => (window as any).__voiceDebug?.().playbackStarted === true, { timeout: 10000 });
     const mobileDebug = await mobilePage.evaluate(() => (window as any).__voiceDebug?.());
-    if (mobileDebug.lastUtterance?.fallbackOccurred && mobileDebug.lastUtterance?.playedProvider === 'web-speech') {
-      ok('mobile Audio.play() rejection produced Web Speech fallback');
+    if (mobileDebug.playAttempt1Error?.includes('NotAllowedError') && mobileDebug.playAttempt2 && mobileDebug.finalProvider === 'elevenlabs') {
+      ok('first mobile rejection recovered with one ElevenLabs playback retry');
     } else {
-      fail('mobile playback rejection was incorrectly treated as successful ElevenLabs playback', JSON.stringify(mobileDebug));
+      fail('first mobile rejection did not recover through ElevenLabs retry', JSON.stringify(mobileDebug));
+    }
+    await mobileCtx.close();
+  }
+
+  console.log('\n=== Item 5d: Two mobile play rejections finally use Web Speech ===');
+  {
+    const mobileCtx = await browser.newContext({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148 Safari/604.1' });
+    await mobileCtx.route('**/api/speech/model', async (route: any) => {
+      await route.fulfill({ status: 200, contentType: 'audio/wav', body: SILENT_WAV_BYTES });
+    });
+    const mobilePage = await mobileCtx.newPage();
+    await mobilePage.addInitScript(() => {
+      const realPlay = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        if (this.src.startsWith('blob:')) return Promise.reject(new DOMException('mobile media session blocked', 'AbortError'));
+        return realPlay.call(this);
+      };
+      Object.defineProperty(window.speechSynthesis, 'speak', {
+        configurable: true,
+        value: (utterance: SpeechSynthesisUtterance) => setTimeout(() => utterance.onerror?.(new Event('error') as any), 0),
+      });
+    });
+    await seedProfile(mobilePage);
+    await mobilePage.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
+    await mobilePage.waitForFunction(
+      () => {
+        const debug = (window as any).__voiceDebug?.();
+        return debug?.fallbackOccurred === true && debug?.correctionDelivery?.requested === 0;
+      },
+      { timeout: 10000 },
+    );
+    const debug = await mobilePage.evaluate(() => (window as any).__voiceDebug?.());
+    if (debug.playAttempt1Error && debug.playAttempt2Error && debug.finalProvider === 'web-speech') {
+      ok('Web Speech occurred only after both ElevenLabs playback attempts failed');
+    } else {
+      fail('double playback rejection did not produce the required terminal fallback', JSON.stringify(debug));
+    }
+    if (debug.correctionDelivery?.requested === 0 && debug.correctionDelivery?.started === 0) {
+      ok('complete playback failure did not poison correction dedupe state');
+    } else {
+      fail('failed correction remained permanently deduped', JSON.stringify(debug.correctionDelivery));
     }
     await mobileCtx.close();
   }
