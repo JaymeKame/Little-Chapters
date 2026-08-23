@@ -238,6 +238,7 @@ export default function ReadPage() {
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rungRef = useRef<0 | 1 | 2 | 3>(0); // logic source of truth; `rung` state above mirrors it for render
+  const correctionTargetRef = useRef(0); // stable, monotonic identity for each ladder target/attempt
   const awardedRef = useRef(false); // XP granted for the CURRENT page (survives retry-take errors)
   const practicedRef = useRef<Map<string, string>>(new Map());
   // Words the FIRST whole-page take flagged, beyond the one currently in the
@@ -474,32 +475,26 @@ export default function ReadPage() {
     };
   }, [profile, authLoading, user]);
 
-  // Ownership: this effect is the single place that decides theme's target
-  // volume from product state, so nothing else independently ducks/restores
-  // it (the synchronous calls added in beginListening/replayCurrentSentence/
-  // enterOrEscalateLadder below exist only to remove the one-render-tick lag
-  // before this effect would otherwise catch up — they compute the exact
-  // same target this effect does, never a competing one).
+  // Product-state ducking for the live mic/scoring wait. Speech itself is
+  // owned authoritatively inside speakPrompt(), which acquires its audio
+  // priority before provider/network work and will not restore while another
+  // speech token owns it. The synchronous calls below remove render-tick lag.
   //
   // Scoring is deliberately grouped with listening, not partially restored:
   // the wait is typically sub-second to a few seconds, and briefly turning
   // theme back up only to duck it again a moment later for
   // correction/celebrate would read as a glitch, not a considered beat.
   //
-  // Correction stays ducked for its ENTIRE duration, not just while
-  // `speaking` — the slide-through help interaction (segmentWord()) plays a
-  // tick per grapheme and a whole-word TTS blend through stretches of
-  // correction where speaking is false, and instructional audio must always
-  // be intelligible over the theme, per product rule. This was previously
-  // fine to leave un-ducked because the old static-card correction UI had no
-  // audio of its own outside the rung 2/3 speakPrompt calls (which already
-  // duck synchronously, above).
+  // Once correction speech ends, correction UI may remain for the slider or
+  // retry; at that point theme returns only to its very low baseline. It is
+  // near-silent from the instant speech is requested through provider retry,
+  // fallback and playback, rather than for the correction screen forever.
   useEffect(() => {
     if (phase === 'chapter-end') {
       // The cliffhanger cue (playCliffhanger(), effect below) owns this
       // moment — reading theme must not continue under it, not even ducked.
       stopTheme();
-    } else if (phase === 'listening' || phase === 'scoring' || phase === 'correction' || speaking) {
+    } else if (phase === 'listening' || phase === 'scoring' || speaking) {
       duckAmbience();
     } else {
       restoreAmbience();
@@ -851,11 +846,9 @@ export default function ReadPage() {
    *  segmentable word, AudioWordHelp otherwise — see the render below) and
    *  offer one more mic attempt; rung 3 reads the whole sentence aloud and
    *  marks the page assisted — see docs/HELP_LADDER_INTEGRATION.md and
-   *  reading-tutor/content/config.json help_template. Rung 2's own
-   *  speakPrompt() line was retired: AudioWordHelp now owns pronouncing the
-   *  word for every rung < 3 an unsegmentable word visits, so a second,
-   *  parent-level utterance here would just race/cancel it (speakPrompt()
-   *  cancels any in-flight utterance before starting a new one). */
+   *  reading-tutor/content/config.json help_template. The transition owns
+   *  the correction utterance for both visual variants so mounting/rendering
+   *  a child component can never be a prerequisite for audible help. */
   function enterOrEscalateLadder(word: string) {
     // A word already shown the slide interaction at rung 1 that still needs
     // help skips the old bare-word rung 2 reveal entirely — the slider
@@ -874,19 +867,25 @@ export default function ReadPage() {
     practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
     setPhase('correction');
     duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why; every rung ducks now, not just the speaking ones
-    if (next < 3 && canTeachWithSlider(word, stage) !== null) {
-      // This path previously waited for slider completion before speaking,
-      // so a grader-flagged mispronunciation entered correction visibly but
-      // could remain silent. Speak once as correction begins through the
-      // unified ElevenLabs/Web Speech path; slider completion only unlocks
-      // the child's retry and must not duplicate the utterance.
+    if (next < 3) {
+      const usesSlider = canTeachWithSlider(word, stage) !== null;
+      const correctionId = `${chapter!.id}:${pageIdx}:${word.toLowerCase()}:${next}:${++correctionTargetRef.current}`;
       setSpeaking(true);
-      speakPrompt(word, {
+      const issued = speakPrompt(word, {
+        priority: 'correction',
+        identity: correctionId,
         onEnd: () => {
           if (disposedRef.current) return;
           setSpeaking(false);
+          // AudioWordHelp has no child-driven completion gesture. Once its
+          // one correction finishes, the retry is ready; the slider path is
+          // still unlocked only by reaching the end of the slider.
+          if (!usesSlider) setHelpDone(true);
         },
       });
+      // `false` means this stable identity was already issued; the existing
+      // request still owns its completion lifecycle.
+      if (!issued) setSpeaking(false);
     } else if (next === 3) {
       pageAssistedRef.current = true;
       setSpeaking(true);
@@ -1527,7 +1526,7 @@ export default function ReadPage() {
               // phoneme cue, never visible slash-notation. Keyed by rung so
               // a second failure re-pronounces fresh rather than sitting on
               // the previous attempt's "your turn" state.
-              <AudioWordHelp key={rung} word={tricky} onComplete={() => setHelpDone(true)} />
+              <AudioWordHelp key={rung} word={tricky} speaking={speaking} ready={helpDone} />
             )
           ) : (
             <div key={pageIdx} className={sentenceLeaving ? 'lc-sentence-out' : 'lc-sentence-in'}>

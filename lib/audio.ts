@@ -168,6 +168,11 @@ let _elevenLabsEl: HTMLAudioElement | null = null;
  *  running (e.g. a cache hit, which is synchronous and has no request to
  *  abort). */
 let _speechGeneration = 0;
+type SpeechPriority = 'normal' | 'correction';
+type ActiveSpeech = { token: number; priority: SpeechPriority; finish: (notifyCaller: boolean) => void };
+let _activeSpeech: ActiveSpeech | null = null;
+let _speechToken = 0;
+const _issuedCorrectionIds = new Set<string>();
 
 /** In-flight ElevenLabs request, if any — aborted whenever a newer
  *  speakPrompt() call or an explicit stopSpeaking() supersedes it, so a slow
@@ -243,13 +248,25 @@ function _speakElevenLabs(
     const url = URL.createObjectURL(blob);
     const el = new Audio(url);
     _elevenLabsEl = el;
+    let settled = false;
     const cleanup = () => {
       URL.revokeObjectURL(url);
       if (_elevenLabsEl === el) _elevenLabsEl = null;
     };
-    el.addEventListener('ended', () => { cleanup(); opts?.onEnd?.(); }, { once: true });
-    el.addEventListener('error', () => { cleanup(); opts?.onEnd?.(); }, { once: true });
-    void el.play().catch(() => { cleanup(); opts?.onEnd?.(); });
+    el.addEventListener('ended', () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      opts?.onEnd?.();
+    }, { once: true });
+    const playbackFallback = (reason: unknown) => {
+      if (settled || myGeneration !== _speechGeneration) return;
+      settled = true;
+      cleanup();
+      fallback(reason, false);
+    };
+    el.addEventListener('error', () => playbackFallback(new Error('ElevenLabs audio playback failed')), { once: true });
+    void el.play().catch(playbackFallback);
   };
 
   const cached = _cacheGet(text);
@@ -392,7 +409,10 @@ function _speakWebSpeech(
   text: string,
   opts?: { rate?: number; pitch?: number; onEnd?: () => void },
 ): void {
-  if (typeof window === 'undefined' || !window.speechSynthesis) return;
+  if (typeof window === 'undefined' || !window.speechSynthesis) {
+    opts?.onEnd?.();
+    return;
+  }
   try {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -404,21 +424,48 @@ function _speakWebSpeech(
     }
     window.speechSynthesis.speak(u);
   } catch {
-    /* speechSynthesis unsupported/blocked — voice is a nice-to-have, never fatal */
+    opts?.onEnd?.();
   }
 }
 
 export function speakPrompt(
   text: string,
-  opts?: { rate?: number; pitch?: number; onEnd?: () => void },
-): void {
-  if (typeof window === 'undefined') return;
+  opts?: { rate?: number; pitch?: number; onEnd?: () => void; priority?: SpeechPriority; identity?: string },
+): boolean {
+  if (typeof window === 'undefined') return false;
+  const priority = opts?.priority ?? 'normal';
   // A backgrounded tab must never start speaking — this guards against a
   // delayed callback (e.g. an async chapter-load resolving after the child
-  // has already switched apps) firing speakPrompt() while hidden.
-  if (typeof document !== 'undefined' && document.hidden) return;
+  // has already switched apps) firing ordinary narration while hidden.
+  // Corrections are different: mobile browsers can transiently report the
+  // document hidden while returning from mic/permission UI. Dropping that
+  // request produced a visible correction with no corresponding speech when
+  // the page became visible again. Correction priority therefore enqueues
+  // immediately and lets provider playback/fallback own the outcome.
+  if (typeof document !== 'undefined' && document.hidden && priority !== 'correction') return false;
+
+  if (priority === 'correction' && opts?.identity && _issuedCorrectionIds.has(opts.identity)) return false;
+  // Narration and incidental prompts may never supersede a correction that
+  // is fetching or playing. A new correction, however, always wins.
+  if (_activeSpeech?.priority === 'correction' && priority !== 'correction') return false;
+
+  const token = ++_speechToken;
+  const previous = _activeSpeech;
+  let finished = false;
+  const finish = (notifyCaller: boolean) => {
+    if (finished) return;
+    finished = true;
+    if (_activeSpeech?.token === token) _activeSpeech = null;
+    applyAmbiencePriority();
+    if (notifyCaller) opts?.onEnd?.();
+  };
+  _activeSpeech = { token, priority, finish };
+  if (priority === 'correction' && opts?.identity) _issuedCorrectionIds.add(opts.identity);
+  applyAmbiencePriority(); // duck BEFORE cache lookup/network TTS begins
+  if (previous) previous.finish(false);
 
   const prompt = withTerminalPunctuation(text);
+  const providerOpts = { rate: opts?.rate, pitch: opts?.pitch, onEnd: () => finish(true) };
 
   // ElevenLabs is the default for every call — NOT gated on a separate
   // "did someone remember to opt in" flag. The only way to skip it is the
@@ -441,10 +488,11 @@ export function speakPrompt(
       modelId: null,
       ts: Date.now(),
     };
-    _speakWebSpeech(prompt, opts);
+    _speakWebSpeech(prompt, providerOpts);
   } else {
-    _speakElevenLabs(prompt, opts);
+    _speakElevenLabs(prompt, providerOpts);
   }
+  return true;
 }
 
 export function stopSpeaking(): void {
@@ -463,6 +511,10 @@ export function stopSpeaking(): void {
     _elevenLabsAbort.abort();
     _elevenLabsAbort = null;
   }
+  const active = _activeSpeech;
+  _activeSpeech = null;
+  active?.finish(false);
+  applyAmbiencePriority();
 }
 
 /** Chapter-aware welcome line for Screen 3 (falls back to a generic line if
@@ -486,11 +538,11 @@ export function welcomeLine(
 /* ── Ambience / music / UI sound (asset-based; silent if asset missing) ─ */
 
 const AUDIO_VOLUMES = {
-  theme: 0.025,
+  theme: 0.012,
   ambience: 0.03,
   music: 0.18,
   ui: 0.28,
-  duckFactor: 0.35,
+  duckFactor: 0.10,
 } as const;
 
 let themeEl: HTMLAudioElement | null = null;
@@ -521,6 +573,16 @@ function fadeElement(el: HTMLAudioElement | null, target: number): void {
     }
   }, 25);
   fadeTimers.set(el, timer);
+}
+
+function speechHasPriority(): boolean {
+  return _activeSpeech !== null;
+}
+
+function applyAmbiencePriority(): void {
+  const shouldDuck = ducked || speechHasPriority();
+  fadeElement(themeEl, shouldDuck ? AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.theme);
+  fadeElement(ambienceEl, shouldDuck ? AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.ambience);
 }
 
 function clearTrack(el: HTMLAudioElement | null): void {
@@ -554,7 +616,7 @@ export function prepareStoryAudio(theme: string | null | undefined): void {
 export function playTheme(): void {
   if (!themeEl) return;
   if (typeof document !== 'undefined' && document.hidden) return; // see speakPrompt()'s guard for why
-  themeEl.volume = ducked ? AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.theme;
+  themeEl.volume = (ducked || speechHasPriority()) ? AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.theme;
   void themeEl.play().then(() => audioLog(`theme -> ${themeAsset?.replace('/audio/', '').replace('.mp3', '')}`)).catch(() => {});
 }
 
@@ -604,7 +666,7 @@ export function playAmbience(asset: string | null | undefined): void {
   try {
     const el = new Audio(asset);
     el.loop = true;
-    el.volume = ducked ? AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.ambience;
+    el.volume = (ducked || speechHasPriority()) ? AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.ambience;
     el.addEventListener('error', () => stopAmbience()); // missing/unsupported asset — stay silent
     void el.play().catch(() => {}); // autoplay-blocked — user interaction can call playAmbience again
     ambienceEl = el;
@@ -630,21 +692,19 @@ export function stopAmbience(): void {
 
 export function setAmbienceVolume(volume: number): void {
   const next = Math.max(0, Math.min(0.12, volume));
-  if (ambienceEl) ambienceEl.volume = ducked ? next * 0.18 : next;
+  if (ambienceEl) ambienceEl.volume = (ducked || speechHasPriority()) ? next * AUDIO_VOLUMES.duckFactor : next;
 }
 
 /** Speech always wins: duck ambience while the child/AI/help audio plays. */
 export function duckAmbience(): void {
   ducked = true;
-  fadeElement(themeEl, AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor);
-  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor);
+  applyAmbiencePriority();
   audioLog('duck -> listening');
 }
 
 export function restoreAmbience(): void {
   ducked = false;
-  fadeElement(themeEl, AUDIO_VOLUMES.theme);
-  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience);
+  applyAmbiencePriority();
   audioLog('restore');
 }
 
@@ -744,6 +804,7 @@ export function playCliffhanger(): void {
 if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
   (window as unknown as { __audioDebug: () => Record<string, unknown> }).__audioDebug = () => ({
     ducked,
+    speechActive: speechHasPriority(),
     theme: themeEl && { asset: themeAsset, paused: themeEl.paused, volume: themeEl.volume },
     ambience: ambienceEl && { asset: ambienceAsset, paused: ambienceEl.paused, volume: ambienceEl.volume },
     music: musicEl && { paused: musicEl.paused, volume: musicEl.volume },
