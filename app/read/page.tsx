@@ -48,6 +48,7 @@ import { audioSession } from '@/lib/audio-session';
 import { loadPreferences } from '@/lib/preferences';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
+import { loadChapterScenePackage, requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
@@ -104,9 +105,9 @@ function pickDemoWord(requested: string | null, page: { text: string; focusWords
  * gradient if a chosen asset ever 404s. Unlike Home (which shows the
  * chapter's page-0 opening scene as a single cover image), this runs PER
  * PAGE — see this file's sceneSelection useMemo below — so the art
- * progresses through the chapter instead of freezing on one image. The
- * automatic AI-generation path remains intentionally unused here — see
- * lib/chapters.ts requestChapterVisuals. */
+ * progresses through the chapter instead of freezing on one image. A durable
+ * generated scene package takes precedence when configured; this selector is
+ * the approved-static fallback. */
 
 /* Mandatory calm listening animation: 6 small organic bars gently changing
  * scaleY (~900ms cycle) — no waveform, no neon, no frantic movement. */
@@ -193,6 +194,7 @@ export default function ReadPage() {
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [progress, setProgress] = useState<ChildProgress | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
+  const [scenePackage, setScenePackage] = useState<ChapterScenePackage | null>(null);
   const [introOpen, setIntroOpen] = useState(() => typeof window === 'undefined' || new URLSearchParams(window.location.search).get('skipWelcome') !== '1');
   const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'prediction' }> | null>(null);
   const [interactionChoice, setInteractionChoice] = useState<string | null>(null);
@@ -555,10 +557,18 @@ export default function ReadPage() {
     if (!chapter || !interactionManifest) return {} as Record<string, string>;
     return Object.fromEntries(interactionManifest.scenes.map((scene) => {
       const index = scene.pageIndexes[0] ?? 0;
-      return [scene.sceneId, selectSceneForPage(chapter, chapter.pages[index], index, profile?.avatar, user?.uid ?? null).asset.src];
+      return [scene.sceneId, sceneUrl(scenePackage, scene.sceneId) ?? selectSceneForPage(chapter, chapter.pages[index], index, profile?.avatar, user?.uid ?? null).asset.src];
     }));
-  }, [chapter, interactionManifest, profile?.avatar, user?.uid]);
+  }, [chapter, interactionManifest, scenePackage, profile?.avatar, user?.uid]);
   const lookaheadScene = lookaheadBeat ? sceneAssetUrls[lookaheadBeat.visualSceneId] ?? null : null;
+
+  useEffect(() => {
+    if (!chapter || !interactionManifest || authLoading) return;
+    const cached = loadChapterScenePackage(chapter.id); if (cached) { setScenePackage(cached); return; }
+    let cancelled = false;
+    void requestChapterScenePackage(chapter, interactionManifest, user).then((value) => { if (value && !cancelled) setScenePackage(value); });
+    return () => { cancelled = true; };
+  }, [chapter, interactionManifest, user, authLoading]);
 
   useEffect(() => {
     if (!chapter || !lookaheadBeat || !lookaheadScene) return;
@@ -580,7 +590,8 @@ export default function ReadPage() {
 
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
-  const sceneBg = sceneSelection?.asset.src ?? null;
+  const currentSceneId = interactionManifest?.scenes.find((scene) => scene.pageIndexes.includes(pageIdx))?.sceneId;
+  const sceneBg = (currentSceneId ? sceneUrl(scenePackage, currentSceneId) : null) ?? sceneSelection?.asset.src ?? null;
   const sceneFocal = sceneSelection?.asset.focal;
   // Computed for the current tricky word at ANY rung < 3, not just rung 2:
   // with the escalation remap below, a segmentable word now shows the slide

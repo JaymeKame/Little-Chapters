@@ -14,6 +14,8 @@ import { resolveDailyState, type DailyStateKind } from '@/lib/entry-state';
 import { resolvePreferences } from '@/lib/preferences';
 import { themeAssetFor, welcomeLine } from '@/lib/audio';
 import { audioSession } from '@/lib/audio-session';
+import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
+import { requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
 
 export default function ChildHomePage() {
   const router = useRouter();
@@ -24,6 +26,9 @@ export default function ChildHomePage() {
   const [leaving, setLeaving] = useState(false);
   const [handoffDismissed, setHandoffDismissed] = useState(false);
   const [handoffRequested, setHandoffRequested] = useState(false);
+  const [scenePackage, setScenePackage] = useState<ChapterScenePackage | null>(null);
+  const [scenePackageResolved, setScenePackageResolved] = useState(false);
+  const [chapterSettled, setChapterSettled] = useState(false);
 
   useEffect(() => {
     setHandoffRequested(new URLSearchParams(window.location.search).get('grownupHandoff') === '1');
@@ -47,12 +52,21 @@ export default function ChildHomePage() {
 
   useEffect(() => {
     if (!profile || authLoading) return;
-    let cancelled = false;
+    let cancelled = false; setChapterSettled(false);
     void requestTutorChapter(profile, user?.uid ?? null).then((generated) => {
       if (generated && !cancelled) setChapter(generated);
-    });
+    }).finally(() => { if (!cancelled) setChapterSettled(true); });
     return () => { cancelled = true; };
   }, [profile, user, authLoading]);
+
+  useEffect(() => {
+    if (!chapter || authLoading || !chapterSettled) return;
+    let cancelled = false; setScenePackageResolved(false);
+    void requestChapterScenePackage(chapter, resolveStoryInteractionManifest(chapter), user).then((value) => {
+      if (!cancelled) { setScenePackage(value); setScenePackageResolved(true); }
+    });
+    return () => { cancelled = true; };
+  }, [chapter, user, authLoading, chapterSettled]);
 
   const completedToday = Boolean(chapter && !authLoading && wasChapterCompleted(user?.uid ?? null, chapter.id));
   const entitlement = useEntitlement(chapter?.id ?? null);
@@ -91,7 +105,7 @@ export default function ChildHomePage() {
   }
 
   if (profileUnavailable || forcedOffline) return <HomeError onRetry={() => window.location.reload()} />;
-  if (!profile || !chapter || dailyState === 'loading') return <HomeLoading />;
+  if (!profile || !chapter || dailyState === 'loading' || !scenePackageResolved) return <HomeLoading />;
 
   const copy = homeCopy(dailyState, chapter);
   const showGrownupHandoff = dailyState === 'completed' && handoffRequested && !handoffDismissed;
@@ -99,7 +113,7 @@ export default function ChildHomePage() {
 
   return (
     <main className={`lc-home-v11${leaving ? ' is-leaving' : ''}`} data-home-state={dailyState}>
-      <SceneBackground src={scene?.asset.src ?? null} focal={scene?.asset.focal} priority />
+      <SceneBackground src={sceneUrl(scenePackage, 'scene-1') ?? scene?.asset.src ?? null} focal={scene?.asset.focal} priority />
       <div className="lc-home-scrim" />
       <header className="lc-home-v11-header">
         <div className="lc-child-mark">

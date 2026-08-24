@@ -252,11 +252,7 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
  * full-screen background — it reads as a stretched app icon, not a scene.
  *
  * Fallback hierarchy actually in effect right now:
- *  1) chapter.visuals.*SceneUrl — AI-generated scene, ONLY used if present
- *     (the automatic generation call is currently disabled at the call
- *     sites in app/home and app/read; see requestChapterVisuals below for
- *     why, and how to re-enable it once OPENAI_API_KEY/Firebase Storage are
- *     configured and verified end-to-end).
+ *  1) lib/chapter-scenes.ts's durable generated scene package.
  *  2) lib/scene-selector.ts's selectSceneForPage() against the real curated
  *     manifest in lib/scene-manifest.ts (public/images/scenes/) — see that
  *     file's header for the full selection algorithm.
@@ -299,25 +295,6 @@ export function stableHash(input: string): number {
  * repo uses these specific files, but they're left on disk rather than
  * removed as an unforced, unrelated cleanup). Do not re-add them to any
  * selector without re-solving the baked-text/mislabeling problem first. */
-
-export interface ChapterVisuals {
-  homeSceneUrl: string;
-  readingSceneUrl: string;
-  cliffhangerSceneUrl: string;
-  generatedAt: number;
-  version: 1;
-}
-
-const VISUALS_CACHE_PREFIX = 'little-chapters-visuals:';
-
-export function loadCachedVisuals(chapterId: string): ChapterVisuals | null {
-  try {
-    const raw = JSON.parse(localStorage.getItem(VISUALS_CACHE_PREFIX + chapterId) ?? 'null') as ChapterVisuals | null;
-    return raw && typeof raw.homeSceneUrl === 'string' ? raw : null;
-  } catch {
-    return null;
-  }
-}
 
 /* ── Reading-tutor story path (skeletons + stage-matched generation) ───── */
 
@@ -522,49 +499,6 @@ async function generateTutorChapter(
     return chapter;
   } catch {
     return null;
-  }
-}
-
-function cacheVisuals(chapterId: string, visuals: ChapterVisuals): void {
-  try {
-    localStorage.setItem(VISUALS_CACHE_PREFIX + chapterId, JSON.stringify(visuals));
-  } catch {
-    /* best-effort */
-  }
-}
-
-/** Requests the generated visual pack once per chapter.id. NOT CALLED from
- *  Screen 3/4/5 right now — runtime diagnosis (2026-08-17) proved the
- *  automatic path returns 503 in this environment (OPENAI_API_KEY /
- *  FIREBASE_SERVICE_ACCOUNT / FIREBASE_STORAGE_BUCKET are unset — no
- *  .env.local at all), so the client was silently falling back to a small
- *  setup icon stretched full-screen. Left here, unused by the pages, so the
- *  generated-URL source can be swapped back in later (chapter.visuals.* →
- *  local story scene) without touching the UI once the backend is verified
- *  end-to-end. */
-export async function requestChapterVisuals(
-  chapter: Chapter,
-  profile: ChildProfile,
-  authToken: string | null,
-): Promise<ChapterVisuals | null> {
-  const cached = loadCachedVisuals(chapter.id);
-  if (cached) return cached;
-  try {
-    const res = await fetch('/api/chapters/visuals', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
-      body: JSON.stringify({ chapterId: chapter.id, chapter, profile }),
-    });
-    if (!res.ok) return null;
-    const { visuals } = (await res.json()) as { visuals: ChapterVisuals };
-    if (!visuals?.homeSceneUrl) return null;
-    cacheVisuals(chapter.id, visuals);
-    return visuals;
-  } catch {
-    return null; // network hiccup — caller falls back, never blocks reading
   }
 }
 

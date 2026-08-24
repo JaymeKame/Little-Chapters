@@ -60,7 +60,7 @@ function storyWords(chapter: Chapter): string[] {
 }
 
 function sceneGroups(pageCount: number): number[][] {
-  const sceneCount = Math.min(4, Math.max(3, Math.ceil(pageCount / 2)));
+  const sceneCount = Math.min(4, Math.max(3, pageCount - 1));
   return Array.from({ length: sceneCount }, (_, scene) =>
     Array.from({ length: pageCount }, (_, page) => page).filter((page) => Math.min(sceneCount - 1, Math.floor(page * sceneCount / pageCount)) === scene),
   ).filter((group) => group.length);
