@@ -200,7 +200,7 @@ async function main() {
     const read = src('app/read/page.tsx');
     check('Read imports useEntitlement', read.includes("from '@/lib/use-entitlement'"));
     check('Read deep-link guard never fires while a chapter is already in progress (startedReadingRef)', /chapterLocked && !startedReadingRef\.current/.test(read));
-    check('the child-facing ending keeps conversion to a quiet grown-up handoff', /subscribed !== true[\s\S]*?lc-grownup-handoff/.test(read));
+    check('the child payoff hands conversion to completed Home instead of covering the ending', /grownupHandoff=1/.test(read) && /Save .*adventure/.test(home));
     check('Read still imports the scene-selector (paywall gating did not touch per-page scene selection)', read.includes('selectSceneForPage'));
     check('Read still imports combineVerdicts/reading-verdict (grading untouched)', read.includes("from '@/lib/reading-verdict'"));
 

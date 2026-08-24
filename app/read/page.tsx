@@ -194,6 +194,7 @@ export default function ReadPage() {
   const [introOpen, setIntroOpen] = useState(() => typeof window === 'undefined' || new URLSearchParams(window.location.search).get('skipWelcome') !== '1');
   const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'prediction' }> | null>(null);
   const [interactionChoice, setInteractionChoice] = useState<string | null>(null);
+  const [interactionFeedback, setInteractionFeedback] = useState<'idle' | 'try-again' | 'success'>('idle');
   const [pendingNextPage, setPendingNextPage] = useState<number | null>(null);
   const [pageIdx, setPageIdx] = useState(0);
   const [phase, setPhase] = useState<Phase>('ready');
@@ -486,9 +487,13 @@ export default function ReadPage() {
   useEffect(() => {
     if (phase === 'chapter-end') {
       audioSession.playCliffhanger();
-      if (chapter) audioSession.speak(`You helped ${chapter.character} move the story forward. ${chapter.cliffhanger[0]} Tomorrow, ${chapter.teaser}`, { purpose: 'chapter-ending' });
+      if (chapter && profile) {
+        const practiced = [...practicedRef.current.keys()][0];
+        const specific = practiced ? `You figured out ${practiced}. ` : '';
+        audioSession.speak(`${profile.childName}, you did it! ${specific}${chapter.cliffhanger[0]} Whoa… we'll find out more tomorrow.`, { purpose: 'chapter-ending' });
+      }
     }
-  }, [phase, chapter]);
+  }, [phase, chapter, profile]);
 
   // Backgrounding: pause everything immediately (also cancels TTS — resuming
   // stale speech into whatever state the child is in after an unknown-length
@@ -533,6 +538,14 @@ export default function ReadPage() {
     () => chapter && profile ? buildSessionPlan(chapter, profile.childName, loadReport()?.teaser ?? '') : [],
     [chapter, profile],
   );
+
+  useEffect(() => {
+    if (!activeInteraction) return;
+    const line = activeInteraction.kind === 'sound-hunt'
+      ? `Listen! Which word has ${activeInteraction.activity.pattern}?`
+      : 'What do you think happens next?';
+    audioSession.speak(line, { purpose: `${activeInteraction.kind}-prompt` });
+  }, [activeInteraction]);
 
   if (!profile || !chapter) return <div className="screen" />;
   const page = chapter.pages[pageIdx];
@@ -1178,7 +1191,28 @@ export default function ReadPage() {
     setPendingNextPage(null);
     setActiveInteraction(null);
     setInteractionChoice(null);
+    setInteractionFeedback('idle');
     setPhase('ready');
+  }
+
+  function chooseInteraction(choice: string) {
+    if (!activeInteraction || interactionFeedback === 'success') return;
+    setInteractionChoice(choice);
+    if (activeInteraction.kind === 'prediction') {
+      setInteractionFeedback('success');
+      audioSession.speak(`Ooh, maybe ${choice.toLowerCase()}! Let's see.`, {
+        purpose: 'prediction-acknowledgment',
+        onEnd: () => setTimeout(continueAfterInteraction, 350),
+      });
+      return;
+    }
+    const correct = choice === activeInteraction.activity.answer;
+    setInteractionFeedback(correct ? 'success' : 'try-again');
+    const pattern = activeInteraction.activity.pattern;
+    audioSession.speak(correct ? `${choice}. You found ${pattern}!` : `${choice}. Listen again… ${pattern}.`, {
+      purpose: correct ? 'sound-hunt-success' : 'sound-hunt-retry',
+      onEnd: correct ? () => setTimeout(continueAfterInteraction, 700) : undefined,
+    });
   }
 
   /* Dev-only shortcut so the whole flow is testable without a microphone.
@@ -1300,26 +1334,25 @@ export default function ReadPage() {
     const choices: readonly string[] = activeInteraction.kind === 'sound-hunt' ? activeInteraction.activity.choices : activeInteraction.choices;
     const acknowledged = interactionChoice
       ? activeInteraction.kind === 'prediction'
-        ? `That’s a wonderful idea. Let’s see what the story says.`
-        : interactionChoice === sound?.answer
-          ? `You found the ${sound.pattern} sound in “${sound.answer}”!`
-          : `Good listening. The ${sound?.pattern} sound is hiding in “${sound?.answer}.”`
+        ? `Let’s see!`
+        : interactionFeedback === 'success'
+          ? `You found ${sound?.pattern}!`
+          : `Listen again… ${sound?.pattern}.`
       : null;
     return (
       <div className="lc-session-interaction" data-session-beat={activeInteraction.kind}>
         <SceneBackground src={sceneBg} focal={sceneFocal} />
         <div className="lc-interaction-card lc-scene-content">
-          <p className="lc-interaction-kicker">A story moment</p>
-          <h1>{activeInteraction.kind === 'sound-hunt' ? sound?.prompt : 'What do you think happens next?'}</h1>
-          <p>{activeInteraction.kind === 'sound-hunt' ? 'The answer is tucked inside the words you just read.' : 'Choose the idea that feels right to you.'}</p>
-          <div className="lc-choice-grid">
-            {choices.map((choice) => <button key={choice} className={interactionChoice === choice ? 'is-chosen' : ''} onClick={() => {
-              setInteractionChoice(choice);
-              audioSession.playHomeSound('tap-soft.mp3');
-            }}>{choice}</button>)}
+          <button className="lc-prompt-speaker" aria-label="Hear the question again" onClick={() => audioSession.speak(activeInteraction.kind === 'sound-hunt' ? `Which word has ${sound?.pattern}?` : 'What do you think happens next?', { purpose: 'interaction-prompt-replay' })}><img src="/icons/speaker-audio.png" alt="" /></button>
+          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the sound' : 'What happens next?'}</p>
+          <h1>{activeInteraction.kind === 'sound-hunt' ? sound?.pattern.toUpperCase() : 'Choose a picture'}</h1>
+          <div className={`lc-choice-grid is-${activeInteraction.kind}`}>
+            {choices.map((choice, index) => <button key={choice} data-correct={activeInteraction.kind === 'sound-hunt' && choice === sound?.answer ? 'true' : undefined} className={`${interactionChoice === choice ? 'is-chosen' : ''}${interactionChoice === choice && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice && interactionFeedback === 'success' ? ' is-success' : ''}`} onClick={() => chooseInteraction(choice)}>
+              {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${index + 1}`}><img src={sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{index === 0 ? '✦' : ')))'}</i></span>}
+              <strong>{choice}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
+            </button>)}
           </div>
           {acknowledged && <p role="status">{acknowledged}</p>}
-          <button className="btn-primary lc-interaction-continue" disabled={!interactionChoice} onClick={continueAfterInteraction}>Keep the story going</button>
           <SessionProgress current={sessionPlan.findIndex((beat) => beat.id === activeInteraction.id)} total={sessionPlan.length} />
         </div>
       </div>
@@ -1332,15 +1365,13 @@ export default function ReadPage() {
       <div className="lc-session-interaction lc-ending-v11" data-session-beat="ending">
         <SceneBackground src={sceneBg} focal={sceneFocal} cliff />
         <div className="lc-interaction-card lc-scene-content">
-          <div className="lc-ending-star" aria-hidden><img src="/icons/success-star.png" alt="" /></div>
-          <p className="lc-interaction-kicker">Today’s adventure is complete</p>
-          <h1>You helped {chapter.character} move the story forward.</h1>
-          <p>{chapter.cliffhanger[0]}</p>
-          <p className="lc-tomorrow-paper"><strong>Tomorrow:</strong> {chapter.teaser}</p>
+          <div className="lc-ending-stars" aria-hidden>{[0,1,2].map((star) => <img key={star} src="/icons/success-star.png" alt="" />)}</div>
+          <p className="lc-interaction-kicker">Adventure complete</p>
+          <h1>You did it, {profile.childName}!</h1>
+          <div className="lc-ending-event"><strong>{chapter.cliffhanger[0]}</strong><span>Tomorrow, the mystery continues…</span></div>
           <button className="btn-primary lc-interaction-continue" onClick={() => {
-            audioSession.cancelAll(); audioSession.stopTheme(); router.push('/home');
+            audioSession.cancelAll(); audioSession.stopTheme(); router.push(subscribed === true ? '/home' : '/home?grownupHandoff=1');
           }}>Back to Home</button>
-          {subscribed !== true && <p className="lc-grownup-handoff">The next chapter will have a quiet note for a grown-up on Home.</p>}
         </div>
       </div>
     );

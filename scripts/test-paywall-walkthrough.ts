@@ -16,6 +16,7 @@
  */
 
 import { chromium } from 'playwright';
+import { mkdir } from 'node:fs/promises';
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';
 let passed = 0;
@@ -31,6 +32,8 @@ function fail(label: string, detail?: string): void {
 }
 
 async function main() {
+  const screenshotDir = process.env.NARROW_SPRINT_SCREENSHOT_DIR ?? '/tmp/little-chapters-child-native';
+  await mkdir(screenshotDir, { recursive: true });
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
@@ -84,9 +87,20 @@ async function main() {
     while (pages < maxPages) {
       const interaction = page.locator('[data-session-beat="sound-hunt"], [data-session-beat="prediction"]');
       if (await interaction.count()) {
-        await interaction.locator('.lc-choice-grid button').first().click();
-        await interaction.getByRole('button', { name: 'Keep the story going' }).click();
-        await page.waitForTimeout(200);
+        const beat = await interaction.getAttribute('data-session-beat');
+        await page.screenshot({ path: `${screenshotDir}/${beat}-390x844.png`, animations: 'disabled' });
+        const soundAnswer = interaction.locator('[data-correct="true"]');
+        if (await soundAnswer.count()) {
+          await interaction.locator('.lc-choice-grid button:not([data-correct="true"])').first().click();
+          await interaction.getByRole('status').waitFor();
+          if (!(await interaction.count())) fail('an incorrect sound-hunt choice advanced the story');
+          else ok('incorrect sound-hunt choice stays in the game and gently retries');
+          await soundAnswer.click();
+        } else {
+          await interaction.locator('.lc-choice-grid button').first().click();
+        }
+        await interaction.waitFor({ state: 'detached', timeout: 8000 });
+        ok('successful child interaction advances automatically without a Continue button');
         continue;
       }
       const simGood = page.locator('button:has-text("sim: good")');
@@ -102,6 +116,7 @@ async function main() {
     const chapterEndVisible = await page.locator('[data-session-beat="ending"]').count();
     if (chapterEndVisible > 0) {
       ok('meaningful chapter-ending screen reached');
+      await page.screenshot({ path: `${screenshotDir}/ending-390x844.png`, animations: 'disabled' });
     } else {
       fail('chapter-ending screen never appeared after driving the session plan');
     }
@@ -110,9 +125,9 @@ async function main() {
   console.log('\n=== Test 3: ending preserves the child payoff before a grown-up handoff ===');
   {
     const backHome = page.getByRole('button', { name: 'Back to Home' });
-    const handoff = page.getByText(/quiet note for a grown-up/i);
-    if ((await backHome.count()) === 1 && (await handoff.count()) === 1) {
-      ok('ending has one child action and a quiet grown-up handoff, with no covering paywall');
+    const conversionCopy = page.getByText(/create your account|save the adventure/i);
+    if ((await backHome.count()) === 1 && (await conversionCopy.count()) === 0) {
+      ok('performed ending has one child action and no conversion UI covering the payoff');
     } else {
       fail('expected ending action or grown-up handoff was not found');
     }
@@ -143,6 +158,13 @@ async function main() {
     await page.getByRole('button', { name: 'Back to Home' }).click();
     await page.waitForSelector('[data-home-state="completed"]', { timeout: 15000 });
     ok('Back to Home renders the peaceful Completed Today state');
+    await page.getByRole('heading', { name: /Save Robin’s adventure/i }).waitFor();
+    ok('completed Home performs the explicit grown-up save-adventure handoff');
+    await page.screenshot({ path: `${screenshotDir}/grownup-handoff-390x844.png`, animations: 'disabled' });
+    await page.getByRole('button', { name: 'Save the adventure' }).click();
+    await page.waitForURL('**/register', { timeout: 10000 });
+    await page.getByRole('heading', { name: 'Save their adventure' }).waitFor();
+    ok('save-adventure handoff reaches account creation before payment');
   }
 
   console.log('\n=== Test 5: /unlock renders standalone (paywall screen itself, not wired to a live Stripe key in this env) ===');

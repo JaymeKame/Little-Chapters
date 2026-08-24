@@ -22,6 +22,12 @@ export default function ChildHomePage() {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [profileUnavailable, setProfileUnavailable] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const [handoffDismissed, setHandoffDismissed] = useState(false);
+  const [handoffRequested, setHandoffRequested] = useState(false);
+
+  useEffect(() => {
+    setHandoffRequested(new URLSearchParams(window.location.search).get('grownupHandoff') === '1');
+  }, []);
 
   useEffect(() => {
     if (authLoading) return;
@@ -88,6 +94,7 @@ export default function ChildHomePage() {
   if (!profile || !chapter || dailyState === 'loading') return <HomeLoading />;
 
   const copy = homeCopy(dailyState, chapter);
+  const showGrownupHandoff = dailyState === 'completed' && handoffRequested && !handoffDismissed;
   const replay = () => audioSession.speak(welcomeLine(profile.childName, chapter, dailyState === 'completed', dailyState === 'locked'), { purpose: 'home-welcome' });
 
   return (
@@ -128,6 +135,15 @@ export default function ChildHomePage() {
       </section>
 
       <footer className="lc-home-tomorrow"><span aria-hidden>☾</span><div><strong>{dailyState === 'completed' ? 'Tomorrow' : 'Today'}</strong><p>{dailyState === 'completed' ? chapter.teaser : 'A little mystery is waiting inside.'}</p></div></footer>
+      {showGrownupHandoff && <div className="lc-grownup-handoff-backdrop" role="presentation">
+        <section className="lc-grownup-handoff-card" role="dialog" aria-modal="true" aria-labelledby="save-adventure-title">
+          <span className="lc-settings-eyebrow">For grown-ups</span>
+          <h2 id="save-adventure-title">Save {profile.childName}&rsquo;s adventure</h2>
+          <p>Create your parent account so tomorrow&rsquo;s chapter can continue where {profile.childName} left off.</p>
+          <button className="btn-primary" onClick={() => router.push(user && !user.isAnonymous ? '/unlock' : '/register')}>Save the adventure</button>
+          <button className="lc-handoff-later" onClick={() => setHandoffDismissed(true)}>Not now</button>
+        </section>
+      </div>}
     </main>
   );
 }
