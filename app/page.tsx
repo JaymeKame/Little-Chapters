@@ -1,6 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/components/AuthProvider';
+import { resolveEntryState, type EntryState } from '@/lib/entry-state';
+import { loadProfile } from '@/lib/profile';
+import { resolveProfile } from '@/lib/profile-repository';
 
 const FEATURES = [
   { label: 'Made for real life', src: '/images/landing/icon-made-for-real-life.png' },
@@ -9,6 +15,38 @@ const FEATURES = [
 ];
 
 export default function LandingPage() {
+  const router = useRouter();
+  const { user, loading } = useAuth();
+  const [entry, setEntry] = useState<EntryState>({ kind: 'resolving' });
+
+  useEffect(() => {
+    if (loading) return;
+    let cancelled = false;
+    const localProfile = loadProfile();
+    const registered = Boolean(user && !user.isAnonymous);
+    setEntry(resolveEntryState({ authResolved: true, registered, localProfile, remoteProfile: null, remoteProfileResolved: !registered }));
+    void resolveProfile(user).then((resolved) => {
+      if (cancelled) return;
+      setEntry(resolveEntryState({
+        authResolved: true,
+        registered,
+        localProfile,
+        remoteProfile: resolved.source === 'remote' ? resolved.profile : null,
+        remoteProfileResolved: resolved.source !== 'unavailable',
+      }));
+    });
+    return () => { cancelled = true; };
+  }, [loading, user]);
+
+  useEffect(() => {
+    if (entry.kind === 'home') router.replace('/home');
+    if (entry.kind === 'setup') router.replace('/setup');
+  }, [entry, router]);
+
+  if (entry.kind !== 'acquisition') {
+    return <div className="screen" role="status" aria-label="Opening Little Chapters" />;
+  }
+
   return (
     <div className="lc-landing">
       <div className="lc-landing-inner">

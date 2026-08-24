@@ -37,7 +37,7 @@
 
 import type { Chapter, ChapterPage } from './chapters.ts';
 import type { AvatarId } from './profile';
-import { SCENE_MANIFEST, type SceneAsset } from './scene-manifest.ts';
+import { RUNTIME_SCENE_MANIFEST, type SceneAsset } from './scene-manifest.ts';
 
 export interface SceneSelectionResult {
   asset: SceneAsset;
@@ -210,7 +210,7 @@ export function selectSceneForPage(
   const dogBias = chapter.ambience === 'farm'; // see SETTINGS in lib/chapters.ts — the only ambience the 'dogs' interest maps to
   const recent = loadRecentHistory(uid);
 
-  const scored = SCENE_MANIFEST.map((asset) => ({
+  const scored = RUNTIME_SCENE_MANIFEST.map((asset) => ({
     asset,
     score: scoreAsset(asset, pageQuery, chapterQuery, chapter, avatar, dogBias),
   })).sort((a, b) => {
