@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateChapter, type LlmClient } from '@/reading-tutor/src/generate';
-import { pickSkeleton, SKELETONS } from '@/reading-tutor/src/skeletons';
-import { assignSlots } from '@/reading-tutor/src/slots';
 import { requireReadingUser } from '@/lib/route-auth';
 import { hasActiveSubscription } from '@/lib/entitlement-server';
+import { generateStoryDraft, isStoryGenerationConfigured } from '@/lib/story-generator.server';
 import { type ChildProfile } from '@/lib/profile';
 
 export const runtime = 'nodejs';
@@ -28,8 +26,7 @@ function overLimit(key: string): boolean {
 }
 
 export async function POST(request: NextRequest) {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return NextResponse.json({ error: 'Story generation is not configured' }, { status: 503 });
+  if (!isStoryGenerationConfigured()) return NextResponse.json({ error: 'Story generation is not configured' }, { status: 503 });
   const auth = await requireReadingUser(request);
   if (!auth.ok) return auth.response;
   // Rate limit BEFORE the subscription check: the check costs a Firestore
@@ -63,45 +60,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid profile' }, { status: 400 });
     }
     const stage = Math.min(10, Math.max(1, Math.round(body.stage || 1)));
-    // Both already-existing GenerateRequest fields — see
-    // docs/ADAPTIVE_LOOP.md Phase 2. buildPrompt() itself re-filters
-    // recentlyMissedWords through allowedWordsForStage(stage) before ever
-    // using them, so a word that's since become stage-inappropriate can
-    // never reach the model regardless of what the client sends.
     const recentlyMissedWords = Array.isArray(body.recentlyMissedWords)
       ? body.recentlyMissedWords.filter((w): w is string => typeof w === 'string').slice(0, 10)
       : [];
     const storySoFar = typeof body.storySoFar === 'string' ? body.storySoFar.slice(0, 500) : '';
-    const skeleton = SKELETONS.find((candidate) => candidate.id === body.skeletonId) ?? pickSkeleton(stage, []);
-    const slots = assignSlots(skeleton.beats, stage);
-    const llm: LlmClient = {
-      async complete(prompt: string) {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: process.env.OPENAI_STORY_MODEL || 'gpt-4o-mini', temperature: 0.4, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: prompt }] }),
-        });
-        if (!response.ok) throw new Error(`story model returned ${response.status}`);
-        const json = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-        return json.choices?.[0]?.message?.content ?? '';
-      },
-    };
-    const result = await generateChapter({
-      stage,
-      cast: { childName: profile.childName, petName: 'Momo' }, // Momo the reading pet, not the child twice
+    const result = await generateStoryDraft({
+      childName: profile.childName,
       interests: profile.interests,
-      storySoFar,
+      stage,
+      skeletonId: body.skeletonId,
       recentlyMissedWords,
-      skeleton,
-      slots,
-    }, llm);
-    if (!result.ok || !result.draft) {
-      console.error('Tutor story generation exhausted retries', result.rejectionLog);
+      storySoFar,
+    });
+    if (!result) {
       return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
     }
     // slots go back too: the client's parent report must name the words the
     // story was actually generated with, not a fresh re-roll.
-    return NextResponse.json({ draft: result.draft, skeleton, slots });
+    return NextResponse.json({ draft: result.draft, skeleton: result.skeleton, slots: result.slots });
   } catch (error) {
     console.error('Tutor story generation failed:', error);
     return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });

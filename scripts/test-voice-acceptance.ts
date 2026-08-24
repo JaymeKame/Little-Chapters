@@ -35,6 +35,7 @@ function info(label: string): void {
 }
 
 const FAKE_AUDIO_BYTES = Buffer.from([0xff, 0xfb, 0x90, 0x00]);
+const SILENT_WAV_BYTES = Buffer.from('UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQgAAACAgICAgICA', 'base64');
 
 type VoiceEvent = Record<string, unknown>;
 
@@ -137,13 +138,38 @@ async function main() {
     }
   }
 
-  console.log('\n=== Item 5: Slider/correction speech (forced via ?slideDemo) uses ElevenLabs ===');
+  console.log('\n=== Item 5: Entering slider correction speaks once through ElevenLabs ===');
   {
     const page2 = await successCtx.newPage();
     await seedProfile(page2);
+    let releaseCorrection!: () => void;
+    const correctionRelease = new Promise<void>((resolve) => { releaseCorrection = resolve; });
+    await page2.route('**/api/speech/model', async (route: any) => {
+      await correctionRelease;
+      await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
+    });
     await page2.goto(`${BASE_URL}/read?slideDemo=1`);
     await page2.waitForSelector('input[type="range"]', { timeout: 15000 });
-    const mark = await page2.evaluate(() => (window as any).__voiceDebug?.().recent.length ?? 0);
+    await page2.waitForFunction(() => (window as any).__audioDebug?.().speechActive === true, { timeout: 5000 });
+    await page2.waitForTimeout(250); // allow the deliberate 200ms duck fade to settle
+    const pendingAudio = await page2.evaluate(() => (window as any).__audioDebug?.());
+    if (pendingAudio.theme && pendingAudio.theme.volume <= 0.0012) {
+      ok(`theme ducked before correction TTS response (volume=${pendingAudio.theme.volume})`);
+    } else {
+      fail('theme was not near-silent while correction TTS was pending', JSON.stringify(pendingAudio));
+    }
+    releaseCorrection();
+    await page2.waitForFunction(
+      () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.provider === 'elevenlabs'),
+      { timeout: 8000 },
+    );
+    const correctionEvents: VoiceEvent[] = await page2.evaluate(
+      () => (window as any).__voiceDebug?.().recent ?? [],
+    );
+    const correctionRequests = correctionEvents.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
+    if (correctionRequests.length === 1) ok('grader/help-state entry called the unified ElevenLabs speech path exactly once');
+    else fail('correction entry did not produce exactly one ElevenLabs request', JSON.stringify(correctionEvents));
+
     const slider = page2.locator('input[type="range"]');
     const box = await slider.boundingBox();
     if (box) {
@@ -157,15 +183,107 @@ async function main() {
         el.dispatchEvent(new Event('change', { bubbles: true }));
       });
       await page2.waitForTimeout(700);
-      const debug = await page2.evaluate(() => (window as any).__voiceDebug?.());
-      const newEvents: VoiceEvent[] = debug.recent.slice(mark);
-      const hit = newEvents.find((e) => e.provider === 'elevenlabs' && !('fallback' in e));
-      if (hit) ok('SlideWordHelp onComplete (slider blend) spoke via ElevenLabs');
-      else fail('SlideWordHelp onComplete did not produce an ElevenLabs success entry', JSON.stringify(newEvents));
+      const afterSlide: VoiceEvent[] = await page2.evaluate(
+        () => (window as any).__voiceDebug?.().recent ?? [],
+      );
+      const afterSlideRequests = afterSlide.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
+      if (afterSlideRequests.length === 1) ok('finishing the slider did not duplicate the correction utterance');
+      else fail('slider completion duplicated or lost correction speech', JSON.stringify(afterSlide));
     } else {
       fail('could not locate the slider control to drag');
     }
     await page2.close();
+  }
+
+  console.log('\n=== Item 5b: Unsegmentable correction entry also speaks exactly once ===');
+  {
+    const page2b = await successCtx.newPage();
+    await seedProfile(page2b);
+    await page2b.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
+    await page2b.waitForSelector('.lc-audio-help', { timeout: 15000 });
+    await page2b.waitForFunction(
+      () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.provider === 'elevenlabs'),
+      { timeout: 8000 },
+    );
+    const events: VoiceEvent[] = await page2b.evaluate(() => (window as any).__voiceDebug?.().recent ?? []);
+    const requests = events.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
+    if (requests.length === 1) ok('unsegmentable correction transition called unified speech exactly once');
+    else fail('unsegmentable correction did not issue exactly one speech request', JSON.stringify(events));
+    await page2b.close();
+  }
+
+  console.log('\n=== Item 5c: First mobile play rejection retries the same ElevenLabs blob ===');
+  {
+    const mobileCtx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
+    });
+    await mobileCtx.route('**/api/speech/model', async (route: any) => {
+      await route.fulfill({ status: 200, contentType: 'audio/wav', body: SILENT_WAV_BYTES });
+    });
+    const mobilePage = await mobileCtx.newPage();
+    await mobilePage.addInitScript(() => {
+      const realPlay = HTMLMediaElement.prototype.play;
+      let rejectedTutorBlob = false;
+      HTMLMediaElement.prototype.play = function () {
+        if (!rejectedTutorBlob && this.src.startsWith('blob:')) {
+          rejectedTutorBlob = true;
+          return Promise.reject(new DOMException('mobile autoplay blocked', 'NotAllowedError'));
+        }
+        return realPlay.call(this);
+      };
+    });
+    await seedProfile(mobilePage);
+    await mobilePage.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
+    await mobilePage.waitForFunction(() => (window as any).__voiceDebug?.().playbackStarted === true, { timeout: 10000 });
+    const mobileDebug = await mobilePage.evaluate(() => (window as any).__voiceDebug?.());
+    if (mobileDebug.playAttempt1Error?.includes('NotAllowedError') && mobileDebug.playAttempt2 && mobileDebug.finalProvider === 'elevenlabs') {
+      ok('first mobile rejection recovered with one ElevenLabs playback retry');
+    } else {
+      fail('first mobile rejection did not recover through ElevenLabs retry', JSON.stringify(mobileDebug));
+    }
+    await mobileCtx.close();
+  }
+
+  console.log('\n=== Item 5d: Two mobile play rejections finally use Web Speech ===');
+  {
+    const mobileCtx = await browser.newContext({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148 Safari/604.1' });
+    await mobileCtx.route('**/api/speech/model', async (route: any) => {
+      await route.fulfill({ status: 200, contentType: 'audio/wav', body: SILENT_WAV_BYTES });
+    });
+    const mobilePage = await mobileCtx.newPage();
+    await mobilePage.addInitScript(() => {
+      const realPlay = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        if (this.src.startsWith('blob:')) return Promise.reject(new DOMException('mobile media session blocked', 'AbortError'));
+        return realPlay.call(this);
+      };
+      Object.defineProperty(window.speechSynthesis, 'speak', {
+        configurable: true,
+        value: (utterance: SpeechSynthesisUtterance) => setTimeout(() => utterance.onerror?.(new Event('error') as any), 0),
+      });
+    });
+    await seedProfile(mobilePage);
+    await mobilePage.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
+    await mobilePage.waitForFunction(
+      () => {
+        const debug = (window as any).__voiceDebug?.();
+        return debug?.fallbackOccurred === true && debug?.correctionDelivery?.requested === 0;
+      },
+      { timeout: 10000 },
+    );
+    const debug = await mobilePage.evaluate(() => (window as any).__voiceDebug?.());
+    if (debug.playAttempt1Error && debug.playAttempt2Error && debug.finalProvider === 'web-speech') {
+      ok('Web Speech occurred only after both ElevenLabs playback attempts failed');
+    } else {
+      fail('double playback rejection did not produce the required terminal fallback', JSON.stringify(debug));
+    }
+    if (debug.correctionDelivery?.requested === 0 && debug.correctionDelivery?.started === 0) {
+      ok('complete playback failure did not poison correction dedupe state');
+    } else {
+      fail('failed correction remained permanently deduped', JSON.stringify(debug.correctionDelivery));
+    }
+    await mobileCtx.close();
   }
 
   console.log('\n=== Item 6: Phrase retry (?fixtureTake, whole take judged unreliable) uses ElevenLabs ===');

@@ -186,10 +186,22 @@ export default function RegisterPage() {
           </p>
         </div>
 
+        {/* Deliberately NOT disabled for `!isAuthenticated` — a disabled
+            button that still LOOKS enabled (this one used to: `disabled`
+            included !isAuthenticated but the cursor/opacity styling below
+            never did) silently eats every click with no feedback, which is
+            indistinguishable from the app being broken. Staying clickable
+            lets handleSubmit's own `if (!isAuthenticated) throw ...` fire
+            and show "Please sign in before continuing." — a real answer
+            instead of nothing. Only busy/empty-phone genuinely block
+            submission (nothing useful to submit, or a submission already in
+            flight), so those are the only two conditions in EITHER prop —
+            kept identical on purpose so the button's look always matches
+            what a click will actually do. */}
         <button
           type="submit"
           className="btn-primary"
-          disabled={busy === 'submit' || !phoneNumber.trim() || !isAuthenticated}
+          disabled={busy === 'submit' || !phoneNumber.trim()}
           style={{
             padding: '14px',
             fontSize: 16,

@@ -28,14 +28,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
-import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, loadProfile, type ChildProfile } from '@/lib/profile';
+import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, fetchRemoteProfile, loadProfile, mirrorProfileRemote, saveProfile, type ChildProfile } from '@/lib/profile';
 import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
-import { chapterFor, requestTutorChapter, type Chapter } from '@/lib/chapters';
+import { chapterDebugInfo, chapterFor, requestTutorChapter, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage } from '@/lib/scene-selector';
 import { wasChapterCompleted } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
 import {
   pauseForBackground,
+  primeTutorAudio,
   playHomeSound,
   playTheme,
   prepareStoryAudio,
@@ -54,32 +55,87 @@ export default function ChildHomePage() {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [leaving, setLeaving] = useState(false);
 
+  // Boot flow: wait for Firebase auth to settle before concluding "no
+  // profile exists". loadProfile() is a single global (not uid-scoped)
+  // localStorage key, so on THIS device it resolves instantly regardless
+  // of auth — but a returning subscriber on a NEW browser/device, or one
+  // who cleared site data, has nothing there at all. Bouncing to '/'
+  // (landing, the true new-visitor entry point) the instant that happens —
+  // as this used to, unconditionally, on mount — is exactly the bug this
+  // fixes: it cannot tell "genuinely new visitor" apart from "known
+  // subscriber, wrong device" without first asking the server. A signed-in
+  // non-anonymous uid gets that one extra check (fetchRemoteProfile);
+  // nothing here ever blocks longer than auth itself already does.
   useEffect(() => {
-    const p = loadProfile();
-    if (!p) {
-      router.replace('/');
-      return;
-    }
-    setProfile(p);
-    setChapter(chapterFor(p.interests[0], p.childName));
-  }, [router]);
+    if (authLoading) return;
+    let cancelled = false;
+    void (async () => {
+      const local = loadProfile();
+      if (local) {
+        setProfile(local);
+        setChapter(chapterFor(local.interests[0], local.childName));
+        // Opportunistic, best-effort: keeps the server mirror in sync so a
+        // FUTURE device can recognize this same returning subscriber, even
+        // though this device never needed it. Never blocks render.
+        if (user && !user.isAnonymous) {
+          void user.getIdToken().then((token) => mirrorProfileRemote(token, local)).catch(() => {});
+        }
+        return;
+      }
+      if (user && !user.isAnonymous) {
+        const token = await user.getIdToken().catch(() => null);
+        const remote = token ? await fetchRemoteProfile(token) : null;
+        if (remote && !cancelled) {
+          saveProfile(remote); // adopt locally too, so the next load is instant/local
+          setProfile(remote);
+          setChapter(chapterFor(remote.interests[0], remote.childName));
+          return;
+        }
+      }
+      if (!cancelled) router.replace('/');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router, user, authLoading]);
 
   // Prefetch/upgrade to the stage-matched tutor chapter — waits for auth to
   // settle (same reasoning as app/read/page.tsx's identical effect: a uid
   // is required to look up this child's persisted stage, and the anon
   // sign-in is still in flight at mount). Never blocks the instant demo-arc
   // render above; this only ever upgrades chapter in place once resolved.
+  //
+  // The ID token is required, not optional: without it, every call here
+  // 401s server-side in production (requireReadingUser demands a Bearer
+  // token once Admin credentials are configured) — silently, since the
+  // caller already treats a failed response as "stay on the demo arc" —
+  // so this screen's own generation attempt never actually reached OpenAI
+  // even for a genuinely entitled subscriber. app/read/page.tsx's
+  // equivalent effect already fetched a token; this one previously did not.
   useEffect(() => {
     if (!profile || authLoading) return;
     let cancelled = false;
-    const uid = user?.uid ?? null;
-    void requestTutorChapter(profile, uid).then((generated) => {
+    void (async () => {
+      const uid = user?.uid ?? null;
+      const authToken = user ? await user.getIdToken().catch(() => null) : null;
+      const generated = await requestTutorChapter(profile, uid, authToken);
       if (generated && !cancelled) setChapter(generated);
-    });
+    })();
     return () => {
       cancelled = true;
     };
   }, [profile, user, authLoading]);
+
+  // window.__chapterDebug() — the chapter-source twin of AuthProvider's
+  // __authDebug and lib/audio.ts's __voiceDebug. Deliberately not gated on
+  // NODE_ENV (next build always sets NODE_ENV=production) — exists to
+  // answer "is the live app actually generating chapters, or silently
+  // falling back to the demo skeleton pool?" from DevTools on the real
+  // deployed app. Never exposes prompt text, model output, or credentials.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (window as unknown as { __chapterDebug: () => ReturnType<typeof chapterDebugInfo> }).__chapterDebug = chapterDebugInfo;
+  }, []);
 
   // Local-only and synchronous on purpose (see wasChapterCompleted) — reflects
   // completion the instant /read writes it, no Firestore round trip. Waits
@@ -156,6 +212,9 @@ export default function ChildHomePage() {
       router.push('/unlock');
       return;
     }
+    // Reuse this existing child gesture to unlock iOS audio output before
+    // asynchronous tutoring speech begins on the reading screen.
+    primeTutorAudio();
     // Presentation-only: compress the button, nudge the background, fade the
     // UI, THEN navigate — route/navigation logic is unchanged.
     playHomeSound('play.mp3');
@@ -316,4 +375,3 @@ export default function ChildHomePage() {
     </div>
   );
 }
-
