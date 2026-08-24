@@ -34,7 +34,6 @@
 // the repo, so its missing type declarations are suppressed here rather than
 // adding a heavyweight, rarely-used dependency to package.json for one
 // scratch-style verification script.
-// @ts-expect-error - playwright has no local type declarations; see above
 import { chromium } from 'playwright';
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';
@@ -58,7 +57,7 @@ function fail(label: string, detail?: string): void {
 const FAKE_AUDIO_BYTES = Buffer.from([0xff, 0xfb, 0x90, 0x00]);
 
 async function main() {
-  const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+  const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
 
@@ -93,7 +92,7 @@ async function main() {
       await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
     });
 
-    await page.goto(`${BASE_URL}/read`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1`);
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
 
     // Tap 1: starts speaking, fires the (held-open) first request.
@@ -138,7 +137,7 @@ async function main() {
       await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
     });
 
-    await page.goto(`${BASE_URL}/read`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1`);
     await page.waitForSelector('button[aria-label="Start reading"]', { timeout: 15000 });
 
     // Enter 'listening' phase — this ducks theme (duckAmbience()).
@@ -161,7 +160,7 @@ async function main() {
 
     // Confirm it is not just reset but that Home's theme actually plays at
     // full (non-ducked) volume once started.
-    await page.click('button[aria-label="Start today\'s chapter"]');
+    await page.click('button[aria-label="Play today’s adventure"]');
     await page.waitForTimeout(300);
     const homeAudio = await page.evaluate(() => (window as any).__audioDebug?.());
     if (homeAudio.theme && !homeAudio.ducked) {

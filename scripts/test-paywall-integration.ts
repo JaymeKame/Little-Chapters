@@ -194,13 +194,13 @@ async function main() {
   {
     const home = src('app/home/page.tsx');
     check('Home imports useEntitlement', home.includes("from '@/lib/use-entitlement'"));
-    check('Home gates startChapter() on locked, routing to /unlock instead of /read', /if \(locked\) \{[\s\S]*?router\.push\('\/unlock'\)/.test(home));
+    check('locked Home hands subscription actions to a grown-up through Settings', /dailyState === 'locked'/.test(home) && /go\('grown-up'\)/.test(home) && /Ask a grown-up/.test(home));
     check('Home still calls the scene-selector unconditionally (paywall gating did not touch scene selection)', home.includes('selectSceneForPage'));
 
     const read = src('app/read/page.tsx');
     check('Read imports useEntitlement', read.includes("from '@/lib/use-entitlement'"));
     check('Read deep-link guard never fires while a chapter is already in progress (startedReadingRef)', /chapterLocked && !startedReadingRef\.current/.test(read));
-    check('the chapter-end upgrade card is suppressed entirely for an already-subscribed reader', /subscribed !== true/.test(read));
+    check('the child-facing ending keeps conversion to a quiet grown-up handoff', /subscribed !== true[\s\S]*?lc-grownup-handoff/.test(read));
     check('Read still imports the scene-selector (paywall gating did not touch per-page scene selection)', read.includes('selectSceneForPage'));
     check('Read still imports combineVerdicts/reading-verdict (grading untouched)', read.includes("from '@/lib/reading-verdict'"));
 

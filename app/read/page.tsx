@@ -26,12 +26,9 @@ import { selectSceneForPage } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
-import { loadProfile, saveReport, type ChildProfile } from '@/lib/profile';
-import {
-  startReadingSession,
-  type ReadingAssessmentResult,
-  type ReadingSession,
-} from '@/lib/pronunciation';
+import { loadProfile, loadReport, saveReport, type ChildProfile } from '@/lib/profile';
+import { buildSessionPlan, claimEndingCompletion, interactionAfterPage, type SessionBeat } from '@/lib/session-plan';
+import { type ReadingAssessmentResult, type ReadingSession } from '@/lib/pronunciation';
 import { combineVerdicts, isPhraseUnreliable, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
 import { buildReadingDebugPayload, readingDebugEnabled } from '@/lib/reading-debug';
 import { toWordSignals } from '@/lib/reading-signal-adapter';
@@ -46,23 +43,9 @@ import {
   reconcileProgress,
 } from '@/lib/child-progress';
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '@/reading-tutor/src/types';
-import {
-  duckAmbience,
-  pauseForBackground,
-  playCliffhanger,
-  playListeningStart,
-  playReadingCue,
-  playHomeSound,
-  playTheme,
-  prepareStoryAudio,
-  restoreAmbience,
-  resumeMusic,
-  speakPrompt,
-  stopMusic,
-  stopSpeaking,
-  stopTheme,
-  themeAssetFor,
-} from '@/lib/audio';
+import { themeAssetFor } from '@/lib/audio';
+import { audioSession } from '@/lib/audio-session';
+import { loadPreferences } from '@/lib/preferences';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
@@ -197,6 +180,10 @@ function PageText({
   );
 }
 
+function SessionProgress({ current, total }: { current: number; total: number }) {
+  return <div className="lc-session-progress" aria-label={`Part ${current + 1} of ${total}`}>{Array.from({ length: total }, (_, index) => <span key={index} className={index <= current ? 'is-done' : ''} />)}</div>;
+}
+
 export default function ReadPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
@@ -204,6 +191,10 @@ export default function ReadPage() {
   const [profile, setProfile] = useState<ChildProfile | null>(null);
   const [progress, setProgress] = useState<ChildProgress | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
+  const [introOpen, setIntroOpen] = useState(() => typeof window === 'undefined' || new URLSearchParams(window.location.search).get('skipWelcome') !== '1');
+  const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'prediction' }> | null>(null);
+  const [interactionChoice, setInteractionChoice] = useState<string | null>(null);
+  const [pendingNextPage, setPendingNextPage] = useState<number | null>(null);
   const [pageIdx, setPageIdx] = useState(0);
   const [phase, setPhase] = useState<Phase>('ready');
   // Flips true after a few seconds of 'scoring' — an MDD cold start (Cloud
@@ -239,6 +230,7 @@ export default function ReadPage() {
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rungRef = useRef<0 | 1 | 2 | 3>(0); // logic source of truth; `rung` state above mirrors it for render
   const awardedRef = useRef(false); // XP granted for the CURRENT page (survives retry-take errors)
+  const finishChapterRef = useRef(false);
   const practicedRef = useRef<Map<string, string>>(new Map());
   // Words the FIRST whole-page take flagged, beyond the one currently in the
   // ladder — a retry take only re-listens to the single word it targets, so
@@ -309,9 +301,8 @@ export default function ReadPage() {
       disposedRef.current = true;
       sessionRef.current?.cancel();
       sessionRef.current = null;
-      stopSpeaking();
-      stopTheme();
-      stopMusic();
+      audioSession.cancelAll();
+      audioSession.stopTheme();
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
     };
   }, [router]);
@@ -415,10 +406,10 @@ export default function ReadPage() {
   // unmount moment. Both now agree, redundantly but harmlessly.
   useEffect(() => {
     if (profile) {
-      prepareStoryAudio(themeAssetFor(profile.interests[0]));
-      playTheme();
+      audioSession.prepareTheme(themeAssetFor(profile.interests[0]));
+      audioSession.playTheme();
     }
-    return () => stopTheme();
+    return () => audioSession.stopTheme();
   }, [profile]);
 
   /* Load this child's ChildProgress: local first (synchronous, always
@@ -469,11 +460,11 @@ export default function ReadPage() {
     if (phase === 'chapter-end') {
       // The cliffhanger cue (playCliffhanger(), effect below) owns this
       // moment — reading theme must not continue under it, not even ducked.
-      stopTheme();
+      audioSession.stopTheme();
     } else if (phase === 'listening' || phase === 'scoring' || phase === 'correction' || speaking) {
-      duckAmbience();
+      audioSession.setProductMode(phase === 'scoring' ? 'processing' : phase === 'correction' ? 'correction' : 'listening');
     } else {
-      restoreAmbience();
+      audioSession.setProductMode('idle');
     }
   }, [phase, speaking]);
 
@@ -493,8 +484,11 @@ export default function ReadPage() {
   }, [phase]);
 
   useEffect(() => {
-    if (phase === 'chapter-end') playCliffhanger();
-  }, [phase]);
+    if (phase === 'chapter-end') {
+      audioSession.playCliffhanger();
+      if (chapter) audioSession.speak(`You helped ${chapter.character} move the story forward. ${chapter.cliffhanger[0]} Tomorrow, ${chapter.teaser}`, { purpose: 'chapter-ending' });
+    }
+  }, [phase, chapter]);
 
   // Backgrounding: pause everything immediately (also cancels TTS — resuming
   // stale speech into whatever state the child is in after an unknown-length
@@ -508,17 +502,14 @@ export default function ReadPage() {
   useEffect(() => {
     function onVisibilityChange() {
       if (document.hidden) {
-        pauseForBackground();
-      } else if (phase === 'chapter-end') {
-        resumeMusic();
+        audioSession.background();
       } else {
-        playTheme();
+        audioSession.foreground();
       }
     }
     function onPageHide() {
-      stopSpeaking();
-      stopTheme();
-      stopMusic();
+      audioSession.cancelAll();
+      audioSession.stopTheme();
     }
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pagehide', onPageHide);
@@ -537,6 +528,10 @@ export default function ReadPage() {
   const sceneSelection = useMemo(
     () => (chapter ? selectSceneForPage(chapter, chapter.pages[pageIdx] ?? chapter.pages[0], pageIdx, profile?.avatar, user?.uid ?? null) : null),
     [chapter, pageIdx, profile?.avatar, user?.uid],
+  );
+  const sessionPlan = useMemo(
+    () => chapter && profile ? buildSessionPlan(chapter, profile.childName, loadReport()?.teaser ?? '') : [],
+    [chapter, profile],
   );
 
   if (!profile || !chapter) return <div className="screen" />;
@@ -564,7 +559,7 @@ export default function ReadPage() {
     // never race a ladder-driven rung 2/3 utterance.
     if (sessionRef.current || phase === 'listening' || phase === 'scoring') return;
     if (speaking) {
-      stopSpeaking();
+      audioSession.cancelSpeech();
       setSpeaking(false);
       return;
     }
@@ -578,9 +573,8 @@ export default function ReadPage() {
     // duck only runs on the NEXT render after setSpeaking(true) commits, one
     // tick behind. Without this, the first instant of speech is audible
     // under full-volume theme.
-    duckAmbience();
     setSpeaking(true);
-    speakPrompt(tricky ?? page.text, { onEnd: () => setSpeaking(false) });
+    audioSession.speak(tricky ?? page.text, { purpose: 'sentence-replay', onEnd: () => setSpeaking(false) });
   }
 
   function armSilenceStop(ms = 3000) {
@@ -599,14 +593,13 @@ export default function ReadPage() {
     startedReadingRef.current = true;
     liveRef.current = createLiveProgress(referenceText);
     setReadCount(0);
-    stopSpeaking();
+    audioSession.cancelSpeech();
     setSpeaking(false);
     // Duck synchronously — the caller already set phase to 'scoring'/mic
     // setup starts this same tick, ahead of the [phase,speaking] effect's
     // next-render pass. Mic setup can take real time (network/SDK), so this
     // also keeps theme quiet through the "One moment…" wait, not just once
     // Azure's onStatus('listening') callback eventually fires.
-    duckAmbience();
     listeningCuePlayedRef.current = false;
     try {
       // Setup watchdog: the token fetch / SDK load / mic prompt can hang on a
@@ -626,8 +619,7 @@ export default function ReadPage() {
         }
       }, 20_000);
       const authToken = user ? await user.getIdToken() : null;
-      const session = await startReadingSession({
-        referenceText,
+      const session = await audioSession.startListening(referenceText, {
         authToken,
         onStatus: (s) => {
           if (disposedRef.current) return;
@@ -635,7 +627,7 @@ export default function ReadPage() {
             setPhase('listening');
             if (!listeningCuePlayedRef.current) {
               listeningCuePlayedRef.current = true;
-              playListeningStart();
+              // AudioSession owns the single listening-start cue.
             }
           }
           if (s === 'error' && sessionRef.current) void finishListening();
@@ -844,11 +836,10 @@ export default function ReadPage() {
     setHelpDone(false);
     practicedRef.current.set(word, `the word “${word}” — worth a little practice together`);
     setPhase('correction');
-    duckAmbience(); // synchronous — see replayCurrentSentence()'s note on why; every rung ducks now, not just the speaking ones
     if (next === 3) {
       pageAssistedRef.current = true;
       setSpeaking(true);
-      speakPrompt(rungLine(3, { word, sentence: page.text, stage }), {
+      audioSession.speak(rungLine(3, { word, sentence: page.text, stage }), { purpose: 'correction-rung-3',
         onEnd: () => {
           if (disposedRef.current) return;
           setSpeaking(false);
@@ -904,9 +895,8 @@ export default function ReadPage() {
       pageAssistedRef.current = true;
       setTricky(null); // no single word — the WHOLE sentence is what's modeled
       setPhase('correction');
-      duckAmbience();
       setSpeaking(true);
-      speakPrompt(rungLine(3, { word: '', sentence: page.text, stage }), {
+      audioSession.speak(rungLine(3, { word: '', sentence: page.text, stage }), { purpose: 'phrase-model',
         onEnd: () => {
           if (disposedRef.current) return;
           setSpeaking(false);
@@ -917,9 +907,8 @@ export default function ReadPage() {
     }
     setTricky(null);
     setPhase('correction');
-    duckAmbience();
     setSpeaking(true);
-    speakPrompt(phraseRetryLine(page.text), {
+    audioSession.speak(phraseRetryLine(page.text), { purpose: 'phrase-retry-model',
       onEnd: () => {
         if (disposedRef.current) return;
         setSpeaking(false);
@@ -988,7 +977,7 @@ export default function ReadPage() {
     setTricky(null);
     setPraise(p);
     setCelebrateCue(cue);
-    if (cue) playReadingCue('section-success.mp3');
+    if (cue) audioSession.playReadingCue('section-success.mp3');
     setPhase('celebrate');
     // A real independent/retry success gets the brief star+sparkle+glow
     // beat (long enough for lc-success-pop + the sparkle drift to actually
@@ -1036,8 +1025,14 @@ export default function ReadPage() {
       pageInterventionsRef.current = null;
       pageAssistedRef.current = false;
       pageRereadRef.current = false;
-      if (pageIdx + 1 < chapter!.pages.length) {
-        playReadingCue('page-turn.mp3');
+      const interaction = interactionAfterPage(sessionPlan, pageIdx);
+      if (interaction && pageIdx + 1 < chapter!.pages.length) {
+        setPendingNextPage(pageIdx + 1);
+        setInteractionChoice(null);
+        setActiveInteraction(interaction);
+        setPhase('ready');
+      } else if (pageIdx + 1 < chapter!.pages.length) {
+        audioSession.playReadingCue('page-turn.mp3');
         setPageIdx((i) => i + 1);
         setPhase('ready');
       } else {
@@ -1048,6 +1043,8 @@ export default function ReadPage() {
   }
 
   function finishChapter() {
+    if (!claimEndingCompletion(finishChapterRef)) return;
+    audioSession.cancelAll();
     const c = chapter!;
     // Dedupe: a generated chapter may practise one or two words across every
     // page, and "den, den, den" reads like a bug to the parent.
@@ -1074,7 +1071,8 @@ export default function ReadPage() {
     // Signed-in parents opted into the session note at registration — send it
     // (in-app always; SMS when Twilio + their phone number are configured).
     // Best-effort: a delivery failure must never affect the child's flow.
-    if (user && !user.isAnonymous) {
+    const communication = loadPreferences().communication;
+    if (user && !user.isAnonymous && communication !== 'off') {
       void (async () => {
         try {
           const authToken = await user.getIdToken();
@@ -1082,6 +1080,7 @@ export default function ReadPage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
             body: JSON.stringify({
+              deliveryMode: communication,
               sessionData: {
                 childName: profile!.childName,
                 newWords,
@@ -1170,6 +1169,16 @@ export default function ReadPage() {
     }
 
     setPhase('chapter-end');
+  }
+
+  function continueAfterInteraction() {
+    if (pendingNextPage == null) return;
+    audioSession.playReadingCue('page-turn.mp3');
+    setPageIdx(pendingNextPage);
+    setPendingNextPage(null);
+    setActiveInteraction(null);
+    setInteractionChoice(null);
+    setPhase('ready');
   }
 
   /* Dev-only shortcut so the whole flow is testable without a microphone.
@@ -1265,131 +1274,74 @@ export default function ReadPage() {
     handleVerdicts(fakeResult, verdicts, null);
   }
 
-  /* ── Screen 5: chapter end ── */
+  if (introOpen) {
+    const welcome = sessionPlan.find((beat): beat is Extract<SessionBeat, { kind: 'welcome' }> => beat.kind === 'welcome');
+    return (
+      <div className="lc-session-interaction" data-session-beat="welcome">
+        <SceneBackground src={sceneBg} focal={sceneFocal} />
+        <div className="lc-interaction-card lc-scene-content">
+          <p className="lc-interaction-kicker">Welcome to today’s chapter</p>
+          <h1>Let’s find out what happens next.</h1>
+          <p>{welcome?.spokenLine}</p>
+          <button className="btn-primary lc-interaction-continue" onClick={() => {
+            if (!welcome) { setIntroOpen(false); return; }
+            setSpeaking(true);
+            audioSession.speak(welcome.spokenLine, { purpose: 'session-welcome', onEnd: () => setSpeaking(false) });
+            setIntroOpen(false);
+          }}>{speaking ? 'Listen…' : 'Open the story'}</button>
+          <SessionProgress current={0} total={sessionPlan.length} />
+        </div>
+      </div>
+    );
+  }
+
+  if (activeInteraction) {
+    const sound = activeInteraction.kind === 'sound-hunt' ? activeInteraction.activity : null;
+    const choices: readonly string[] = activeInteraction.kind === 'sound-hunt' ? activeInteraction.activity.choices : activeInteraction.choices;
+    const acknowledged = interactionChoice
+      ? activeInteraction.kind === 'prediction'
+        ? `That’s a wonderful idea. Let’s see what the story says.`
+        : interactionChoice === sound?.answer
+          ? `You found the ${sound.pattern} sound in “${sound.answer}”!`
+          : `Good listening. The ${sound?.pattern} sound is hiding in “${sound?.answer}.”`
+      : null;
+    return (
+      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind}>
+        <SceneBackground src={sceneBg} focal={sceneFocal} />
+        <div className="lc-interaction-card lc-scene-content">
+          <p className="lc-interaction-kicker">A story moment</p>
+          <h1>{activeInteraction.kind === 'sound-hunt' ? sound?.prompt : 'What do you think happens next?'}</h1>
+          <p>{activeInteraction.kind === 'sound-hunt' ? 'The answer is tucked inside the words you just read.' : 'Choose the idea that feels right to you.'}</p>
+          <div className="lc-choice-grid">
+            {choices.map((choice) => <button key={choice} className={interactionChoice === choice ? 'is-chosen' : ''} onClick={() => {
+              setInteractionChoice(choice);
+              audioSession.playHomeSound('tap-soft.mp3');
+            }}>{choice}</button>)}
+          </div>
+          {acknowledged && <p role="status">{acknowledged}</p>}
+          <button className="btn-primary lc-interaction-continue" disabled={!interactionChoice} onClick={continueAfterInteraction}>Keep the story going</button>
+          <SessionProgress current={sessionPlan.findIndex((beat) => beat.id === activeInteraction.id)} total={sessionPlan.length} />
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Screen 5: meaningful chapter ending ── */
   if (phase === 'chapter-end') {
     return (
-      <div className="scene lc-cliff" style={{ position: 'relative' }}>
-      <SceneBackground src={sceneBg} focal={sceneFocal} cliff />
-      <div className="screen lc-scene-content">
-        <header className="lc-top-controls" style={{ display: 'flex', padding: '16px 18px' }}>
-          <button
-            className="icon-btn"
-            aria-label="Home"
-            onClick={() => {
-              // Immediate: the cliffhanger cue (playMusic) may still be
-              // playing — cut it the instant the child taps, not a
-              // navigation-tick later. Unmount cleanup also stops it;
-              // harmless overlap.
-              stopMusic();
-              router.push('/home');
-            }}
-          >
-            <img src="/icons/home.png" alt="" style={{ height: 24, width: 'auto' }} />
-          </button>
-        </header>
-        <main
-          style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'flex-end',
-            alignItems: 'center',
-            textAlign: 'center',
-            padding: '0 34px 70px',
-          }}
-        >
-          <p className="lc-cliff-copy"
-            style={{
-              fontFamily: 'var(--serif)',
-              fontStyle: 'italic',
-              fontSize: 20,
-              lineHeight: 1.5,
-              color: 'var(--sunshine)',
-              textShadow: '0 1px 8px rgba(43,43,43,0.45)',
-              margin: '0 0 18px',
-            }}
-          >
-            {chapter.cliffhanger[0]}
-          </p>
-          <p className="lc-cliff-continue"
-            style={{
-              fontFamily: 'var(--serif)',
-              fontSize: 30,
-              lineHeight: 1.3,
-              color: 'var(--sunshine)',
-              textShadow: '0 1px 8px rgba(43,43,43,0.5)',
-              margin: 0,
-            }}
-          >
-            {chapter.cliffhanger[1]}
-          </p>
-          <div aria-hidden style={{ marginTop: 26, fontSize: 22, color: 'var(--sunshine)' }}>
-            ✦
-          </div>
-
-          {/* The upgrade moment. A subscriber has nothing to do here, so they
-              get no card at all — the cliffhanger is the ending. Everyone
-              else has just spent the free chapter, and this is the one place
-              in the app where asking for the sale is honest: they have seen
-              exactly what they would be buying. Still no urgency and no
-              guilt — "Maybe tomorrow" is a real option, and the free chapter
-              stays re-readable either way. */}
-          {subscribed !== true && (
-            <div
-              style={{
-                marginTop: 40,
-                background: 'rgba(255,255,255,0.95)',
-                borderRadius: 16,
-                padding: '20px 24px',
-                maxWidth: 320,
-                boxShadow: '0 4px 16px rgba(43,43,43,0.15)',
-              }}
-            >
-              <p style={{ fontFamily: 'var(--serif)', fontSize: 16, margin: '0 0 12px', color: 'var(--ink)' }}>
-                That was the free chapter — and they read it.
-              </p>
-              <p style={{ fontSize: 14, margin: '0 0 16px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
-                {signedIn
-                  ? 'Subscribe to get a new chapter every day, at their level, plus a short note for you after each session.'
-                  : 'Create an account to keep the story going — a new chapter every day, at their level, plus a short note for you after each session.'}
-              </p>
-              <button
-                onClick={() => router.push('/unlock')}
-                className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  fontSize: 15,
-                  fontWeight: 600,
-                  borderRadius: 10,
-                  border: 0,
-                  background: 'var(--leaf)',
-                  color: '#fff',
-                  cursor: 'pointer',
-                }}
-              >
-                Keep the story going
-              </button>
-              <button
-                onClick={() => router.push('/home')}
-                style={{
-                  width: '100%',
-                  padding: '10px',
-                  fontSize: 13,
-                  marginTop: 8,
-                  borderRadius: 10,
-                  border: 0,
-                  background: 'transparent',
-                  color: 'var(--ink-soft)',
-                  cursor: 'pointer',
-                }}
-              >
-                Maybe tomorrow
-              </button>
-            </div>
-          )}
-        </main>
-      </div>
+      <div className="lc-session-interaction lc-ending-v11" data-session-beat="ending">
+        <SceneBackground src={sceneBg} focal={sceneFocal} cliff />
+        <div className="lc-interaction-card lc-scene-content">
+          <div className="lc-ending-star" aria-hidden><img src="/icons/success-star.png" alt="" /></div>
+          <p className="lc-interaction-kicker">Today’s adventure is complete</p>
+          <h1>You helped {chapter.character} move the story forward.</h1>
+          <p>{chapter.cliffhanger[0]}</p>
+          <p className="lc-tomorrow-paper"><strong>Tomorrow:</strong> {chapter.teaser}</p>
+          <button className="btn-primary lc-interaction-continue" onClick={() => {
+            audioSession.cancelAll(); audioSession.stopTheme(); router.push('/home');
+          }}>Back to Home</button>
+          {subscribed !== true && <p className="lc-grownup-handoff">The next chapter will have a quiet note for a grown-up on Home.</p>}
+        </div>
       </div>
     );
   }
@@ -1418,9 +1370,9 @@ export default function ReadPage() {
             // moment of the tap should cut the instant the child taps close,
             // not a navigation-tick later. The unmount cleanup below still
             // runs too — harmless, everything it stops is already stopped.
-            stopSpeaking();
-            stopTheme();
-            playHomeSound('close.mp3');
+            audioSession.cancelAll();
+            audioSession.stopTheme();
+            audioSession.playHomeSound('close.mp3');
             router.push('/home');
           }}
         >
@@ -1437,7 +1389,7 @@ export default function ReadPage() {
           style={phase === 'listening' || phase === 'scoring' || phase === 'correction' ? { opacity: 0.45, cursor: 'default' } : undefined}
           onClick={() => {
             if (phase === 'listening' || phase === 'scoring' || phase === 'correction') return;
-            playHomeSound('replay.mp3');
+            audioSession.playHomeSound('replay.mp3');
             replayCurrentSentence();
           }}
         >
@@ -1473,7 +1425,7 @@ export default function ReadPage() {
                 segments={slideSegments}
                 onComplete={() => {
                   setSpeaking(true);
-                  speakPrompt(tricky, {
+                  audioSession.speak(tricky, { purpose: 'slider-word-blend',
                     onEnd: () => {
                       if (disposedRef.current) return;
                       setSpeaking(false);

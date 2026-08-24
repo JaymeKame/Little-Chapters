@@ -62,12 +62,19 @@ const VOICE_PROVIDER = process.env.NEXT_PUBLIC_VOICE_PROVIDER;
  *  right now?" for module-level Audio elements that aren't in the DOM. */
 const VOICE_LOG_MAX = 20;
 const _voiceHistory: Record<string, unknown>[] = [];
+const _voiceListeners = new Set<(event: Record<string, unknown>) => void>();
 
 function voiceLog(event: Record<string, unknown>): void {
   const entry = { ...event, ts: Date.now() };
   console.debug('[Voice]', entry);
   _voiceHistory.push(entry);
   if (_voiceHistory.length > VOICE_LOG_MAX) _voiceHistory.shift();
+  for (const listener of _voiceListeners) listener(entry);
+}
+
+export function subscribeVoiceTelemetry(listener: (event: Record<string, unknown>) => void): () => void {
+  _voiceListeners.add(listener);
+  return () => _voiceListeners.delete(listener);
 }
 
 /** ElevenLabs' turbo_v2 tends toward a flat, clipped read for input with no
@@ -359,12 +366,18 @@ export function welcomeLine(
 /* ── Ambience / music / UI sound (asset-based; silent if asset missing) ─ */
 
 const AUDIO_VOLUMES = {
-  theme: 0.045,
-  ambience: 0.03,
-  music: 0.18,
+  theme: 0.025,
+  ambience: 0.02,
+  music: 0.1,
   ui: 0.28,
-  duckFactor: 0.35,
+  duckFactor: 0.04,
 } as const;
+export type MusicPolicy = 'off' | 'low' | 'normal';
+let musicPolicy: MusicPolicy = 'normal';
+
+function policyFactor(): number {
+  return musicPolicy === 'off' ? 0 : musicPolicy === 'low' ? 0.5 : 1;
+}
 
 let themeEl: HTMLAudioElement | null = null;
 let themeAsset: string | null = null;
@@ -383,7 +396,7 @@ function fadeElement(el: HTMLAudioElement | null, target: number): void {
   const previous = fadeTimers.get(el);
   if (previous) clearInterval(previous);
   const start = el.volume;
-  const steps = 8;
+  const steps = 16;
   let step = 0;
   const timer = setInterval(() => {
     step += 1;
@@ -392,7 +405,7 @@ function fadeElement(el: HTMLAudioElement | null, target: number): void {
       clearInterval(timer);
       fadeTimers.delete(el);
     }
-  }, 25);
+  }, 50);
   fadeTimers.set(el, timer);
 }
 
@@ -427,7 +440,7 @@ export function prepareStoryAudio(theme: string | null | undefined): void {
 export function playTheme(): void {
   if (!themeEl) return;
   if (typeof document !== 'undefined' && document.hidden) return; // see speakPrompt()'s guard for why
-  themeEl.volume = ducked ? AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.theme;
+  themeEl.volume = AUDIO_VOLUMES.theme * policyFactor() * (ducked ? AUDIO_VOLUMES.duckFactor : 1);
   void themeEl.play().then(() => audioLog(`theme -> ${themeAsset?.replace('/audio/', '').replace('.mp3', '')}`)).catch(() => {});
 }
 
@@ -477,7 +490,7 @@ export function playAmbience(asset: string | null | undefined): void {
   try {
     const el = new Audio(asset);
     el.loop = true;
-    el.volume = ducked ? AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.ambience;
+    el.volume = AUDIO_VOLUMES.ambience * policyFactor() * (ducked ? AUDIO_VOLUMES.duckFactor : 1);
     el.addEventListener('error', () => stopAmbience()); // missing/unsupported asset — stay silent
     void el.play().catch(() => {}); // autoplay-blocked — user interaction can call playAmbience again
     ambienceEl = el;
@@ -506,18 +519,29 @@ export function setAmbienceVolume(volume: number): void {
   if (ambienceEl) ambienceEl.volume = ducked ? next * 0.18 : next;
 }
 
+/** Architectural preference hook for Wave 1; Settings UI follows later. */
+export function setMusicPolicy(policy: MusicPolicy): void {
+  musicPolicy = policy;
+  const factor = policyFactor() * (ducked ? AUDIO_VOLUMES.duckFactor : 1);
+  fadeElement(themeEl, AUDIO_VOLUMES.theme * factor);
+  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience * factor);
+  fadeElement(musicEl, AUDIO_VOLUMES.music * factor);
+}
+
 /** Speech always wins: duck ambience while the child/AI/help audio plays. */
 export function duckAmbience(): void {
   ducked = true;
-  fadeElement(themeEl, AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor);
-  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor);
+  fadeElement(themeEl, AUDIO_VOLUMES.theme * policyFactor() * AUDIO_VOLUMES.duckFactor);
+  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience * policyFactor() * AUDIO_VOLUMES.duckFactor);
+  fadeElement(musicEl, AUDIO_VOLUMES.music * policyFactor() * AUDIO_VOLUMES.duckFactor);
   audioLog('duck -> listening');
 }
 
 export function restoreAmbience(): void {
   ducked = false;
-  fadeElement(themeEl, AUDIO_VOLUMES.theme);
-  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience);
+  fadeElement(themeEl, AUDIO_VOLUMES.theme * policyFactor());
+  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience * policyFactor());
+  fadeElement(musicEl, AUDIO_VOLUMES.music * policyFactor());
   audioLog('restore');
 }
 
@@ -550,7 +574,7 @@ export function playMusic(asset: string | null | undefined): void {
   stopMusic();
   try {
     const el = new Audio(asset);
-    el.volume = AUDIO_VOLUMES.music;
+    el.volume = AUDIO_VOLUMES.music * policyFactor() * (ducked ? AUDIO_VOLUMES.duckFactor : 1);
     el.addEventListener('ended', () => stopMusic(), { once: true });
     musicEl = el;
     void el.play().catch(() => stopMusic());
@@ -648,4 +672,3 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
     recent: [..._voiceHistory],
   });
 }
-

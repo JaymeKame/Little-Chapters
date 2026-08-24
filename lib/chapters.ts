@@ -11,6 +11,7 @@
 import type { ChildProfile, InterestId } from './profile';
 import { loadReport } from './profile';
 import { loadLocalProgress } from './child-progress';
+import { loadPreferenceValues } from './preference-values';
 import { initialStage } from '../reading-tutor/src/progression';
 import { pickSkeleton, type Skeleton } from '../reading-tutor/src/skeletons';
 import { assignSlots } from '../reading-tutor/src/slots';
@@ -365,7 +366,11 @@ function rememberSkeleton(profile: ChildProfile, id: string): void {
 export function resolveGenerationStage(profile: ChildProfile, uid: string | null): number {
   const persisted = loadLocalProgress(uid, profile.childId);
   if (persisted) return persisted.stage;
-  return initialStage(stageForAge(profile.age));
+  const observation = typeof window !== 'undefined' ? loadPreferenceValues().difficultyObservation : 'about-right';
+  const adjustment = observation === 'too-easy' ? 1 : observation === 'too-hard' ? -1 : 0;
+  // Parent observation only nudges cold-start placement. Once validated
+  // ChildProgress exists, the persisted adaptive stage above always wins.
+  return initialStage(Math.min(10, Math.max(1, stageForAge(profile.age) + adjustment)));
 }
 
 export function tutorStoryContext(profile: ChildProfile, uid: string | null): { stage: number; skeleton: Skeleton } {

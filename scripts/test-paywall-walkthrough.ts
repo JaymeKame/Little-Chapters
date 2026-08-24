@@ -15,7 +15,6 @@
  *   node --experimental-strip-types scripts/test-paywall-walkthrough.ts
  */
 
-// @ts-expect-error - playwright has no local type declarations; see test-audio-lifecycle.ts
 import { chromium } from 'playwright';
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';
@@ -32,7 +31,7 @@ function fail(label: string, detail?: string): void {
 }
 
 async function main() {
-  const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+  const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
 
@@ -57,14 +56,15 @@ async function main() {
       );
     });
     await page.goto(`${BASE_URL}/home`);
-    await page.waitForSelector('button[aria-label="Start today\'s chapter"]', { timeout: 15000 });
-    ok('Home renders the unlocked "Start today\'s chapter" button for a brand-new anonymous profile (no free chapter spent yet)');
+    await page.waitForSelector('button[aria-label="Play today’s adventure"]', { timeout: 15000 });
+    ok('Home renders the unlocked Play action for a brand-new anonymous profile');
   }
 
   console.log('\n=== Test 2: full Reader regression — Home -> Read -> listening -> scoring -> correction -> success -> page change ===');
   {
-    await page.click('button[aria-label="Start today\'s chapter"]');
+    await page.click('button[aria-label="Play today’s adventure"]');
     await page.waitForURL('**/read', { timeout: 10000 });
+    await page.getByRole('button', { name: 'Open the story' }).click();
     await page.waitForSelector('button[aria-label="Start reading"]', { timeout: 15000 });
     ok('Read screen loads with the intro/start-reading control (not bounced to /unlock — chapter is not locked)');
 
@@ -77,52 +77,55 @@ async function main() {
       ok('dev-only sim buttons are present (mic-free regression path available)');
     }
 
-    // Drive through every page of the chapter with "sim: good" (clean read,
-    // no correction needed) to prove the ordinary success path is intact,
-    // then confirm the chapter-end screen (with its NEW subscribed-aware
-    // upgrade card) renders correctly instead of the reading UI.
+    // Drive through every page and each planned interaction. Predictions do
+    // not branch the canonical chapter and the sound hunt appears only once.
     let pages = 0;
     const maxPages = 12;
     while (pages < maxPages) {
+      const interaction = page.locator('[data-session-beat="sound-hunt"], [data-session-beat="prediction"]');
+      if (await interaction.count()) {
+        await interaction.locator('.lc-choice-grid button').first().click();
+        await interaction.getByRole('button', { name: 'Keep the story going' }).click();
+        await page.waitForTimeout(200);
+        continue;
+      }
       const simGood = page.locator('button:has-text("sim: good")');
       if ((await simGood.count()) === 0) break;
       await simGood.first().click();
       pages += 1;
-      // Either the next page's "Start reading" appears, or we've reached
-      // chapter-end (the upgrade card / "To be continued").
       await page.waitForTimeout(900);
-      const chapterEndVisible = await page.locator('text=To be continued').count();
+      const chapterEndVisible = await page.locator('[data-session-beat="ending"]').count();
       if (chapterEndVisible > 0) break;
     }
     ok(`advanced through ${pages} page(s) via sim: good without a stuck state`);
 
-    const chapterEndVisible = await page.locator('text=To be continued').count();
+    const chapterEndVisible = await page.locator('[data-session-beat="ending"]').count();
     if (chapterEndVisible > 0) {
-      ok('chapter-end screen reached ("To be continued...")');
+      ok('meaningful chapter-ending screen reached');
     } else {
-      fail('chapter-end screen ("To be continued...") never appeared after driving through sim: good pages');
+      fail('chapter-ending screen never appeared after driving the session plan');
     }
   }
 
-  console.log('\n=== Test 3: chapter-end shows the upgrade card for a signed-out, free-chapter-spent reader ===');
+  console.log('\n=== Test 3: ending preserves the child payoff before a grown-up handoff ===');
   {
-    const keepGoing = page.locator('button:has-text("Keep the story going")');
-    const maybeTomorrow = page.locator('button:has-text("Maybe tomorrow")');
-    if ((await keepGoing.count()) > 0 && (await maybeTomorrow.count()) > 0) {
-      ok('upgrade card renders with "Keep the story going" / "Maybe tomorrow" (PR#19 copy, not the old "Create Free Account"/"Maybe Later")');
+    const backHome = page.getByRole('button', { name: 'Back to Home' });
+    const handoff = page.getByText(/quiet note for a grown-up/i);
+    if ((await backHome.count()) === 1 && (await handoff.count()) === 1) {
+      ok('ending has one child action and a quiet grown-up handoff, with no covering paywall');
     } else {
-      fail('expected upgrade-card buttons not found on chapter-end screen');
+      fail('expected ending action or grown-up handoff was not found');
     }
 
     const oldCopy = await page.locator('text=Create Free Account').count();
     if (oldCopy === 0) {
-      ok('old "Create Free Account" copy is gone (fully replaced, not duplicated)');
+      ok('account-conversion copy does not cover the child-facing ending');
     } else {
       fail('old "Create Free Account" copy is still present alongside the new card');
     }
   }
 
-  console.log('\n=== Test 4: chapter history was actually recorded (free chapter now spent) ===');
+  console.log('\n=== Test 4: completion persists and Home renders Completed Today ===');
   {
     const historyCount = await page.evaluate(() => {
       try {
@@ -137,6 +140,9 @@ async function main() {
     } else {
       fail('no chapter-history entry recorded after completing the chapter', String(historyCount));
     }
+    await page.getByRole('button', { name: 'Back to Home' }).click();
+    await page.waitForSelector('[data-home-state="completed"]', { timeout: 15000 });
+    ok('Back to Home renders the peaceful Completed Today state');
   }
 
   console.log('\n=== Test 5: /unlock renders standalone (paywall screen itself, not wired to a live Stripe key in this env) ===');
