@@ -23,7 +23,7 @@
  * its sibling SlideWordHelp. */
 
 import { useEffect, useRef, useState } from 'react';
-import { speakPrompt } from '@/lib/audio';
+import { audioSession } from '@/lib/audio-session';
 import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
 import { MicIcon } from '@/components/icons/MicIcon';
 
@@ -52,7 +52,8 @@ export function AudioWordHelp({
     setYourTurn(false);
     firedRef.current = false;
     setSpeaking(true);
-    speakPrompt(word, {
+    audioSession.speak(word, {
+      purpose: 'sight-word-model',
       onEnd: () => {
         if (disposedRef.current) return;
         setSpeaking(false);

@@ -7,6 +7,10 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { useEffect } from 'react';
+import { useAuth } from '@/components/AuthProvider';
+import { loadProfile } from '@/lib/profile';
+import { resolveProfile, saveAccountProfile } from '@/lib/profile-repository';
 import {
   AVATARS,
   INTERESTS,
@@ -22,6 +26,8 @@ import {
 
 export default function SetupPage() {
   const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
+  const [checkingExisting, setCheckingExisting] = useState(true);
   const [name, setName] = useState('');
   const [age, setAge] = useState(6);
   const [avatar, setAvatar] = useState<AvatarId | undefined>(undefined);
@@ -29,17 +35,35 @@ export default function SetupPage() {
 
   const ready = name.trim().length > 0 && picked.length === 3;
 
+  useEffect(() => {
+    if (authLoading) return;
+    let cancelled = false;
+    void resolveProfile(user).then(({ profile, source }) => {
+      if (cancelled) return;
+      if (profile) { router.replace('/home'); return; }
+      // A registered family is not "genuinely missing" while its account
+      // lookup is unavailable. Never expose a form that could overwrite it.
+      if (source !== 'unavailable') setCheckingExisting(false);
+    });
+    return () => { cancelled = true; };
+  }, [authLoading, router, user]);
+
   function toggle(id: InterestId) {
     setPicked((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : prev.length < 3 ? [...prev, id] : prev,
     );
   }
 
-  function start() {
+  async function start() {
     if (!ready) return;
-    saveProfile({ childId: newChildId(), childName: name.trim(), age, interests: picked, avatar, createdAt: Date.now() });
+    if (loadProfile()) { router.replace('/home'); return; }
+    const profile = { childId: newChildId(), childName: name.trim(), age, interests: picked, avatar, createdAt: Date.now() };
+    saveProfile(profile);
+    if (user && !user.isAnonymous) await saveAccountProfile(user, profile);
     router.push('/home');
   }
+
+  if (checkingExisting) return <div className="screen" role="status" aria-label="Checking your story" />;
 
   return (
     <div className="screen">

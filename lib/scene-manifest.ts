@@ -1430,3 +1430,20 @@ export const SCENE_MANIFEST: SceneAsset[] = [
     focal: { x: 0.4, y: 0.55 },
   },
 ];
+
+/** Wave 1 visual gate. Only reviewed, character-neutral storybook
+ * environments may enter runtime selection. Every other historical scene is
+ * quarantined by omission until a human explicitly approves it. */
+export const APPROVED_SCENE_IDS = [
+  'bg-river-valley-sunset-01',
+  'bg-meadow-path-sunny-01',
+  'bg-coastal-cliff-sunset-01',
+  'bg-forest-bridge-stream-01',
+] as const;
+
+const approvedIds = new Set<string>(APPROVED_SCENE_IDS);
+export const RUNTIME_SCENE_MANIFEST = SCENE_MANIFEST.filter((asset) => approvedIds.has(asset.id));
+
+export function sceneApproval(assetId: string): 'approved' | 'quarantined' {
+  return approvedIds.has(assetId) ? 'approved' : 'quarantined';
+}
