@@ -23,7 +23,7 @@ import { getFirebaseAuth } from '@/lib/firebase';
 import { claimPetFromAnonymousUid } from '@/lib/pet';
 import { claimChildProgressFromAnonymousUid } from '@/lib/child-progress';
 import { claimChapterHistoryFromAnonymousUid } from '@/lib/chapter-history';
-import { loadProfile } from '@/lib/profile';
+import { loadProfile, mirrorProfileRemote } from '@/lib/profile';
 import { INVALID_PHONE_MESSAGE, normalizePhoneNumber } from '@/lib/phone';
 
 /** Claims everything keyed by the outgoing anonymous uid into the new uid —
@@ -41,6 +41,30 @@ function claimAnonymousChild(newUid: string, oldAnonUid: string): void {
   claimChapterHistoryFromAnonymousUid(newUid, oldAnonUid);
   const profile = loadProfile();
   if (profile) claimChildProgressFromAnonymousUid(newUid, oldAnonUid, profile.childId);
+}
+
+/** Mirrors the browser's local child profile to whichever uid the parent
+ *  just became, immediately as part of THIS auth transition — not
+ *  deferred to a later /home or /read visit the way the mirror used to be
+ *  triggered. A parent who links or recovers an account and then closes
+ *  the tab before ever reaching /home (e.g. abandoning partway through the
+ *  payment funnel) previously left no server-side profile record at all;
+ *  a second device signed into the same account would find nothing and be
+ *  routed to /setup, silently losing the child's identity and history
+ *  despite the parent having genuinely registered. loadProfile() reads the
+ *  SAME single, non-uid-scoped local key the anonymous session already
+ *  had, so this mirrors the existing child — it never creates a new one.
+ *  Fire-and-forget by design (mirrorProfileRemote() never throws): this
+ *  must never block or fail the sign-in it rides along with. */
+function mirrorLocalProfile(user: User): void {
+  const profile = loadProfile();
+  if (!profile) return;
+  void user
+    .getIdToken()
+    .then((token) => mirrorProfileRemote(token, profile))
+    .catch(() => {
+      /* best-effort — the next /home or /read visit still mirrors it too */
+    });
 }
 
 interface AuthContextValue {
@@ -136,6 +160,7 @@ async function recoverExistingAccount(
     try {
       const cred = await signInWithCredential(auth, credential);
       if (outgoingAnonUid) claimAnonymousChild(cred.user.uid, outgoingAnonUid);
+      mirrorLocalProfile(cred.user);
       publish();
       return;
     } catch (err) {
@@ -157,6 +182,7 @@ async function recoverExistingAccount(
   try {
     const cred = await signInWithPopup(auth, provider);
     if (outgoingAnonUid) claimAnonymousChild(cred.user.uid, outgoingAnonUid);
+    mirrorLocalProfile(cred.user);
     publish();
   } catch (err) {
     recordAuthError(err);
@@ -180,6 +206,7 @@ async function upgradeOrSignIn(
     recordAuthOp('link-popup');
     try {
       await linkWithPopup(current, provider);
+      mirrorLocalProfile(current);
       publish();
       return;
     } catch (err) {
@@ -206,6 +233,7 @@ async function upgradeOrSignIn(
   try {
     const cred = await signInWithPopup(auth, provider);
     if (outgoingAnonUid) claimAnonymousChild(cred.user.uid, outgoingAnonUid);
+    mirrorLocalProfile(cred.user);
     publish();
   } catch (err) {
     recordAuthError(err);

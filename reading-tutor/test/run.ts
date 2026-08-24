@@ -21,6 +21,8 @@ import { appendChapterHistoryEntry, wasChapterCompleted, loadChapterHistoryLocal
 import { freeChapterSpent, chaptersCompleted } from '../../lib/entitlement.ts';
 import { fetchRemoteProfile, mirrorProfileRemote } from '../../lib/profile.ts';
 import { generateStoryDraft, isStoryGenerationConfigured } from '../../lib/story-generator.server.ts';
+import { isAuthoritativeChapterRecord, type PersistedChapterRecord } from '../../lib/chapter-store-admin.ts';
+import { resolveRootEntry } from '../../lib/root-entry.ts';
 import { toWordSignals, toSentenceResult } from '../../lib/reading-signal-adapter.ts';
 import { interpretSessionWithIntervention, type SessionIntervention } from '../../lib/reading-session-interpreter.ts';
 import { HELP_LADDER, rungLine, graphemeCueFor, segmentWord } from '../../lib/help-ladder.ts';
@@ -1318,6 +1320,137 @@ section('Chapter lifecycle - static checks (returning-user boot flow, persisted 
   const profileRouteSrc = read('app/api/profile/route.ts');
   ok((profileRouteSrc.match(/requireReadingUser\(request\)/g) ?? []).length === 2, '/api/profile uses requireReadingUser (verified Firebase ID token) for both GET and POST');
   ok(!/body\??\.uid/.test(profileRouteSrc), '/api/profile never reads a uid out of the request body');
+}
+
+section('commercial-v1 fix A — a fallback chapter is never persisted as the permanent daily chapter');
+{
+  const day = '2026-08-24';
+  const base = { day, chapterId: 'dogs-ava-2026-08-24', stage: 3, createdAt: new Date().toISOString() };
+  const noRecord: PersistedChapterRecord | null = null;
+  const fallbackRecord: PersistedChapterRecord = { ...base, source: 'fallback' };
+  const generatedRecord: PersistedChapterRecord = { ...base, source: 'generated', draft: { title: 't', character: 'c', setting: 's', pages: [] } as never };
+
+  ok(!isAuthoritativeChapterRecord(noRecord), 'no record yet is NOT authoritative — get-or-create must attempt generation');
+  ok(!isAuthoritativeChapterRecord(undefined), 'undefined is NOT authoritative either (same as no record)');
+  ok(!isAuthoritativeChapterRecord(fallbackRecord), "a persisted 'fallback' record is NOT authoritative — a later request must retry generation, not accept the fallback as final");
+  ok(isAuthoritativeChapterRecord(generatedRecord), "a persisted 'generated' record IS authoritative — a later request must NOT regenerate");
+
+  const fs = await import('node:fs');
+  const storeSrc = fs.readFileSync(new URL('../../lib/chapter-store-admin.ts', import.meta.url), 'utf8');
+  ok(
+    storeSrc.includes("generated.source !== 'generated'") && /return\s*\{[\s\S]{0,120}created:\s*false/.test(storeSrc.slice(storeSrc.indexOf("generated.source !== 'generated'"))),
+    'a fallback generation result is returned to the caller WITHOUT ever reaching tx.set (never persisted)',
+  );
+  ok(
+    storeSrc.indexOf("generated.source !== 'generated'") < storeSrc.indexOf('runTransaction'),
+    'the fallback short-circuit happens BEFORE the transaction that would persist a record — a fallback can never reach tx.set',
+  );
+  ok(
+    (storeSrc.match(/if \(isAuthoritativeChapterRecord\(/g) ?? []).length === 2,
+    'both the fast-path existence check AND the in-transaction re-check gate on isAuthoritativeChapterRecord — no path short-circuits on a stale fallback record',
+  );
+}
+
+section('commercial-v1 fix B — anonymous returning-user lifecycle (resolveRootEntry)');
+{
+  async function resolve(options: { authenticated: boolean; local?: object | null; remote?: object | null }) {
+    let saved: object | null = null;
+    let remoteCalls = 0;
+    const destination = await resolveRootEntry({
+      isAuthenticated: options.authenticated,
+      loadLocalProfile: () => options.local ?? null,
+      fetchRemoteProfile: async () => {
+        remoteCalls++;
+        return options.remote ?? null;
+      },
+      saveLocalProfile: (profile) => {
+        saved = profile;
+      },
+    });
+    return { destination, saved, remoteCalls };
+  }
+
+  const brandNew = await resolve({ authenticated: false });
+  ok(brandNew.destination === 'landing', 'a truly brand-new anonymous visitor (no local profile) still sees the acquisition landing page');
+  ok(brandNew.remoteCalls === 0, 'a brand-new visitor never attempts a remote profile fetch');
+
+  const returningAnonymous = await resolve({ authenticated: false, local: { childId: 'anon-child' } });
+  ok(
+    returningAnonymous.destination === '/home',
+    'FIX B: an anonymous parent who already completed Setup goes straight to /home on return — not the acquisition landing page, merely because isAuthenticated is false',
+  );
+  ok(returningAnonymous.remoteCalls === 0, 'the anonymous-with-local-profile path never attempts (or needs) a remote fetch — no cross-device anonymous identity recovery is manufactured');
+
+  const registeredWithLocal = await resolve({ authenticated: true, local: { childId: 'registered-child' } });
+  ok(registeredWithLocal.destination === '/home', 'existing behavior preserved: a registered user with a local profile still goes to /home');
+
+  const remoteProfile = { childId: 'remote-child' };
+  const registeredRemoteOnly = await resolve({ authenticated: true, remote: remoteProfile });
+  ok(registeredRemoteOnly.destination === '/home', 'existing behavior preserved: registered-user remote-profile restoration still works');
+  ok(registeredRemoteOnly.saved === remoteProfile, 'existing behavior preserved: a restored remote profile is still adopted locally');
+
+  const registeredNoProfile = await resolve({ authenticated: true });
+  ok(registeredNoProfile.destination === '/setup', 'existing behavior preserved: a registered user with truly no profile anywhere still goes to /setup');
+
+  const anonymousNoProfileEver = await resolve({ authenticated: false, remote: { childId: 'should-never-be-fetched' } });
+  ok(
+    anonymousNoProfileEver.destination === 'landing' && anonymousNoProfileEver.remoteCalls === 0,
+    'an unauthenticated visitor never triggers a remote fetch even if one would hypothetically return something — no cross-device anonymous recovery, by construction',
+  );
+}
+
+section('commercial-v1 fix B — /setup can never silently overwrite an existing valid profile (static check, no DOM harness in this environment)');
+{
+  const fs = await import('node:fs');
+  const setupSrc = fs.readFileSync(new URL('../../app/setup/page.tsx', import.meta.url), 'utf8');
+  ok(setupSrc.includes('loadProfile'), '/setup imports loadProfile to check for an existing profile');
+  ok(
+    /useEffect\(\(\) => \{\s*if \(loadProfile\(\)\)/.test(setupSrc.replace(/\s+/g, ' ')),
+    '/setup checks loadProfile() in a mount effect, before the form can be interacted with',
+  );
+  ok(
+    setupSrc.includes("router.replace('/home')"),
+    "/setup redirects an existing-profile visitor straight to /home instead of rendering onboarding over their profile",
+  );
+  ok(
+    /if \(checkingExisting\) return <div className="screen" \/>;/.test(setupSrc),
+    '/setup renders a neutral loading state (not the form) while the existing-profile check is still in flight',
+  );
+  ok(
+    setupSrc.indexOf('useEffect') < setupSrc.indexOf('if (checkingExisting)'),
+    'the existing-profile guard (useEffect) runs before the loading-state short-circuit it controls',
+  );
+}
+
+section('commercial-v1 fix C — registration-time profile mirror (static check: no Firebase web config in this environment)');
+{
+  const fs = await import('node:fs');
+  const authSrc = fs.readFileSync(new URL('../../components/AuthProvider.tsx', import.meta.url), 'utf8');
+  ok(authSrc.includes('function mirrorLocalProfile'), 'AuthProvider defines a helper that mirrors the local profile immediately on a successful auth transition');
+  ok(
+    /function mirrorLocalProfile\(user: User\): void \{\s*const profile = loadProfile\(\);/.test(authSrc.replace(/\s+/g, ' ')),
+    'mirrorLocalProfile() reads the SAME loadProfile() the anonymous session already had — it mirrors the existing child, never creates a new one',
+  );
+  ok(authSrc.includes('mirrorProfileRemote(token, profile)'), 'mirrorLocalProfile() calls mirrorProfileRemote() rather than writing a fresh profile');
+  const callSites = (authSrc.match(/mirrorLocalProfile\((cred\.user|current)\)/g) ?? []).length;
+  ok(
+    callSites === 4,
+    `mirrorLocalProfile() is called from all four sign-in success paths (linkWithPopup, credential-recovery, its signInWithPopup fallback, and the direct sign-in branch) — found ${callSites}`,
+  );
+  ok(
+    authSrc.indexOf('function mirrorLocalProfile') < authSrc.indexOf('async function recoverExistingAccount'),
+    'mirrorLocalProfile is defined before it is used — no forward-reference relying on hoisting quirks',
+  );
+  // The linkWithPopup success path must mirror the profile BEFORE publish(),
+  // not deferred to a later /home or /read visit — bound the slice to just
+  // that branch (up to its own catch block) so this doesn't accidentally
+  // match a later, unrelated section of the file.
+  const linkStart = authSrc.indexOf("recordAuthOp('link-popup')");
+  const linkSection = authSrc.slice(linkStart, authSrc.indexOf('} catch (err) {', linkStart));
+  ok(
+    linkSection.includes('mirrorLocalProfile(current)') && linkSection.indexOf('mirrorLocalProfile(current)') < linkSection.indexOf('publish()'),
+    'the linkWithPopup success path mirrors the profile BEFORE publish() — not deferred to a later page visit',
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

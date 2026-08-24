@@ -6,7 +6,7 @@
  * "Feels like the beginning of a story, not a signup" — no account fields.  */
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AVATARS,
   INTERESTS,
@@ -14,6 +14,7 @@ import {
   avatarImageObjectPosition,
   avatarImageSrc,
   interestImageSrc,
+  loadProfile,
   newChildId,
   saveProfile,
   type AvatarId,
@@ -22,10 +23,24 @@ import {
 
 export default function SetupPage() {
   const router = useRouter();
+  // Never let this form silently overwrite an existing valid child profile
+  // — a returning visitor (anonymous demo or registered) who reaches /setup
+  // again (stale bookmark, back button, a shared link) already has a real
+  // profile and reading history on this browser; send them to it instead
+  // of re-running onboarding over it with a brand-new childId.
+  const [checkingExisting, setCheckingExisting] = useState(true);
   const [name, setName] = useState('');
   const [age, setAge] = useState(6);
   const [avatar, setAvatar] = useState<AvatarId | undefined>(undefined);
   const [picked, setPicked] = useState<InterestId[]>([]);
+
+  useEffect(() => {
+    if (loadProfile()) {
+      router.replace('/home');
+      return;
+    }
+    setCheckingExisting(false);
+  }, [router]);
 
   const ready = name.trim().length > 0 && picked.length === 3;
 
@@ -40,6 +55,8 @@ export default function SetupPage() {
     saveProfile({ childId: newChildId(), childName: name.trim(), age, interests: picked, avatar, createdAt: Date.now() });
     router.push('/home');
   }
+
+  if (checkingExisting) return <div className="screen" />;
 
   return (
     <div className="screen">

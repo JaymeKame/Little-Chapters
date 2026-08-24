@@ -47,24 +47,50 @@ export async function loadTodayChapter(uid: string, childId: string, day: string
   return snap.exists ? (snap.data() as PersistedChapterRecord) : null;
 }
 
-/** Get-or-create: if a record already exists for this uid+childId+day,
- *  returns it UNCHANGED — no regeneration, no re-persist, regardless of
- *  what `generate` would produce this time. Otherwise calls `generate()`
- *  once and persists whatever it returns (tagged 'generated' or
- *  'fallback' by the caller), so a refresh, a second tab, or a second
- *  device never produces a second chapter for the same day.
+/** The one decision rule get-or-create runs on every existence check: only
+ *  a `source: 'generated'` record is authoritative. `null`/`undefined`
+ *  (nothing persisted yet) and a `'fallback'` record (a past attempt that
+ *  failed) are both "not yet generated" — get-or-create must retry
+ *  generation for either, never short-circuit on them. Exported as a pure
+ *  function, with no Firestore dependency, specifically so this rule is
+ *  directly testable without a live Admin SDK connection. */
+export function isAuthoritativeChapterRecord(record: PersistedChapterRecord | null | undefined): boolean {
+  return record?.source === 'generated';
+}
+
+/** Get-or-create: if a GENERATED record already exists for this
+ *  uid+childId+day, returns it UNCHANGED — no regeneration, no re-persist,
+ *  regardless of what `generate` would produce this time. Otherwise calls
+ *  `generate()` once.
+ *
+ *  Only a `source: 'generated'` result is ever written. A `'fallback'`
+ *  result (OpenAI unreachable, rate-limited, or the validator exhausted
+ *  its retries) is returned to THIS caller for THIS request only and is
+ *  deliberately left unpersisted — same as the pre-existing demo/fallback
+ *  arc's own behavior, which was never cached against a failure either.
+ *  Persisting a fallback as if it were authoritative would permanently
+ *  lock a child into demo content for the rest of the day the moment a
+ *  single OpenAI call hiccups, on every device, with no way to recover
+ *  until midnight — worse than the multi-device divergence this store
+ *  exists to fix. A pre-existing fallback record from before this fix
+ *  shipped is likewise treated as "nothing generated yet" and retried.
  *
  *  Generation happens OUTSIDE the transaction — an OpenAI call can take
  *  seconds and Firestore transactions retry on contention, which would
  *  either hold the transaction open far too long or fire the network call
  *  multiple times. Instead: check existence first (fast path, the common
- *  case after the first request of the day), generate if needed, then
- *  re-check inside the transaction right before writing. Two requests
- *  racing to be first can both call `generate()`, but only the winner's
- *  result is ever persisted or returned — the loser's is discarded. That
- *  rare double-generation cost is accepted; what's guaranteed is that
- *  every caller for this uid+childId+day converges on the SAME persisted
- *  record. */
+ *  case after the first successful generation of the day), generate if
+ *  needed, then re-check inside the transaction right before writing. Two
+ *  requests racing to be first can both call `generate()`, but only the
+ *  winner's GENERATED result is ever persisted or returned — a losing
+ *  racer's fallback is discarded, and a losing racer's generated draft is
+ *  discarded in favor of whichever generated result the transaction saw
+ *  first. That rare double-generation cost is accepted; what's guaranteed
+ *  is that every caller for this uid+childId+day converges on the SAME
+ *  persisted GENERATED chapter once one exists, and that a fallback never
+ *  creates a regeneration loop once a real chapter has been persisted —
+ *  the existence check above always short-circuits before `generate()` is
+ *  ever called again. */
 export async function getOrCreateTodayChapter(
   uid: string,
   childId: string,
@@ -76,13 +102,23 @@ export async function getOrCreateTodayChapter(
   const ref = chapterDayRef(uid, childId, day);
 
   const existing = await ref.get();
-  if (existing.exists) return { record: existing.data() as PersistedChapterRecord, created: false };
+  const existingData = existing.exists ? (existing.data() as PersistedChapterRecord) : null;
+  if (isAuthoritativeChapterRecord(existingData)) return { record: existingData as PersistedChapterRecord, created: false };
 
   const generated = await generate();
+  if (generated.source !== 'generated') {
+    // Ephemeral — this request's answer only, never written, so the next
+    // request (this device, a refresh, a different device) tries again.
+    return {
+      record: { day, chapterId, stage, createdAt: new Date().toISOString(), ...generated },
+      created: false,
+    };
+  }
 
   return adminDb().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    if (snap.exists) return { record: snap.data() as PersistedChapterRecord, created: false };
+    const snapData = snap.exists ? (snap.data() as PersistedChapterRecord) : null;
+    if (isAuthoritativeChapterRecord(snapData)) return { record: snapData as PersistedChapterRecord, created: false };
     const record: PersistedChapterRecord = {
       day,
       chapterId,

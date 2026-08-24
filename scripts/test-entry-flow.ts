@@ -33,10 +33,23 @@ async function main() {
   const page = readFileSync(join(import.meta.dirname, '../app/page.tsx'), 'utf8');
 
   const anonymous = await resolve({ authenticated: false });
-  check('fresh anonymous visitor stays on the landing page', anonymous.destination === 'landing');
-  check('anonymous entry does not attempt a remote profile request', anonymous.remoteCalls === 0);
+  check('fresh anonymous visitor (no local profile) stays on the landing page', anonymous.destination === 'landing');
+  check('anonymous entry with no local profile does not attempt a remote profile request', anonymous.remoteCalls === 0);
   check('landing still shows the original primary CTA', page.includes('Try a Chapter Free Tonight'));
   check('landing CTA still links to /setup', page.includes('<Link href="/setup"'));
+
+  // commercial-v1 fix B: an anonymous parent who already completed the
+  // free-demo Setup owns a real profile/history on this browser and must
+  // not be treated as brand-new merely because isAuthenticated is false.
+  const returningAnonymous = await resolve({ authenticated: false, local: { childId: 'anon-child' } });
+  check('FIX B: anonymous visitor WITH an existing local profile goes straight to /home, not the acquisition landing page', returningAnonymous.destination === '/home');
+  check('FIX B: the anonymous-with-local-profile path never attempts a remote fetch (no cross-device anonymous recovery)', returningAnonymous.remoteCalls === 0);
+
+  const anonymousIgnoresHypotheticalRemote = await resolve({ authenticated: false, remote: { childId: 'should-never-be-fetched' } });
+  check(
+    'an unauthenticated visitor never triggers a remote fetch even if one would hypothetically resolve to something',
+    anonymousIgnoresHypotheticalRemote.destination === 'landing' && anonymousIgnoresHypotheticalRemote.remoteCalls === 0,
+  );
 
   const local = await resolve({ authenticated: true, local: { childId: 'local' } });
   check('authenticated parent with a local profile goes to /home', local.destination === '/home');
