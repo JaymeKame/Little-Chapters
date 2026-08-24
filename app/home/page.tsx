@@ -27,7 +27,6 @@ export default function ChildHomePage() {
   const [handoffDismissed, setHandoffDismissed] = useState(false);
   const [handoffRequested, setHandoffRequested] = useState(false);
   const [scenePackage, setScenePackage] = useState<ChapterScenePackage | null>(null);
-  const [scenePackageResolved, setScenePackageResolved] = useState(false);
   const [chapterSettled, setChapterSettled] = useState(false);
 
   useEffect(() => {
@@ -61,9 +60,9 @@ export default function ChildHomePage() {
 
   useEffect(() => {
     if (!chapter || authLoading || !chapterSettled) return;
-    let cancelled = false; setScenePackageResolved(false);
+    let cancelled = false; setScenePackage(null);
     void requestChapterScenePackage(chapter, resolveStoryInteractionManifest(chapter), user).then((value) => {
-      if (!cancelled) { setScenePackage(value); setScenePackageResolved(true); }
+      if (!cancelled) setScenePackage(value);
     });
     return () => { cancelled = true; };
   }, [chapter, user, authLoading, chapterSettled]);
@@ -105,7 +104,7 @@ export default function ChildHomePage() {
   }
 
   if (profileUnavailable || forcedOffline) return <HomeError onRetry={() => window.location.reload()} />;
-  if (!profile || !chapter || dailyState === 'loading' || !scenePackageResolved) return <HomeLoading />;
+  if (!profile || !chapter || dailyState === 'loading') return <HomeLoading />;
 
   const copy = homeCopy(dailyState, chapter);
   const showGrownupHandoff = dailyState === 'completed' && handoffRequested && !handoffDismissed;

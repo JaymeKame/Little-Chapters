@@ -40,23 +40,56 @@ assert.ok(memory.has('little-chapters-interaction-manifest:underwater'));
 const mockPackage: ChapterScenePackage = { chapterId:'underwater', visualBibleVersion:1, provider:'mock-provider', generatedAt:'2026-01-01T00:00:00.000Z', generationLatencyMs:1234,
   scenes:firstManifest.scenes.map((scene)=>({ sceneId:scene.sceneId, assetUrl:`https://storage.test/underwater/${scene.sceneId}.webp`, visualPurpose:scene.visualPurpose, entities:[] })) };
 memory.delete(scenePackageCacheKey('underwater'));
-let calls = 0;
+let gets = 0;
+let posts = 0;
 const originalFetch = globalThis.fetch;
-globalThis.fetch = (async () => { calls += 1; return new Response(JSON.stringify({ scenePackage:mockPackage }), { status:200, headers:{'Content-Type':'application/json'} }); }) as typeof fetch;
+globalThis.fetch = (async (_input, init) => {
+  if (init?.method === 'GET') { gets += 1; return new Response(JSON.stringify({ error:'SCENE_PACKAGE_NOT_FOUND' }), { status:404 }); }
+  posts += 1;
+  return new Response(JSON.stringify({ scenePackage:mockPackage }), { status:201, headers:{'Content-Type':'application/json'} });
+}) as typeof fetch;
 assert.deepEqual(await requestChapterScenePackage(chapters[0], firstManifest, null), mockPackage);
 assert.deepEqual(await requestChapterScenePackage(chapters[0], firstManifest, null), mockPackage);
-assert.equal(calls, 1, 'refresh/same-browser reuse must not call generation again');
+assert.equal(gets, 1, 'local reuse must not repeat the durable lookup');
+assert.equal(posts, 1, 'a missing package generates exactly once');
+
+// A refresh loses the in-memory UI but not the durable package. Even when
+// localStorage is empty, GET resolves Firestore and POST must not run.
 memory.delete(scenePackageCacheKey('underwater'));
-globalThis.fetch = (async () => new Response(JSON.stringify({ error:'SCENE_GENERATION_FAILED' }), { status:503 })) as typeof fetch;
-assert.equal(await requestChapterScenePackage(chapters[0], firstManifest, null), null, 'provider failure selects approved runtime fallback');
+globalThis.fetch = (async (_input, init) => {
+  assert.equal(init?.method, 'GET'); gets += 1;
+  return new Response(JSON.stringify({ scenePackage:mockPackage }), { status:200, headers:{'Content-Type':'application/json'} });
+}) as typeof fetch;
+assert.deepEqual(await requestChapterScenePackage(chapters[0], firstManifest, null), mockPackage);
+assert.equal(posts, 1, 'Home → Read, refresh, and cross-device retrieval must not regenerate');
+
+// Retrieval errors are not proof of absence. Keep approved static art rather
+// than POSTing and risking duplicate generation.
+memory.delete(scenePackageCacheKey('underwater'));
+let retrievalFailureCalls = 0;
+globalThis.fetch = (async (_input, init) => {
+  retrievalFailureCalls += 1; assert.equal(init?.method, 'GET');
+  return new Response(JSON.stringify({ error:'TEMPORARY_FAILURE' }), { status:503 });
+}) as typeof fetch;
+assert.equal(await requestChapterScenePackage(chapters[0], firstManifest, null), null, 'retrieval failure selects approved runtime fallback');
+assert.equal(retrievalFailureCalls, 1, 'retrieval failure must neither loop nor generate');
 globalThis.fetch = originalFetch;
 assert.equal(loadChapterScenePackage('underwater'), null);
 
 const route = readFileSync('app/api/chapters/visuals/route.ts','utf8');
+assert.match(route, /export async function GET/);
+assert.match(route, /SCENE_PACKAGE_NOT_FOUND/);
 assert.ok(route.indexOf('const existing = await ref.get()') < route.indexOf('generatePackage(chapter)'), 'durable lookup precedes generation');
 assert.match(route, /2-by-2 storyboard/);
 assert.match(route, /sharp\(normalized\)\.extract/);
 assert.match(route, /chapter-scenes\/\$\{safe\}\/v\$\{VISUAL_BIBLE_VERSION\}/);
 assert.match(route, /chapterScenePackages/);
 
-console.log('Chapter scene generation: 21 passed, 0 failed');
+const home = readFileSync('app/home/page.tsx','utf8');
+assert.doesNotMatch(home, /!scenePackageResolved/);
+assert.match(home, /sceneUrl\(scenePackage, 'scene-1'\) \?\? scene\?\.asset\.src/);
+const read = readFileSync('app/read/page.tsx','utf8');
+assert.doesNotMatch(read, /return <div className="screen" \/>/);
+assert.match(read, /sceneUrl\(scenePackage, currentSceneId\) : null\) \?\? sceneSelection\?\.asset\.src/);
+
+console.log('Chapter scene generation contract: 32 passed, 0 failed');

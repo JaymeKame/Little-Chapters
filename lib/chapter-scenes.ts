@@ -42,13 +42,36 @@ export function saveChapterScenePackage(value: ChapterScenePackage): ChapterScen
   return value;
 }
 
+async function authHeaders(user: User | null): Promise<Record<string, string>> {
+  const token = user ? await user.getIdToken().catch(() => null) : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * Resolve the server-authoritative package without asking the provider to
+ * generate anything. A missing package is the only condition that permits
+ * requestChapterScenePackage() to proceed to POST.
+ */
+export async function lookupChapterScenePackage(chapterId: string, user: User | null): Promise<ChapterScenePackage | null | undefined> {
+  try {
+    const response = await fetch(`/api/chapters/visuals?chapterId=${encodeURIComponent(chapterId)}`, {
+      method: 'GET', headers: await authHeaders(user), cache: 'no-store',
+    });
+    if (response.status === 404) return undefined;
+    if (!response.ok) return null;
+    const body = await response.json() as { scenePackage?: ChapterScenePackage };
+    return body.scenePackage ? saveChapterScenePackage(body.scenePackage) : null;
+  } catch { return null; }
+}
+
 export async function requestChapterScenePackage(chapter: Chapter, manifest: StoryInteractionManifest, user: User | null): Promise<ChapterScenePackage | null> {
   const cached = loadChapterScenePackage(chapter.id);
   if (cached) return cached;
+  const existing = await lookupChapterScenePackage(chapter.id, user);
+  if (existing !== undefined) return existing;
   try {
-    const token = user ? await user.getIdToken().catch(() => null) : null;
     const response = await fetch('/api/chapters/visuals', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(await authHeaders(user)) },
       body: JSON.stringify({ chapter, manifest }),
     });
     if (!response.ok) return null;

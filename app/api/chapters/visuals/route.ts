@@ -24,6 +24,19 @@ function packageId(chapterId: string) {
   return createHash('sha256').update(`${chapterId}:v${VISUAL_BIBLE_VERSION}`).digest('hex');
 }
 
+function packageRef(chapterId: string) {
+  return adminDb().collection('chapterScenePackages').doc(packageId(chapterId));
+}
+
+export async function GET(request: NextRequest) {
+  const auth = await requireReadingUser(request); if (!auth.ok) return auth.response;
+  const chapterId = request.nextUrl.searchParams.get('chapterId');
+  if (!chapterId || chapterId.length > 180) return NextResponse.json({ error: 'INVALID_CHAPTER_ID' }, { status: 400 });
+  const existing = await packageRef(chapterId).get();
+  if (!existing.exists) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
+  return NextResponse.json({ scenePackage: existing.data() as ChapterScenePackage, cache: 'hit' });
+}
+
 function validChapter(value: unknown): value is Chapter {
   const chapter = value as Chapter;
   return Boolean(chapter && typeof chapter.id === 'string' && chapter.id.length <= 180 && typeof chapter.character === 'string' && typeof chapter.setting === 'string' && Array.isArray(chapter.pages) && chapter.pages.length >= 3 && chapter.pages.length <= 10 && chapter.pages.every((page) => typeof page?.text === 'string' && page.text.length <= 500));
@@ -118,14 +131,14 @@ async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
 }
 
 export async function POST(request: NextRequest) {
-  if (!process.env.OPENAI_API_KEY || !adminStorageConfigured()) return NextResponse.json({ error: 'SCENE_GENERATION_NOT_CONFIGURED' }, { status: 503 });
   const auth = await requireReadingUser(request); if (!auth.ok) return auth.response;
-  if (rateLimited(auth.uid)) return NextResponse.json({ error: 'RATE_LIMITED' }, { status: 429 });
   const body = await request.json().catch(() => null) as { chapter?: unknown } | null;
   if (!validChapter(body?.chapter)) return NextResponse.json({ error: 'INVALID_CHAPTER' }, { status: 400 });
-  const chapter = body.chapter; const id = packageId(chapter.id); const ref = adminDb().collection('chapterScenePackages').doc(id);
+  const chapter = body.chapter; const id = packageId(chapter.id); const ref = packageRef(chapter.id);
   const existing = await ref.get();
   if (existing.exists) return NextResponse.json({ scenePackage: existing.data() as ChapterScenePackage, cache: 'hit' });
+  if (!process.env.OPENAI_API_KEY || !adminStorageConfigured()) return NextResponse.json({ error: 'SCENE_GENERATION_NOT_CONFIGURED' }, { status: 503 });
+  if (rateLimited(auth.uid)) return NextResponse.json({ error: 'RATE_LIMITED' }, { status: 429 });
   let pending = inFlight.get(id);
   if (!pending) { pending = generatePackage(chapter); inFlight.set(id, pending); pending.finally(() => inFlight.delete(id)).catch(() => undefined); }
   try {

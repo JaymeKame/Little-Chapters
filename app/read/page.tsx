@@ -564,6 +564,7 @@ export default function ReadPage() {
 
   useEffect(() => {
     if (!chapter || !interactionManifest || authLoading) return;
+    setScenePackage(null);
     const cached = loadChapterScenePackage(chapter.id); if (cached) { setScenePackage(cached); return; }
     let cancelled = false;
     void requestChapterScenePackage(chapter, interactionManifest, user).then((value) => { if (value && !cancelled) setScenePackage(value); });
@@ -588,7 +589,7 @@ export default function ReadPage() {
     audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: `${activeInteraction.kind}-prompt` });
   }, [activeInteraction]);
 
-  if (!profile || !chapter) return <div className="screen" />;
+  if (!profile || !chapter) return <main className="lc-home-v11 lc-home-loading" data-read-state="loading"><div className="lc-loading-sky" /><div className="lc-loading-book"><span /><span /><span /></div><p>Opening today&rsquo;s story…</p></main>;
   const page = chapter.pages[pageIdx];
   const currentSceneId = interactionManifest?.scenes.find((scene) => scene.pageIndexes.includes(pageIdx))?.sceneId;
   const sceneBg = (currentSceneId ? sceneUrl(scenePackage, currentSceneId) : null) ?? sceneSelection?.asset.src ?? null;
