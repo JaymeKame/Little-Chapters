@@ -1,35 +1,21 @@
 import type { Chapter } from './chapters';
+import { buildStoryInteractionManifest, type StoryInteractionBeat, type StoryInteractionManifest } from './story-interactions.ts';
 
 export type SessionBeat =
   | { id: 'welcome'; kind: 'welcome'; spokenLine: string }
   | { id: string; kind: 'reading'; pageIndexes: number[]; finalChallenge: boolean }
-  | { id: 'sound-hunt'; kind: 'sound-hunt'; afterPage: number; activity: SoundHunt }
-  | { id: 'prediction'; kind: 'prediction'; afterPage: number; choices: [string, string] }
+  | { id: 'sound-hunt'; kind: 'sound-hunt'; afterPage: number; activity: StoryInteractionBeat }
+  | { id: 'prediction'; kind: 'prediction'; afterPage: number; activity: StoryInteractionBeat }
   | { id: 'ending'; kind: 'ending' };
 
 export interface SoundHunt { pattern: string; prompt: string; choices: [string, string, string]; answer: string }
 
-function words(chapter: Chapter): string[] {
-  return [...new Set(chapter.pages.flatMap((page) => page.text.toLowerCase().match(/[a-z']+/g) ?? []))];
-}
-
 export function buildSoundHunt(chapter: Chapter): SoundHunt {
-  const all = words(chapter);
-  const group = chapter.phonics.find((item) => item.words.some((word) => all.includes(word.toLowerCase())));
-  const answer = group?.words.find((word) => all.includes(word.toLowerCase()))?.toLowerCase()
-    ?? chapter.pages.flatMap((page) => page.focusWords)[0]?.toLowerCase() ?? all.find((word) => word.length > 2) ?? 'story';
-  const hinted = group?.hint.toLowerCase().match(/[a-z]+/)?.[0] ?? answer.slice(0, Math.min(2, answer.length));
-  const pattern = answer.includes(hinted) ? hinted : answer.slice(0, 1);
-  const distractors = all.filter((word) => word !== answer && word.length > 2 && !word.includes(pattern)).slice(0, 2);
-  const fallbacks = ['story', 'little', 'today'].filter((word) => word !== answer && !word.includes(pattern));
-  while (distractors.length < 2) distractors.push(fallbacks[distractors.length] ?? `word${distractors.length + 1}`);
-  const choices = [answer, ...distractors] as [string, string, string];
-  // Stable rotation prevents the answer always occupying the first position.
-  choices.push(choices.shift()!);
-  return { pattern, prompt: `Which story word has the ${pattern} sound?`, choices, answer };
+  const beat = buildStoryInteractionManifest(chapter).beats.find((item) => item.mechanicType === 'find-sound')!;
+  return { pattern: beat.literacyTarget!, prompt: beat.spokenInstruction, choices: beat.interactiveObjects.map((item) => item.label) as [string, string, string], answer: beat.correctTarget! };
 }
 
-export function buildSessionPlan(chapter: Chapter, childName: string, previousTeaser = ''): SessionBeat[] {
+export function buildSessionPlan(chapter: Chapter, childName: string, previousTeaser = '', interactionManifest: StoryInteractionManifest = buildStoryInteractionManifest(chapter)): SessionBeat[] {
   const count = chapter.pages.length;
   const soundAfter = Math.max(0, Math.min(count - 2, Math.floor(count / 3) - 1));
   const predictionAfter = Math.max(soundAfter + 1, Math.min(count - 2, Math.floor((count * 2) / 3) - 1));
@@ -47,8 +33,8 @@ export function buildSessionPlan(chapter: Chapter, childName: string, previousTe
   clusters.forEach((pageIndexes, index) => {
     beats.push({ id: `reading-${index + 1}`, kind: 'reading', pageIndexes, finalChallenge: index === clusters.length - 1 });
     const last = pageIndexes.at(-1)!;
-    if (last === soundAfter) beats.push({ id: 'sound-hunt', kind: 'sound-hunt', afterPage: last, activity: buildSoundHunt(chapter) });
-    if (last === predictionAfter) beats.push({ id: 'prediction', kind: 'prediction', afterPage: last, choices: ['A hidden clue appears', `${chapter.character} hears something nearby`] });
+    if (last === soundAfter) beats.push({ id: 'sound-hunt', kind: 'sound-hunt', afterPage: last, activity: interactionManifest.beats.find((beat) => beat.mechanicType === 'find-sound')! });
+    if (last === predictionAfter) beats.push({ id: 'prediction', kind: 'prediction', afterPage: last, activity: interactionManifest.beats.find((beat) => beat.mechanicType === 'what-happens-next')! });
   });
   beats.push({ id: 'ending', kind: 'ending' });
   return beats;

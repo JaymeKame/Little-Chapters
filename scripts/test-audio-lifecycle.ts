@@ -92,7 +92,7 @@ async function main() {
       await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
     });
 
-    await page.goto(`${BASE_URL}/read?skipWelcome=1`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
 
     // Tap 1: starts speaking, fires the (held-open) first request.
@@ -137,7 +137,7 @@ async function main() {
       await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
     });
 
-    await page.goto(`${BASE_URL}/read?skipWelcome=1`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page.waitForSelector('button[aria-label="Start reading"]', { timeout: 15000 });
 
     // Enter 'listening' phase — this ducks theme (duckAmbience()).

@@ -56,7 +56,7 @@ async function main() {
       sawRequest = true;
       await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
     });
-    await page.goto(`${BASE_URL}/read?skipWelcome=1`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
     await page.click('button[aria-label="Read aloud"]');
     await page.waitForTimeout(500);
@@ -84,7 +84,7 @@ async function main() {
         await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
       }
     });
-    await page.goto(`${BASE_URL}/read?skipWelcome=1`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
     await page.click('button[aria-label="Read aloud"]');
     await page.waitForTimeout(800);
@@ -108,7 +108,7 @@ async function main() {
       requestCount += 1;
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'not configured' }) });
     });
-    await page.goto(`${BASE_URL}/read?skipWelcome=1`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
     await page.click('button[aria-label="Read aloud"]');
     await page.waitForTimeout(500);

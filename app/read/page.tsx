@@ -46,6 +46,8 @@ import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '@/
 import { themeAssetFor } from '@/lib/audio';
 import { audioSession } from '@/lib/audio-session';
 import { loadPreferences } from '@/lib/preferences';
+import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
+import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
@@ -232,6 +234,7 @@ export default function ReadPage() {
   const rungRef = useRef<0 | 1 | 2 | 3>(0); // logic source of truth; `rung` state above mirrors it for render
   const awardedRef = useRef(false); // XP granted for the CURRENT page (survives retry-take errors)
   const finishChapterRef = useRef(false);
+  const finalUnlockPromptedRef = useRef(false);
   const practicedRef = useRef<Map<string, string>>(new Map());
   // Words the FIRST whole-page take flagged, beyond the one currently in the
   // ladder — a retry take only re-listens to the single word it targets, so
@@ -490,7 +493,8 @@ export default function ReadPage() {
       if (chapter && profile) {
         const practiced = [...practicedRef.current.keys()][0];
         const specific = practiced ? `You figured out ${practiced}. ` : '';
-        audioSession.speak(`${profile.childName}, you did it! ${specific}${chapter.cliffhanger[0]} Whoa… we'll find out more tomorrow.`, { purpose: 'chapter-ending' });
+        const payoff = resolveStoryInteractionManifest(chapter).beats.find((beat) => beat.mechanicType === 'final-story-unlock')?.spokenSuccess ?? chapter.cliffhanger[0];
+        audioSession.speak(`${profile.childName}, you did it! ${specific}${payoff}`, { purpose: 'chapter-ending' });
       }
     }
   }, [phase, chapter, profile]);
@@ -534,17 +538,44 @@ export default function ReadPage() {
     () => (chapter ? selectSceneForPage(chapter, chapter.pages[pageIdx] ?? chapter.pages[0], pageIdx, profile?.avatar, user?.uid ?? null) : null),
     [chapter, pageIdx, profile?.avatar, user?.uid],
   );
+  const interactionManifest = useMemo(() => chapter ? resolveStoryInteractionManifest(chapter) : null, [chapter]);
   const sessionPlan = useMemo(
-    () => chapter && profile ? buildSessionPlan(chapter, profile.childName, loadReport()?.teaser ?? '') : [],
-    [chapter, profile],
+    () => chapter && profile && interactionManifest ? buildSessionPlan(chapter, profile.childName, loadReport()?.teaser ?? '', interactionManifest) : [],
+    [chapter, profile, interactionManifest],
   );
+  const lookaheadBeat = useMemo(() => {
+    if (!interactionManifest) return null;
+    if (activeInteraction) {
+      const current = interactionManifest.beats.findIndex((beat) => beat.beatId === activeInteraction.activity.beatId);
+      return interactionManifest.beats[current + 1] ?? null;
+    }
+    return interactionAfterPage(sessionPlan, pageIdx)?.activity ?? null;
+  }, [interactionManifest, activeInteraction, sessionPlan, pageIdx]);
+  const sceneAssetUrls = useMemo(() => {
+    if (!chapter || !interactionManifest) return {} as Record<string, string>;
+    return Object.fromEntries(interactionManifest.scenes.map((scene) => {
+      const index = scene.pageIndexes[0] ?? 0;
+      return [scene.sceneId, selectSceneForPage(chapter, chapter.pages[index], index, profile?.avatar, user?.uid ?? null).asset.src];
+    }));
+  }, [chapter, interactionManifest, profile?.avatar, user?.uid]);
+  const lookaheadScene = lookaheadBeat ? sceneAssetUrls[lookaheadBeat.visualSceneId] ?? null : null;
+
+  useEffect(() => {
+    if (!chapter || !lookaheadBeat || !lookaheadScene) return;
+    if (process.env.NODE_ENV === 'development' && new URLSearchParams(window.location.search).get('disableLookahead') === '1') return;
+    void prepareStoryBeat(chapter.id, lookaheadBeat, lookaheadScene);
+  }, [chapter, lookaheadBeat, lookaheadScene]);
+
+  useEffect(() => {
+    if (!chapter || !interactionManifest || pageIdx !== chapter.pages.length - 1 || phase !== 'ready' || finalUnlockPromptedRef.current) return;
+    finalUnlockPromptedRef.current = true;
+    const finalUnlock = interactionManifest.beats.find((beat) => beat.mechanicType === 'final-story-unlock');
+    if (finalUnlock) audioSession.speak(finalUnlock.spokenInstruction, { purpose: 'final-story-unlock' });
+  }, [chapter, interactionManifest, pageIdx, phase]);
 
   useEffect(() => {
     if (!activeInteraction) return;
-    const line = activeInteraction.kind === 'sound-hunt'
-      ? `Listen! Which word has ${activeInteraction.activity.pattern}?`
-      : 'What do you think happens next?';
-    audioSession.speak(line, { purpose: `${activeInteraction.kind}-prompt` });
+    audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: `${activeInteraction.kind}-prompt` });
   }, [activeInteraction]);
 
   if (!profile || !chapter) return <div className="screen" />;
@@ -1200,16 +1231,16 @@ export default function ReadPage() {
     setInteractionChoice(choice);
     if (activeInteraction.kind === 'prediction') {
       setInteractionFeedback('success');
-      audioSession.speak(`Ooh, maybe ${choice.toLowerCase()}! Let's see.`, {
+      audioSession.speak(activeInteraction.activity.spokenSuccess, {
         purpose: 'prediction-acknowledgment',
         onEnd: () => setTimeout(continueAfterInteraction, 350),
       });
       return;
     }
-    const correct = choice === activeInteraction.activity.answer;
+    const correct = choice === activeInteraction.activity.correctTarget;
     setInteractionFeedback(correct ? 'success' : 'try-again');
-    const pattern = activeInteraction.activity.pattern;
-    audioSession.speak(correct ? `${choice}. You found ${pattern}!` : `${choice}. Listen again… ${pattern}.`, {
+    const pattern = activeInteraction.activity.literacyTarget ?? '';
+    audioSession.speak(correct ? activeInteraction.activity.spokenSuccess : `${choice}. Listen again… ${pattern}.`, {
       purpose: correct ? 'sound-hunt-success' : 'sound-hunt-retry',
       onEnd: correct ? () => setTimeout(continueAfterInteraction, 700) : undefined,
     });
@@ -1331,25 +1362,25 @@ export default function ReadPage() {
 
   if (activeInteraction) {
     const sound = activeInteraction.kind === 'sound-hunt' ? activeInteraction.activity : null;
-    const choices: readonly string[] = activeInteraction.kind === 'sound-hunt' ? activeInteraction.activity.choices : activeInteraction.choices;
+    const choices = activeInteraction.activity.interactiveObjects;
     const acknowledged = interactionChoice
       ? activeInteraction.kind === 'prediction'
         ? `Let’s see!`
         : interactionFeedback === 'success'
-          ? `You found ${sound?.pattern}!`
-          : `Listen again… ${sound?.pattern}.`
+          ? `You found ${sound?.literacyTarget}!`
+          : `Listen again… ${sound?.literacyTarget}.`
       : null;
     return (
       <div className="lc-session-interaction" data-session-beat={activeInteraction.kind}>
         <SceneBackground src={sceneBg} focal={sceneFocal} />
         <div className="lc-interaction-card lc-scene-content">
-          <button className="lc-prompt-speaker" aria-label="Hear the question again" onClick={() => audioSession.speak(activeInteraction.kind === 'sound-hunt' ? `Which word has ${sound?.pattern}?` : 'What do you think happens next?', { purpose: 'interaction-prompt-replay' })}><img src="/icons/speaker-audio.png" alt="" /></button>
+          <button className="lc-prompt-speaker" aria-label="Hear the question again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: 'interaction-prompt-replay' })}><img src="/icons/speaker-audio.png" alt="" /></button>
           <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the sound' : 'What happens next?'}</p>
-          <h1>{activeInteraction.kind === 'sound-hunt' ? sound?.pattern.toUpperCase() : 'Choose a picture'}</h1>
+          <h1>{activeInteraction.kind === 'sound-hunt' ? sound?.literacyTarget?.toUpperCase() : 'Choose a picture'}</h1>
           <div className={`lc-choice-grid is-${activeInteraction.kind}`}>
-            {choices.map((choice, index) => <button key={choice} data-correct={activeInteraction.kind === 'sound-hunt' && choice === sound?.answer ? 'true' : undefined} className={`${interactionChoice === choice ? 'is-chosen' : ''}${interactionChoice === choice && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice && interactionFeedback === 'success' ? ' is-success' : ''}`} onClick={() => chooseInteraction(choice)}>
-              {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${index + 1}`}><img src={sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{index === 0 ? '✦' : ')))'}</i></span>}
-              <strong>{choice}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
+            {choices.map((choice, index) => <button key={choice.objectId} data-correct={activeInteraction.kind === 'sound-hunt' && choice.label === sound?.correctTarget ? 'true' : undefined} className={`${interactionChoice === choice.label ? 'is-chosen' : ''}${interactionChoice === choice.label && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice.label && interactionFeedback === 'success' ? ' is-success' : ''}`} onClick={() => chooseInteraction(choice.label)} aria-label={choice.spokenLabel}>
+              {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${index + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{index === 0 ? '✦' : ')))'}</i></span>}
+              <strong>{choice.label}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
             </button>)}
           </div>
           {acknowledged && <p role="status">{acknowledged}</p>}
@@ -1361,6 +1392,7 @@ export default function ReadPage() {
 
   /* ── Screen 5: meaningful chapter ending ── */
   if (phase === 'chapter-end') {
+    const finalUnlock = interactionManifest?.beats.find((beat) => beat.mechanicType === 'final-story-unlock');
     return (
       <div className="lc-session-interaction lc-ending-v11" data-session-beat="ending">
         <SceneBackground src={sceneBg} focal={sceneFocal} cliff />
@@ -1368,7 +1400,7 @@ export default function ReadPage() {
           <div className="lc-ending-stars" aria-hidden>{[0,1,2].map((star) => <img key={star} src="/icons/success-star.png" alt="" />)}</div>
           <p className="lc-interaction-kicker">Adventure complete</p>
           <h1>You did it, {profile.childName}!</h1>
-          <div className="lc-ending-event"><strong>{chapter.cliffhanger[0]}</strong><span>Tomorrow, the mystery continues…</span></div>
+          <div className="lc-ending-event"><strong>{finalUnlock?.successStoryAction ?? chapter.cliffhanger[0]}</strong><span>{chapter.teaser}</span></div>
           <button className="btn-primary lc-interaction-continue" onClick={() => {
             audioSession.cancelAll(); audioSession.stopTheme(); router.push(subscribed === true ? '/home' : '/home?grownupHandoff=1');
           }}>Back to Home</button>

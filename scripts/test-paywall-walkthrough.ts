@@ -83,11 +83,25 @@ async function main() {
     // Drive through every page and each planned interaction. Predictions do
     // not branch the canonical chapter and the sound hunt appears only once.
     let pages = 0;
+    let manifestCacheChecked = false;
     const maxPages = 12;
     while (pages < maxPages) {
       const interaction = page.locator('[data-session-beat="sound-hunt"], [data-session-beat="prediction"]');
       if (await interaction.count()) {
         const beat = await interaction.getAttribute('data-session-beat');
+        const manifestBeat = beat === 'sound-hunt' ? 'find-sound' : beat;
+        if (!manifestCacheChecked) {
+          const manifestCached = await page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith('little-chapters-interaction-manifest:')));
+          if (manifestCached) ok('story interaction manifest is persisted by chapter id for reload reuse');
+          else fail('story interaction manifest was not persisted');
+          manifestCacheChecked = true;
+        }
+        const lookahead = await page.evaluate((beatId) => {
+          const events = (window as unknown as { __storyOrchestration?: Array<{ type:string; beatId:string }> }).__storyOrchestration ?? [];
+          return ['image-preload','voice-preload'].every((type) => events.some((event) => event.beatId === beatId && event.type === type));
+        }, manifestBeat);
+        if (lookahead) ok(`${beat} image and tutor prompt were prepared by one-beat lookahead`);
+        else fail(`${beat} did not receive both lookahead media preparations`);
         await page.screenshot({ path: `${screenshotDir}/${beat}-390x844.png`, animations: 'disabled' });
         const soundAnswer = interaction.locator('[data-correct="true"]');
         if (await soundAnswer.count()) {

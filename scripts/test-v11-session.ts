@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { buildSessionPlan, buildSoundHunt, claimEndingCompletion, interactionAfterPage } from '../lib/session-plan.ts';
 import { normalizePreferences } from '../lib/preference-values.ts';
 import type { Chapter } from '../lib/chapters.ts';
+import { buildStoryInteractionManifest } from '../lib/story-interactions.ts';
 
 const chapter: Chapter = {
   id:'test', title:"Today's Chapter", character:'Rex', companion:'Momo', setting:'a warm forest', ambience:'countryside',
@@ -25,7 +26,15 @@ assert.equal(hunt.choices.length, 3);
 assert.equal(new Set(hunt.choices).size, 3);
 assert.equal(interactionAfterPage(plan, 0)?.kind, 'sound-hunt');
 const prediction = plan.find((beat) => beat.kind === 'prediction');
-assert.ok(prediction && prediction.choices.every(Boolean), 'both prediction selections advance through the same canonical beat');
+assert.ok(prediction && prediction.activity.interactiveObjects.every((choice) => choice.label), 'both prediction selections advance through the same canonical beat');
+
+const manifest = buildStoryInteractionManifest({ ...chapter, id:'underwater', character:'Nia', companion:'Turtle', setting:'an underwater city' });
+assert.equal(manifest.visualBible.protagonist, 'Nia');
+assert.equal(manifest.scenes.length >= 3 && manifest.scenes.length <= 5, true);
+assert.ok(manifest.scenes.every((scene) => scene.visualPrompt.includes('underwater city')));
+assert.ok(manifest.scenes.every((scene) => scene.visualPrompt.includes(manifest.visualBible.style) && scene.visualPrompt.includes(manifest.visualBible.forbiddenStyles[0])));
+assert.ok(manifest.beats.every((beat) => beat.spokenInstruction && beat.visualSceneId && beat.transitionTarget));
+assert.equal(JSON.stringify(manifest).includes('Chug'), false);
 
 assert.deepEqual(normalizePreferences({ music:'off', communication:'sms', difficultyObservation:'too-hard', phoneNumber:'555' }), {
   music:'off', communication:'sms', difficultyObservation:'too-hard', phoneNumber:'555',
@@ -36,4 +45,4 @@ const endingLatch = { current: false };
 assert.equal(claimEndingCompletion(endingLatch), true);
 assert.equal(claimEndingCompletion(endingLatch), false);
 
-console.log('V1.1 session/settings: 14 passed, 0 failed');
+console.log('V1.1 session/settings: 20 passed, 0 failed');

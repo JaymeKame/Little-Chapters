@@ -6,6 +6,7 @@ import {
   playHomeSound,
   playListeningStart,
   playReadingCue,
+  prefetchPrompt,
   playTheme,
   prepareStoryAudio,
   restoreAmbience,
@@ -25,7 +26,7 @@ export { exactlyOnce } from './exactly-once';
 export type AudioSessionMode = 'idle' | 'speaking' | 'listening' | 'processing' | 'backgrounded';
 export type MusicPreference = 'off' | 'low' | 'normal';
 export interface AudioSessionEvent {
-  type: 'mode' | 'speech-request' | 'speech-complete' | 'speech-cancel' | 'listening-start' | 'listening-stop' | 'background' | 'foreground' | 'provider';
+  type: 'mode' | 'speech-request' | 'speech-preload' | 'speech-complete' | 'speech-cancel' | 'listening-start' | 'listening-stop' | 'background' | 'foreground' | 'provider';
   mode: AudioSessionMode;
   at: number;
   purpose?: string;
@@ -78,6 +79,11 @@ export class AudioSessionController {
   playReadingCue(asset: Parameters<typeof playReadingCue>[0]): void { playReadingCue(asset); }
   playCliffhanger(): void { playCliffhanger(); }
   stopMusic(): void { stopMusic(); }
+  async preloadSpeech(text: string, purpose: string): Promise<'hit' | 'miss' | 'unavailable'> {
+    const result = await prefetchPrompt(text);
+    this.emit('speech-preload', `${purpose}:${result}`);
+    return result;
+  }
 
   speak(text: string, options: { purpose: string; rate?: number; pitch?: number; onEnd?: () => void }): void {
     this.cancelSpeech();

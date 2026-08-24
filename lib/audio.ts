@@ -133,6 +133,7 @@ const ELEVENLABS_TIMEOUT_MS = 8000;
  * persistence), capped so a long session can't grow this unboundedly. */
 const ELEVENLABS_CACHE_MAX = 24;
 const _elevenLabsCache = new Map<string, Blob>();
+const _speechPrefetches = new Map<string, Promise<'hit' | 'miss' | 'unavailable'>>();
 
 function _cacheGet(key: string): Blob | undefined {
   const hit = _elevenLabsCache.get(key);
@@ -151,6 +152,34 @@ function _cacheSet(key: string, blob: Blob): void {
     const oldest = _elevenLabsCache.keys().next().value;
     if (oldest !== undefined) _elevenLabsCache.delete(oldest);
   }
+}
+
+/** Warms the exact cache used by speakPrompt without taking playback ownership. */
+export function prefetchPrompt(text: string): Promise<'hit' | 'miss' | 'unavailable'> {
+  if (typeof window === 'undefined' || VOICE_PROVIDER === 'web-speech') return Promise.resolve('unavailable');
+  const prompt = withTerminalPunctuation(text);
+  if (_cacheGet(prompt)) {
+    voiceLog({ provider: 'elevenlabs', preload: true, cache: 'hit', chars: prompt.length });
+    return Promise.resolve('hit');
+  }
+  const existing = _speechPrefetches.get(prompt);
+  if (existing) return existing;
+  const started = performance.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
+  const request = fetch('/api/speech/model', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: prompt }), signal: controller.signal,
+  }).then(async (response) => {
+    if (!response.ok) return 'unavailable' as const;
+    _cacheSet(prompt, await response.blob());
+    voiceLog({ provider: 'elevenlabs', preload: true, cache: 'miss', chars: prompt.length, latencyMs: Math.round(performance.now() - started) });
+    return 'miss' as const;
+  }).catch(() => 'unavailable' as const).finally(() => {
+    clearTimeout(timeout);
+    _speechPrefetches.delete(prompt);
+  });
+  _speechPrefetches.set(prompt, request);
+  return request;
 }
 
 /** Internal: play text via POST /api/speech/model (ElevenLabs stream).

@@ -141,7 +141,7 @@ async function main() {
   {
     const page2 = await successCtx.newPage();
     await seedProfile(page2);
-    await page2.goto(`${BASE_URL}/read?slideDemo=1&skipWelcome=1`);
+    await page2.goto(`${BASE_URL}/read?slideDemo=1&skipWelcome=1&disableLookahead=1`);
     await page2.waitForSelector('input[type="range"]', { timeout: 15000 });
     const mark = await page2.evaluate(() => (window as any).__voiceDebug?.().recent.length ?? 0);
     const slider = page2.locator('input[type="range"]');
@@ -172,7 +172,7 @@ async function main() {
   {
     const page3 = await successCtx.newPage();
     await seedProfile(page3);
-    await page3.goto(`${BASE_URL}/read?skipWelcome=1`);
+    await page3.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page3.waitForSelector('button[aria-label="Start reading"]', { timeout: 15000 });
     const pageText: string = await page3.evaluate(() => {
       const el = document.querySelector('.lc-page-text');
@@ -184,7 +184,7 @@ async function main() {
     } else {
       const fixtureTake = words.map((w) => `${w}:25`).join(',');
       const mark0 = await page3.evaluate(() => (window as any).__voiceDebug?.().recent.length ?? 0);
-      await page3.goto(`${BASE_URL}/read?fixtureTake=${encodeURIComponent(fixtureTake)}&skipWelcome=1`);
+      await page3.goto(`${BASE_URL}/read?fixtureTake=${encodeURIComponent(fixtureTake)}&skipWelcome=1&disableLookahead=1`);
       await page3.waitForTimeout(1000);
       const debug = await page3.evaluate(() => (window as any).__voiceDebug?.());
       // Navigation reset module state, so read from the start of this page's history.
@@ -262,7 +262,7 @@ async function main() {
       });
       const vpPage = await vpCtx.newPage();
       await seedProfile(vpPage);
-      await vpPage.goto(`${BASE_URL}/read?skipWelcome=1`);
+      await vpPage.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
       await vpPage.waitForSelector('button:has-text("sim: good")', { timeout: 15000 });
       await vpPage.click('button:has-text("sim: good")');
       const star = vpPage.locator('img[src="/icons/success-star.png"]');
