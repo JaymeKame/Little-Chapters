@@ -6,12 +6,13 @@
  * reading pet lives here too (kept from the reading-app pet system, but
  * visually secondary — small, delayed entrance, never competing with Play).
  *
- * Story art: a REAL curated scene from public/images/landing/ (the only
- * place full story-scene illustrations currently exist on disk) renders as
- * an immersive background layer (pointer-events: none) behind the real DOM
- * controls, which keep their own z-index and normal pointer behavior.
- * Selection is interest-aware and deterministic per chapter.id (see
- * lib/chapters.ts selectStoryScene) — stable while the child is in the
+ * Story art: a REAL curated scene from public/images/scenes/ (see
+ * lib/scene-manifest.ts — 57 individually-cropped production scenes) renders
+ * as an immersive background layer (pointer-events: none) behind the real
+ * DOM controls, which keep their own z-index and normal pointer behavior.
+ * This is the chapter's OPENING scene (lib/scene-selector.ts's
+ * selectSceneForPage against page 0) — semantic + character-continuity
+ * matched, deterministic per chapter.id — stable while the child is in the
  * chapter, never re-randomized on render/refresh, and never falls back to
  * a Parent Setup interest icon.
  *
@@ -23,13 +24,16 @@
  * one-line change once that backend is verified end-to-end.              */
 
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { PetCompanion, usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
 import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, loadProfile, type ChildProfile } from '@/lib/profile';
-import { chapterFor, requestTutorChapter, selectStoryScene, type Chapter } from '@/lib/chapters';
+import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
+import { chapterFor, requestTutorChapter, type Chapter } from '@/lib/chapters';
+import { selectSceneForPage } from '@/lib/scene-selector';
 import { wasChapterCompleted } from '@/lib/chapter-history';
+import { useEntitlement } from '@/lib/use-entitlement';
 import {
   pauseForBackground,
   playHomeSound,
@@ -84,6 +88,24 @@ export default function ChildHomePage() {
   // already finished today's chapter under their real uid.
   const alreadyRead = chapter && !authLoading ? wasChapterCompleted(user?.uid ?? null, chapter.id) : false;
 
+  // Paywall state for THIS chapter. `locked` is false until the check
+  // settles, so Play never flickers into a locked state on a fast device —
+  // and a chapter the child already finished is never locked (see
+  // useEntitlement). The free demo chapter needs no account at all: this
+  // only ever becomes true once one has been completed.
+  const { locked } = useEntitlement(chapter?.id ?? null);
+
+  // Home shows the chapter's OPENING scene (page 0) as its single cover
+  // image — per-page progression is a /read concept. Memoized: selectSceneForPage()
+  // writes to the recent-scene localStorage history as a side effect (see
+  // lib/scene-selector.ts) — must run once per actual chapter change, not on
+  // every unrelated re-render (called before the profile/chapter null-guard
+  // below, per rules of hooks).
+  const sceneSelection = useMemo(
+    () => (chapter ? selectSceneForPage(chapter, chapter.pages[0], 0, profile?.avatar, user?.uid ?? null) : null),
+    [chapter, profile?.avatar, user?.uid],
+  );
+
   // Prepare the real flat theme asset; playback waits for a user gesture.
   // Owns theme for as long as Home is mounted, so unmount (any exit —
   // startChapter's own navigation stops nothing here on purpose, since the
@@ -122,10 +144,18 @@ export default function ChildHomePage() {
   function replayWelcome() {
     if (!profile) return;
     playHomeSound('replay.mp3');
-    speakPrompt(welcomeLine(profile.childName, chapter, alreadyRead));
+    speakPrompt(welcomeLine(profile.childName, chapter, alreadyRead, locked));
   }
 
   function startChapter() {
+    // Behind the paywall the tap goes to the parent screen instead — quietly,
+    // with no theme music or "here we go" cue, because nothing is starting.
+    if (locked) {
+      playHomeSound('tap-soft.mp3');
+      stopTheme();
+      router.push('/unlock');
+      return;
+    }
     // Presentation-only: compress the button, nudge the background, fade the
     // UI, THEN navigate — route/navigation logic is unchanged.
     playHomeSound('play.mp3');
@@ -136,11 +166,9 @@ export default function ChildHomePage() {
 
   if (!profile || !chapter || authLoading) return <div className="screen" />;
 
-  const backgroundUrl = selectStoryScene(chapter.id, profile.interests);
-
   return (
     <div className={`screen lc-scenic lc-home-scene${leaving ? ' lc-leaving' : ''}`} style={{ position: 'relative' }}>
-      <SceneBackground src={backgroundUrl} priority />
+      <SceneBackground src={sceneSelection?.asset.src ?? null} focal={sceneSelection?.asset.focal} priority />
 
       <div className="lc-scene-content" style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
         <header
@@ -212,7 +240,9 @@ export default function ChildHomePage() {
             }}
           >
             <span style={{ fontFamily: 'var(--serif)', fontWeight: 700, fontSize: 26, color: 'var(--dark)', lineHeight: 1.25 }}>
-              {alreadyRead ? "Today's Chapter ✓" : "Today's Chapter"}
+              {/* `locked` and `alreadyRead` can never both be true — a
+                  chapter this child already finished is never locked. */}
+              {alreadyRead ? "Today's Chapter ✓" : locked ? 'The Next Chapter' : "Today's Chapter"}
             </span>
           </div>
 
@@ -226,7 +256,13 @@ export default function ChildHomePage() {
           <button
             className="lc-play-btn"
             onClick={startChapter}
-            aria-label={alreadyRead ? "Read today's chapter again" : "Start today's chapter"}
+            aria-label={
+              locked
+                ? "Unlock the next chapter"
+                : alreadyRead
+                  ? "Read today's chapter again"
+                  : "Start today's chapter"
+            }
             style={{
               marginTop: -32,
               width: 85,
@@ -262,8 +298,12 @@ export default function ChildHomePage() {
               animationDelay: '800ms',
             }}
           >
-            {alreadyRead ? "You read today's chapter! See you tomorrow" : "There's a new chapter ready for you!"}
-            <img src="/icons/speaker-audio.png" alt="" style={{ height: 16, width: 'auto' }} />
+            {locked
+              ? 'Ask a grown-up to open the next chapter'
+              : alreadyRead
+                ? "You read today's chapter! See you tomorrow"
+                : "There's a new chapter ready for you!"}
+            <SpeakerIcon size={16} color="var(--blue)" />
           </button>
 
           {/* Momo: small, secondary, last to arrive — never competes with

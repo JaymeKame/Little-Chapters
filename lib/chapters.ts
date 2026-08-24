@@ -256,74 +256,48 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
  *     sites in app/home and app/read; see requestChapterVisuals below for
  *     why, and how to re-enable it once OPENAI_API_KEY/Firebase Storage are
  *     configured and verified end-to-end).
- *  2) a curated local story scene from public/images/home/story-scenes/
- *     (add files there — see storySceneUrl below for the expected names).
- *  3) the generic .lc-scenic/.lc-cliff gradient in globals.css, which is
- *     what actually renders today until story-scene image files exist.
+ *  2) lib/scene-selector.ts's selectSceneForPage() against the real curated
+ *     manifest in lib/scene-manifest.ts (public/images/scenes/) — see that
+ *     file's header for the full selection algorithm.
+ *  3) the generic .lc-scenic/.lc-cliff gradient in globals.css, reached only
+ *     if a chosen asset's <img> 404s at runtime (SceneBackground's onError).
  *
- * Selection is deterministic per chapter.id (stable while the child is
- * inside the chapter — never re-randomized on render/refresh).          */
+ * Selection is deterministic per (chapter.id, pageIndex) — stable while the
+ * child is on that page, never re-randomized on render/refresh, and now
+ * varies BY PAGE within a chapter rather than freezing on one image.     */
 
-const STORY_SCENE_VARIANTS = 2; // e.g. dogs-01.png, dogs-02.png
-
-function stableHash(input: string): number {
+/** Small deterministic string hash — still used by chapterFor's own
+ *  stableRandom() below and available to other modules that need the same
+ *  "same id -> same pick" determinism (e.g. lib/scene-selector.ts's
+ *  tie-break). */
+export function stableHash(input: string): number {
   let h = 0;
   for (let i = 0; i < input.length; i++) h = (h * 31 + input.charCodeAt(i)) >>> 0;
   return h;
 }
 
-/** Deterministic 1-based variant number for this chapter — same chapter.id
- *  always picks the same scene, so it never flickers between renders. */
-export function storySceneVariant(chapterId: string): number {
-  return (stableHash(chapterId) % STORY_SCENE_VARIANTS) + 1;
-}
-
-/** Curated local story-scene path. Files are NOT yet present in the repo —
- *  the <img> consuming this must handle onError (falls through to the CSS
- *  gradient) until real assets are added at this path. */
-export function storySceneUrl(interest: InterestId | undefined, variant: number): string {
-  const n = String(variant).padStart(2, '0');
-  return `/images/home/story-scenes/${interest ?? 'dogs'}-${n}.png`;
-}
-
-/* ── Screen 3: real discovered scene assets (2026-08-17 inventory) ───────
- * public/images/home/story-scenes/ has no files yet (storySceneUrl above
- * always misses and falls to the CSS gradient). public/images/landing/ DOES
- * have real, large, portrait story-scene illustrations already — just not
- * named/organized for this use. Inventoried by hand (dimensions + intent),
- * excluding the landing hero photo, the three tiny landing benefit icons,
- * and the setup-icons sprite sheet:
- *   dinosaurs-01.jpg, dinosaurs-02.jpg, ocean-01.jpg,
- *     ocean-02.jpg, space-01.jpg, unicorns-01.jpg.
- * No scene currently exists for dogs/trains — best-effort matching falls
- * through to the general pool for those interests, per product decision.
+/* ── Scene selection now lives in lib/scene-selector.ts ──────────────────
+ * selectSceneForPage(chapter, page, pageIndex, avatar, uid) — semantic +
+ * character-continuity + recent-avoidance matching against the real,
+ * individually-cropped asset manifest in lib/scene-manifest.ts (57 scenes,
+ * built 2026-08-21 from the actual supplied artwork — see
+ * docs/STORY_IMAGE_SYSTEM.md for the full build record). It replaces this
+ * function's old single-tag "one array per interest" pool AND runs per
+ * PAGE, not once per chapter, so a multi-page chapter can progress through
+ * different (but thematically related) art instead of freezing on one image.
  *
- * .jpg, not .png: these are full-bleed photographic-style illustrations with
- * no transparency, and the original PNG exports were ~2.7-3MB each — over a
- * throttled connection that's 10+ seconds before Home's background scene
- * finishes loading. Re-encoded losslessly-enough at quality 85 (progressive,
- * same pixel dimensions), each is ~350-400KB with no visible artifacting. */
-const REAL_SCENE_POOL: Partial<Record<InterestId, string[]>> = {
-  dinosaurs: ['/images/landing/dinosaurs-01.jpg', '/images/landing/dinosaurs-02.jpg'],
-  ocean: ['/images/landing/ocean-01.jpg', '/images/landing/ocean-02.jpg'],
-  space: ['/images/landing/space-01.jpg'],
-  unicorns: ['/images/landing/unicorns-01.jpg'],
-};
-
-/** Interest-aware, best-effort, stable scene selection from the REAL assets
- *  that exist today. Picks the first of the child's interests with a
- *  matching scene; if none match, picks (deterministically) from the whole
- *  curated pool; returns null only if the pool is empty (caller falls back
- *  to the .lc-scenic/.lc-cliff gradient — never to a setup icon). */
-export function selectStoryScene(chapterId: string, interests: InterestId[]): string | null {
-  const hash = stableHash(chapterId);
-  for (const interest of interests) {
-    const pool = REAL_SCENE_POOL[interest];
-    if (pool?.length) return pool[hash % pool.length];
-  }
-  const everything = Object.values(REAL_SCENE_POOL).flat();
-  return everything.length ? everything[hash % everything.length] : null;
-}
+ * The OLD pool below (removed, not just deprioritized) pointed at
+ * public/images/landing/{dinosaurs,ocean,space,unicorns}-*.jpg. Inspecting
+ * the actual files (not just their names) during the 2026-08-20 image-
+ * library audit found every one of them is a landing-page HERO illustration,
+ * not a clean scene background: each has "Today's Chapter" baked directly
+ * into the art with a character shown physically holding an open book, and
+ * dinosaurs-01/02.jpg are both a BEAR reading in a forest with no dinosaur
+ * content at all. Those findings still stand and are why this file no
+ * longer references them — QUARANTINED, not deleted (nothing else in the
+ * repo uses these specific files, but they're left on disk rather than
+ * removed as an unforced, unrelated cleanup). Do not re-add them to any
+ * selector without re-solving the baked-text/mislabeling problem first. */
 
 export interface ChapterVisuals {
   homeSceneUrl: string;

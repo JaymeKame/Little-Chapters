@@ -121,7 +121,12 @@ class Grader:
         from transformers import AutoModelForCTC, Wav2Vec2FeatureExtractor
 
         self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_ID)
-        self.model = AutoModelForCTC.from_pretrained(MODEL_ID)
+        # low_cpu_mem_usage avoids materializing a full fp32 copy of the
+        # checkpoint before moving it into place — for a checkpoint this size
+        # that's real wall-clock time on every cold start (this runs once per
+        # container, at @app.on_event('startup') in server.py — never per
+        # request), not just lower peak RAM.
+        self.model = AutoModelForCTC.from_pretrained(MODEL_ID, low_cpu_mem_usage=True)
         self.model.eval()
         vocab = json.load(open(hf_hub_download(MODEL_ID, 'vocab.json')))
         self.id2tok = {i: t for t, i in vocab.items()}

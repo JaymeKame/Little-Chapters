@@ -62,11 +62,29 @@ a {
 /* App column (mobile-first, per the mockup). Phones: full-bleed. Tablet and
  * desktop: a centered app-card floating on the warm stone backdrop — the
  * child screens stay one-column by design (one big button), they just get
- * room, rounding, and a soft shadow. */
+ * room, rounding, and a soft shadow.
+ *
+ * 100svh, not 100dvh (2026-08-21 — every min-height in this file was
+ * switched, same reasoning everywhere): dvh ("dynamic viewport height")
+ * tracks the browser's OWN chrome (address bar) showing/hiding in real
+ * time — a mobile browser typically paints the first frame with chrome
+ * hidden (the LARGE dvh value), then chrome reappears a moment later as
+ * the page settles, shrinking dvh. Anything sized or positioned off that
+ * first, temporarily-too-tall value — like the bottom-anchored success-star
+ * celebration on Screen 4 — can end up positioned below the browser's
+ * ACTUAL visible area once chrome reappears: not a CSS overflow bug, a
+ * moving-target viewport bug, and invisible in any headless test (no real
+ * chrome to show/hide). svh ("small viewport height") is pinned to the
+ * SMALLEST the viewport can ever be (chrome always assumed visible) — the
+ * layout is never taller than what's guaranteed visible, so nothing placed
+ * near the bottom edge can ever end up below the fold. Trades a few extra
+ * px of empty space at the very bottom when chrome happens to be hidden for
+ * content that is NEVER clipped — the correct trade for a full-bleed child
+ * app where nothing below the fold is ever meant to require a scroll. */
 .screen {
   width: 100%;
   max-width: 430px;
-  min-height: 100dvh;
+  min-height: 100svh;
   margin: 0 auto;
   background: var(--paper);
   display: flex;
@@ -77,7 +95,7 @@ a {
 @media (min-width: 600px) {
   .screen {
     max-width: 520px;
-    min-height: calc(100dvh - 56px);
+    min-height: calc(100svh - 56px);
     margin: 28px auto;
     border-radius: 26px;
     box-shadow: 0 18px 48px rgba(60, 50, 30, 0.14), 0 2px 8px rgba(60, 50, 30, 0.08);
@@ -94,7 +112,7 @@ a {
 /* Full-bleed scene wrapper (reading + chapter end): the storybook gradient
  * fills the whole viewport; the content column floats transparent inside. */
 .scene {
-  min-height: 100dvh;
+  min-height: 100svh;
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -108,7 +126,7 @@ a {
 @media (min-width: 600px) {
   .scene > .screen {
     margin: 0 auto;
-    min-height: 100dvh;
+    min-height: 100svh;
     border-radius: 0;
     box-shadow: none;
     max-width: 560px;
@@ -124,7 +142,7 @@ a {
 @media (min-width: 1024px) and (orientation: landscape) {
   .scene.lc-reading-scene > .screen {
     margin: 24px 6vw 24px auto;
-    min-height: calc(100dvh - 48px);
+    min-height: calc(100svh - 48px);
     max-width: 460px;
   }
 }
@@ -684,6 +702,17 @@ a {
   animation: lc-invite-pulse 550ms ease-out 150ms both;
 }
 
+/* .lc-invite-pulse's own display:inline-block above wins the cascade over
+ * .lc-audio-icon-wrap's display:inline-flex when both classes land on the
+ * SAME span (AudioWordHelp's "your turn" state) — same specificity, this
+ * rule is later. That silently drops the flex centering the wrap relies on
+ * to keep its icon centered in the circle, so the mic renders displaced
+ * toward the top-left instead of centered — not a one-off pixel bug, a
+ * cascade collision restored here rather than patched with an offset. */
+.lc-audio-icon-wrap.lc-invite-pulse {
+  display: inline-flex;
+}
+
 /* Scoring: a slow, quiet spin — "I heard you, give me a moment," nothing more. */
 @keyframes lc-processing-spin {
   from { transform: rotate(0deg); }
@@ -851,7 +880,7 @@ a {
  * .lc-hero* grid wholesale: the markup and these rules were authored
  * together, and the page carries no behaviour to preserve. */
 .lc-landing {
-  min-height: 100dvh;
+  min-height: 100svh;
   background: var(--stone);
   background-image: radial-gradient(rgba(126,99,59,0.08) 0.7px, transparent 0.7px), linear-gradient(145deg, #fffdf8 0%, #f7edd8 100%);
   background-size: 7px 7px, auto;
@@ -860,7 +889,7 @@ a {
 .lc-landing-inner {
   width: min(100% - 36px, 1180px);
   margin: 0 auto;
-  min-height: 100dvh;
+  min-height: 100svh;
   display: flex;
   flex-direction: column;
 }

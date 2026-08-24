@@ -6,7 +6,9 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
-import { PLANS } from '@/lib/stripe';
+// lib/plans, NOT lib/stripe — importing the latter from this 'use client'
+// module shipped the Stripe Node sdk to the browser. See lib/plans.ts.
+import { PLANS } from '@/lib/plans';
 
 export default function PaymentPage() {
   const router = useRouter();
@@ -117,9 +119,7 @@ export default function PaymentPage() {
               <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '4px' }}>
                 {plan.name}
               </div>
-              <div style={{ fontSize: 13, color: 'var(--ink-soft)' }}>
-                Billed {plan.interval === 'month' ? 'monthly' : 'yearly'}
-              </div>
+              <div style={{ fontSize: 13, color: 'var(--ink-soft)' }}>{plan.blurb}</div>
             </div>
             <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--leaf)' }}>
               ${(plan.amount / 100).toFixed(2)}
