@@ -190,7 +190,8 @@ function pass(label: string) { passed++; console.log(`  ✓ ${label}`); }
 /* ── Section 5: /read uses the interaction's own visualSceneId ───── */
 {
   const readPage = readFileSync('app/read/page.tsx','utf8');
-  assert.match(readPage, /activeInteraction\s*\?\s*\(?activeInteraction\.activity\.visualSceneId/, 'interaction background prefers the beat visualSceneId');
+  assert.match(readPage, /requestedSceneId = activeInteraction\?\.activity\.visualSceneId \?\? pageAuthoredSceneId/, 'interaction background prefers the beat visualSceneId');
+  assert.match(readPage, /sceneBg = resolvedSceneUrl \?\? sceneSelection\?\.asset\.src/, 'the effective scene URL drives SceneBackground');
   const scene = readFileSync('components/SceneBackground.tsx','utf8');
   assert.match(scene, /incomingSrc|preloadRef/, 'SceneBackground preloads the incoming scene to cross-fade seamlessly');
   pass('/read + SceneBackground: seamless per-beat scene progression');

@@ -5,6 +5,18 @@ import { visualProvenance, sceneUrl } from './chapter-scenes';
 import { audioSession } from './audio-session';
 import { buildStoryInteractionManifest } from './story-interactions';
 
+export interface ChapterSceneDebugContext {
+  pageIdx: number;
+  phase: string;
+  activeInteractionId: string | null;
+  activeInteractionKind: string | null;
+  activeInteractionVisualSceneId: string | null;
+  pageAuthoredSceneId: string | null;
+  requestedSceneId: string | null;
+  resolvedSceneUrl: string | null;
+  sceneAssetUrls: Record<string, string>;
+}
+
 /** Diagnostic mapping for scene progression (correction pass 2, Section 5).
  *  Confirms that a chapter's visible scene actually changes at the intended
  *  narrative moments — one row per page + one row per interaction beat. */
@@ -53,14 +65,29 @@ export class AdventureTelemetry {
   }
 }
 
-export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: ChapterScenePackage | null, session?: AdventureTelemetry, context?: { childId?: string; entitlementSource?: 'free' | 'subscription' }) {
+export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: ChapterScenePackage | null, session?: AdventureTelemetry, context?: { entitlementSource?: 'free' | 'subscription'; scene?: ChapterSceneDebugContext }) {
   const visual = visualProvenance(); const provider = audioSession.providerSnapshot();
+  const sceneUrls = context?.scene?.sceneAssetUrls ?? Object.fromEntries(scenePackage?.scenes.map(({ sceneId, assetUrl }) => [sceneId, assetUrl]) ?? []);
+  const sceneIdsByUrl = new Map<string, string[]>();
+  for (const [sceneId, url] of Object.entries(sceneUrls)) sceneIdsByUrl.set(url, [...(sceneIdsByUrl.get(url) ?? []), sceneId]);
+  const duplicateSceneUrls = [...sceneIdsByUrl].filter(([, sceneIds]) => sceneIds.length > 1).map(([url, sceneIds]) => ({ url, sceneIds }));
+  const renderedImage = typeof document === 'undefined' ? null : document.querySelector<HTMLImageElement>('.lc-scene-bg img');
   return {
-    chapterId: chapter?.id ?? null, childId: context?.childId ?? null,
+    chapterId: chapter?.id ?? null,
     entitlementSource: chapter?.provenance?.entitlementSource ?? context?.entitlementSource ?? null,
     storySource: chapter?.provenance?.source ?? 'fallback', chapterSource: chapter?.provenance?.source ?? 'fallback', generatedAt: chapter?.provenance?.generatedAt ?? null,
     visualPackageId: scenePackage ? `${scenePackage.chapterId}:v${scenePackage.visualBibleVersion}` : null,
+    visualBibleVersion: scenePackage?.visualBibleVersion ?? null,
     visualSource: visual.source, scenes: scenePackage?.scenes.map(({ sceneId, assetUrl }) => ({ sceneId, assetUrl })) ?? [],
+    scene: context?.scene ? {
+      ...context.scene,
+      sceneAssetUrls: sceneUrls,
+      sceneSources: Object.fromEntries(Object.keys(sceneUrls).map((sceneId) => [sceneId, scenePackage?.scenes.some((scene) => scene.sceneId === sceneId) ? 'generated' : 'approved-static-fallback'])),
+      duplicateSceneUrls,
+      renderedImgSrc: renderedImage?.getAttribute('src') ?? null,
+      renderedImgCurrentSrc: renderedImage?.currentSrc || null,
+      packageProvenance: visual.packageProvenance,
+    } : null,
     staticFallbackUsed: visual.source === 'approved-static-fallback', storyGenerationFailureReason: chapter?.provenance?.failureReason ?? latestChapterGenerationFailure() ?? null,
     visualGenerationFailureReason: visual.failureReason ?? null, tutorProviderActuallyPlayed: provider?.provider ?? null,
     voiceFallbackReason: provider?.reason ?? null, session: session?.snapshot() ?? null,

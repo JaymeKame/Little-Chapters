@@ -80,10 +80,10 @@ export default function ChildHomePage() {
   // installChapterDebug publishes this chapterDebugInfo as window.__chapterDebug().
   useEffect(() => installChapterDebug(() => {
     const chapterDebugInfo = chapterDebugSnapshot(chapter, scenePackage, undefined, {
-      childId: profile?.childId, entitlementSource: entitlement.subscribed === true ? 'subscription' : 'free',
+      entitlementSource: entitlement.subscribed === true ? 'subscription' : 'free',
     });
     return chapterDebugInfo;
-  }), [chapter, scenePackage, profile?.childId, entitlement.subscribed]);
+  }), [chapter, scenePackage, entitlement.subscribed]);
   const forcedState = typeof window !== 'undefined' && process.env.NODE_ENV === 'development'
     ? new URLSearchParams(window.location.search).get('homeState') as DailyStateKind | null : null;
   const forcedOffline = typeof window !== 'undefined' && process.env.NODE_ENV === 'development'
