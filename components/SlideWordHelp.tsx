@@ -25,7 +25,7 @@
  * obvious from a static circle alone. Stops the instant a real drag starts. */
 
 import { useEffect, useRef, useState } from 'react';
-import { playUISound } from '@/lib/audio';
+import { audioSession } from '@/lib/audio-session';
 import type { WordSegment } from '@/lib/help-ladder';
 
 const SEGMENT_COLORS = ['var(--leaf)', 'var(--sky)', 'var(--blue)', 'var(--sunshine)'];
@@ -88,7 +88,7 @@ export function SlideWordHelp({
     // new segment (the browser only fires onChange at integer boundaries) —
     // no extra "did this actually change" bookkeeping needed. Skip only the
     // "back to nothing selected yet" position (0), which isn't a real letter.
-    if (next !== value && next > 0) playUISound('/audio/tap-soft.mp3');
+    if (next !== value && next > 0) audioSession.playHomeSound('tap-soft.mp3');
     setValue(next);
     if (next >= count) {
       if (!firedRef.current) {
