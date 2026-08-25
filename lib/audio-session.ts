@@ -146,6 +146,25 @@ export class AudioSessionController {
     else start();
   }
 
+  /** Plays short pedagogical segments in order so a modeled word, its sound,
+   * and the retry invitation retain distinct human pacing. The sequence owns
+   * one cancellation token; no segment can leak after a newer utterance. */
+  speakSequence(segments: Array<{ text: string; purpose: string }>, onEnd?: () => void): void {
+    this.cancelSpeech();
+    const sequenceToken = this.speechToken;
+    const play = (index: number, expectedToken: number) => {
+      if (expectedToken !== this.speechToken) return;
+      const segment = segments[index];
+      if (!segment) { onEnd?.(); return; }
+      this.speak(segment.text, { purpose: segment.purpose, onEnd: () => {
+        if (sequenceToken + index + 1 !== this.speechToken) return;
+        const nextToken = this.speechToken;
+        window.setTimeout(() => play(index + 1, nextToken), segment.purpose === 'phoneme-model' ? 280 : 160);
+      } });
+    };
+    play(0, sequenceToken);
+  }
+
   cancelSpeech(): void {
     this.speechToken += 1;
     if (!this.speechDone) { stopSpeaking(); return; }

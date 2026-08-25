@@ -12,10 +12,17 @@ export const metadata: Metadata = {
   title: 'Little Chapters — The better 20 minutes.',
   description:
     'AI writes a new chapter every day at exactly their level. They read. AI listens. The adventure continues tomorrow.',
+  manifest: '/manifest.webmanifest',
+  applicationName: 'Little Chapters',
+  appleWebApp: { capable: true, title: 'Little Chapters', statusBarStyle: 'black-translucent' },
+  icons: { icon: [{ url: '/pwa/icon-192.png', sizes: '192x192' }, { url: '/pwa/icon-512.png', sizes: '512x512' }], apple: '/pwa/icon-192.png' },
 };
 
 export const viewport: Viewport = {
   themeColor: '#F5EFE6',
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

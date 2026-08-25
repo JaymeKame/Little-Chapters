@@ -225,7 +225,7 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
   const rand = stableRandom(id);
   const skeleton = STORY_SKELETONS[Math.floor(rand() * STORY_SKELETONS.length)];
   const vars: Record<string, string> = {
-    character: s.character,
+    character: childName,
     place: s.place,
     spot: s.spot,
   };
@@ -241,14 +241,14 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
   return {
     id,
     title: "Today's Chapter",
-    character: s.character,
-    companion: s.character,
+    character: childName,
+    companion: 'a new story friend',
     setting: s.setting,
     ambience: s.ambience,
     pages,
     cliffhanger: [fillTemplate(skeleton.cliffhanger[0], vars), skeleton.cliffhanger[1]],
     teaser: fillTemplate(skeleton.teaser, vars),
-    phonics: derivePhonics(pages, [s.character]),
+    phonics: derivePhonics(pages, [childName]),
     provenance: { source: 'demo/static' },
   };
 }

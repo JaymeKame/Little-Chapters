@@ -114,7 +114,7 @@ async function main() {
     let manifestCacheChecked = false;
     const maxPages = 12;
     while (pages < maxPages) {
-      const interaction = page.locator('[data-session-beat="sound-hunt"], [data-session-beat="prediction"], [data-session-beat="word-builder"]');
+      const interaction = page.locator('[data-session-beat="sound-hunt"], [data-session-beat="find-in-scene"], [data-session-beat="prediction"], [data-session-beat="word-builder"]');
       if (await interaction.count()) {
         const beat = await interaction.getAttribute('data-session-beat');
         const manifestBeat = beat === 'sound-hunt' ? 'find-sound' : beat;
@@ -135,6 +135,10 @@ async function main() {
         if (beat === 'word-builder') {
           const pieces = interaction.locator('.lc-choice-grid button');
           for (let index = 0; index < await pieces.count(); index += 1) await pieces.nth(index).click();
+        } else if (beat === 'find-in-scene') {
+          const target = interaction.locator('button[aria-label^="Found the "]');
+          if (await target.count()) await target.click();
+          else await interaction.locator('.lc-choice-grid button').first().click();
         } else if (await soundAnswer.count()) {
           await interaction.locator('.lc-choice-grid button:not([data-correct="true"])').first().click();
           await interaction.getByRole('status').waitFor();
