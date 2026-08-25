@@ -11,6 +11,7 @@
 import type { ChildProfile, InterestId } from './profile';
 import { loadReport } from './profile';
 import { loadLocalProgress } from './child-progress';
+import { loadPreferenceValues } from './preference-values';
 import { initialStage } from '../reading-tutor/src/progression';
 import { pickSkeleton, type Skeleton } from '../reading-tutor/src/skeletons';
 import { assignSlots } from '../reading-tutor/src/slots';
@@ -37,7 +38,11 @@ export interface Chapter {
   cliffhanger: [string, string];
   teaser: string;
   phonics: { hint: string; words: string[] }[];
+  provenance?: ChapterProvenance;
 }
+
+export type ChapterSource = 'generated' | 'cached-generated' | 'fallback' | 'demo/static';
+export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string }
 
 const SETTINGS: Record<
   InterestId,
@@ -241,6 +246,7 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
     cliffhanger: [fillTemplate(skeleton.cliffhanger[0], vars), skeleton.cliffhanger[1]],
     teaser: fillTemplate(skeleton.teaser, vars),
     phonics: derivePhonics(pages, [s.character]),
+    provenance: { source: 'demo/static' },
   };
 }
 
@@ -251,11 +257,7 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
  * full-screen background — it reads as a stretched app icon, not a scene.
  *
  * Fallback hierarchy actually in effect right now:
- *  1) chapter.visuals.*SceneUrl — AI-generated scene, ONLY used if present
- *     (the automatic generation call is currently disabled at the call
- *     sites in app/home and app/read; see requestChapterVisuals below for
- *     why, and how to re-enable it once OPENAI_API_KEY/Firebase Storage are
- *     configured and verified end-to-end).
+ *  1) lib/chapter-scenes.ts's durable generated scene package.
  *  2) lib/scene-selector.ts's selectSceneForPage() against the real curated
  *     manifest in lib/scene-manifest.ts (public/images/scenes/) — see that
  *     file's header for the full selection algorithm.
@@ -298,25 +300,6 @@ export function stableHash(input: string): number {
  * repo uses these specific files, but they're left on disk rather than
  * removed as an unforced, unrelated cleanup). Do not re-add them to any
  * selector without re-solving the baked-text/mislabeling problem first. */
-
-export interface ChapterVisuals {
-  homeSceneUrl: string;
-  readingSceneUrl: string;
-  cliffhangerSceneUrl: string;
-  generatedAt: number;
-  version: 1;
-}
-
-const VISUALS_CACHE_PREFIX = 'little-chapters-visuals:';
-
-export function loadCachedVisuals(chapterId: string): ChapterVisuals | null {
-  try {
-    const raw = JSON.parse(localStorage.getItem(VISUALS_CACHE_PREFIX + chapterId) ?? 'null') as ChapterVisuals | null;
-    return raw && typeof raw.homeSceneUrl === 'string' ? raw : null;
-  } catch {
-    return null;
-  }
-}
 
 /* ── Reading-tutor story path (skeletons + stage-matched generation) ───── */
 
@@ -365,7 +348,11 @@ function rememberSkeleton(profile: ChildProfile, id: string): void {
 export function resolveGenerationStage(profile: ChildProfile, uid: string | null): number {
   const persisted = loadLocalProgress(uid, profile.childId);
   if (persisted) return persisted.stage;
-  return initialStage(stageForAge(profile.age));
+  const observation = typeof window !== 'undefined' ? loadPreferenceValues().difficultyObservation : 'about-right';
+  const adjustment = observation === 'too-easy' ? 1 : observation === 'too-hard' ? -1 : 0;
+  // Parent observation only nudges cold-start placement. Once validated
+  // ChildProgress exists, the persisted adaptive stage above always wins.
+  return initialStage(Math.min(10, Math.max(1, stageForAge(profile.age) + adjustment)));
 }
 
 export function tutorStoryContext(profile: ChildProfile, uid: string | null): { stage: number; skeleton: Skeleton } {
@@ -415,6 +402,7 @@ export function adaptTutorDraft(
     cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
     teaser: draft.summaryLine || `${profile.childName} has more to discover tomorrow...`,
     phonics: [{ hint: `Stage ${stage} practice`, words: practiceWords }],
+    provenance: { source: 'generated', generatedAt: new Date().toISOString() },
   };
 }
 
@@ -423,7 +411,9 @@ const TUTOR_CACHE_PREFIX = 'little-chapters-tutor-chapter:';
 function loadCachedTutorChapter(id: string): Chapter | null {
   try {
     const raw = JSON.parse(localStorage.getItem(TUTOR_CACHE_PREFIX + id) ?? 'null') as Chapter | null;
-    return raw && Array.isArray(raw.pages) && raw.pages.length > 0 ? raw : null;
+    return raw && Array.isArray(raw.pages) && raw.pages.length > 0
+      ? { ...raw, provenance: { ...raw.provenance, source: 'cached-generated' } }
+      : null;
   } catch {
     return null;
   }
@@ -433,6 +423,13 @@ function loadCachedTutorChapter(id: string): Chapter | null {
  * model call, and React StrictMode fires the mount effect twice in dev — so
  * without this, the first load of a day buys the same story twice. */
 const inFlight = new Map<string, Promise<Chapter | null>>();
+const generationFailures = new Map<string, string>();
+let latestGenerationFailure: string | undefined;
+
+export function chapterGenerationFailure(chapterId: string): string | undefined {
+  return generationFailures.get(chapterId);
+}
+export function latestChapterGenerationFailure(): string | undefined { return latestGenerationFailure; }
 
 /** The two existing, already-supported GenerateRequest personalization
  *  inputs this task wires up (see docs/ADAPTIVE_LOOP.md, Phase 2) —
@@ -490,13 +487,27 @@ async function generateTutorChapter(
 ): Promise<Chapter | null> {
   const context = resolveGenerationContext(profile, uid);
   try {
+    const headers = { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) };
+    const lookup = await fetch(`/api/chapters/story?chapterId=${encodeURIComponent(id)}`, { method: 'GET', headers });
+    if (lookup.ok) {
+      const stored = await lookup.json() as { chapter?: Chapter };
+      if (stored.chapter?.pages?.length) {
+        const chapter = { ...stored.chapter, provenance: { ...stored.chapter.provenance, source: 'cached-generated' as const } };
+        try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter)); } catch { /* accelerator only */ }
+        generationFailures.delete(id);
+        latestGenerationFailure = undefined;
+        return chapter;
+      }
+    } else if (lookup.status !== 404) {
+      generationFailures.set(id, `story-lookup-${lookup.status}`);
+      latestGenerationFailure = `story-lookup-${lookup.status}`;
+      return null;
+    }
     const response = await fetch('/api/chapters/story', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
+      headers,
       body: JSON.stringify({
+        chapterId: id,
         profile,
         stage: context.stage,
         skeletonId: context.skeleton.id,
@@ -504,62 +515,29 @@ async function generateTutorChapter(
         storySoFar: context.storySoFar,
       }),
     });
-    if (!response.ok) return null;
-    const data = await response.json() as { draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string> };
-    if (!data.draft || !data.skeleton) return null;
+    if (!response.ok) { generationFailures.set(id, `story-generation-${response.status}`); latestGenerationFailure = `story-generation-${response.status}`; return null; }
+    const data = await response.json() as { chapter?: Chapter; draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string> };
+    if (data.chapter?.pages?.length) {
+      generationFailures.delete(id);
+      latestGenerationFailure = undefined;
+      try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(data.chapter)); } catch { /* accelerator only */ }
+      return data.chapter;
+    }
+    if (!data.draft || !data.skeleton) { generationFailures.set(id, 'story-generation-invalid-response'); return null; }
     const chapter = adaptTutorDraft(profile, data.draft, data.skeleton, data.slots, context.stage);
-    if (!chapter) return null;
+    if (!chapter) { generationFailures.set(id, 'story-generation-invalid-draft'); return null; }
+    generationFailures.delete(id);
+    latestGenerationFailure = undefined;
     try {
       localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));
     } catch {
       /* best-effort cache */
     }
     return chapter;
-  } catch {
+  } catch (error) {
+    generationFailures.set(id, error instanceof Error ? error.message : 'story-generation-network');
+    latestGenerationFailure = error instanceof Error ? error.message : 'story-generation-network';
     return null;
-  }
-}
-
-function cacheVisuals(chapterId: string, visuals: ChapterVisuals): void {
-  try {
-    localStorage.setItem(VISUALS_CACHE_PREFIX + chapterId, JSON.stringify(visuals));
-  } catch {
-    /* best-effort */
-  }
-}
-
-/** Requests the generated visual pack once per chapter.id. NOT CALLED from
- *  Screen 3/4/5 right now — runtime diagnosis (2026-08-17) proved the
- *  automatic path returns 503 in this environment (OPENAI_API_KEY /
- *  FIREBASE_SERVICE_ACCOUNT / FIREBASE_STORAGE_BUCKET are unset — no
- *  .env.local at all), so the client was silently falling back to a small
- *  setup icon stretched full-screen. Left here, unused by the pages, so the
- *  generated-URL source can be swapped back in later (chapter.visuals.* →
- *  local story scene) without touching the UI once the backend is verified
- *  end-to-end. */
-export async function requestChapterVisuals(
-  chapter: Chapter,
-  profile: ChildProfile,
-  authToken: string | null,
-): Promise<ChapterVisuals | null> {
-  const cached = loadCachedVisuals(chapter.id);
-  if (cached) return cached;
-  try {
-    const res = await fetch('/api/chapters/visuals', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
-      body: JSON.stringify({ chapterId: chapter.id, chapter, profile }),
-    });
-    if (!res.ok) return null;
-    const { visuals } = (await res.json()) as { visuals: ChapterVisuals };
-    if (!visuals?.homeSceneUrl) return null;
-    cacheVisuals(chapter.id, visuals);
-    return visuals;
-  } catch {
-    return null; // network hiccup — caller falls back, never blocks reading
   }
 }
 

@@ -25,7 +25,7 @@
  * obvious from a static circle alone. Stops the instant a real drag starts. */
 
 import { useEffect, useRef, useState } from 'react';
-import { playUISound } from '@/lib/audio';
+import { audioSession } from '@/lib/audio-session';
 import type { WordSegment } from '@/lib/help-ladder';
 
 const SEGMENT_COLORS = ['var(--leaf)', 'var(--sky)', 'var(--blue)', 'var(--sunshine)'];
@@ -39,6 +39,15 @@ function trackGradient(count: number): string {
     stops.push(`${color} ${from}%`, `${color} ${to}%`);
   }
   return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
+export function spokenPhoneme(segment: WordSegment): string {
+  const cue = segment.phoneme?.split(' as in ')[0].replaceAll('/', '').trim();
+  if (!cue) return segment.text;
+  if (cue === 'sh') return 'shhh';
+  if (cue === 's') return 'ssss';
+  if (cue === 'm') return 'mmmm';
+  return cue;
 }
 
 export function SlideWordHelp({
@@ -88,15 +97,17 @@ export function SlideWordHelp({
     // new segment (the browser only fires onChange at integer boundaries) —
     // no extra "did this actually change" bookkeeping needed. Skip only the
     // "back to nothing selected yet" position (0), which isn't a real letter.
-    if (next !== value && next > 0) playUISound('/audio/tap-soft.mp3');
+    if (next !== value && next > 0) audioSession.playHomeSound('tap-soft.mp3');
     setValue(next);
+    const segment = segments[Math.min(next - 1, count - 1)];
     if (next >= count) {
       if (!firedRef.current) {
         firedRef.current = true;
-        onComplete();
+        audioSession.speak(spokenPhoneme(segment), { purpose: 'phoneme-model', onEnd: onComplete });
       }
     } else {
       firedRef.current = false;
+      if (next > 0) audioSession.speak(spokenPhoneme(segment), { purpose: 'phoneme-model' });
     }
   }
 
@@ -126,7 +137,7 @@ export function SlideWordHelp({
       </div>
 
       <p className="lc-slide-caption" role="status">
-        {complete ? 'Great job! Now say the whole word…' : 'Slide to sound it out.'}
+        {complete ? 'The sounds are coming together…' : 'Slide to build the word.'}
       </p>
     </div>
   );

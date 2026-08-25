@@ -65,6 +65,7 @@ export async function POST(request: NextRequest) {
     // Parse request body
     const body = await request.json();
     const sessionData: ReadingSessionData = body.sessionData;
+    const deliveryMode = body.deliveryMode === 'sms' ? 'sms' : 'in-app';
 
     if (!sessionData || !sessionData.childName) {
       return NextResponse.json({ error: 'Missing session data' }, { status: 400 });
@@ -108,7 +109,7 @@ export async function POST(request: NextRequest) {
       // older parent docs can still hold something Twilio would reject.
       console.warn('[messages] stored phone number is not E.164 for uid:', uid);
       smsStatus = 'invalid_number';
-    } else if (phoneNumber) {
+    } else if (phoneNumber && deliveryMode === 'sms') {
       const smsResult = await sendSMS({
         to: phoneNumber,
         message: generated.rawMessage,

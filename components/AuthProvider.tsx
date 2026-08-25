@@ -25,6 +25,7 @@ import { claimChildProgressFromAnonymousUid } from '@/lib/child-progress';
 import { claimChapterHistoryFromAnonymousUid } from '@/lib/chapter-history';
 import { loadProfile } from '@/lib/profile';
 import { INVALID_PHONE_MESSAGE, normalizePhoneNumber } from '@/lib/phone';
+import { saveAccountProfile } from '@/lib/profile-repository';
 
 /** Claims everything keyed by the outgoing anonymous uid into the new uid —
  *  pet state (existing) and reading progress/session history (this task).
@@ -90,6 +91,8 @@ async function upgradeOrSignIn(
   if (current?.isAnonymous) {
     try {
       await linkWithPopup(current, provider);
+      const profile = loadProfile();
+      if (profile && auth.currentUser) await saveAccountProfile(auth.currentUser, profile);
       // A link that succeeded means no redirect is coming; a stale marker
       // here would otherwise make the NEXT sign-in claim a dead uid.
       sessionStorage.removeItem(PENDING_ANON_UID);
@@ -131,6 +134,8 @@ async function finishRedirectSignIn(auth: ReturnType<typeof getFirebaseAuth>): P
       claimAnonymousChild(result.user.uid, pending);
       sessionStorage.removeItem(PENDING_ANON_UID);
     }
+    const profile = loadProfile();
+    if (profile && !result.user.isAnonymous) await saveAccountProfile(result.user, profile);
   } catch {
     /* nothing pending, or the redirect was abandoned */
   }
@@ -164,6 +169,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let unsub = () => {};
+    // Recognition must not leave the product on a blank resolver forever when
+    // Firebase is blocked/offline. Anonymous same-browser use remains valid.
+    const resolveWatchdog = setTimeout(() => setLoading(false), 4000);
     try {
       const auth = getFirebaseAuth();
 
@@ -199,13 +207,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         publish();
+        clearTimeout(resolveWatchdog);
         setLoading(false);
       });
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : 'Firebase init failed');
       setLoading(false);
     }
-    return () => unsub();
+    return () => { clearTimeout(resolveWatchdog); unsub(); };
   }, [publish]);
 
   const value = useMemo<AuthContextValue>(
