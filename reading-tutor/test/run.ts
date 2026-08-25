@@ -1308,10 +1308,10 @@ section('Chapter lifecycle - static checks (returning-user boot flow, persisted 
   );
 
   const todaySrc = read('app/api/chapters/today/route.ts');
-  ok(todaySrc.includes('hasActiveSubscription'), '/api/chapters/today imports hasActiveSubscription');
+  ok(todaySrc.includes('resolveChapterEntitlement'), '/api/chapters/today resolves the shared free-or-subscription chapter entitlement');
   ok(
-    /if \(!\(await hasActiveSubscription\(auth\.uid\)\)\)/.test(todaySrc) && todaySrc.includes('SUBSCRIPTION_REQUIRED'),
-    '/api/chapters/today refuses generation for an unentitled, non-dev caller (402, before touching Firestore/OpenAI)',
+    /if \(!entitlementSource\)/.test(todaySrc) && todaySrc.includes('CHAPTER_ENTITLEMENT_REQUIRED'),
+    '/api/chapters/today refuses generation only when neither the free chapter nor a subscription admits the caller',
   );
   ok(todaySrc.includes('loadOrCreateProgress') && todaySrc.includes('progress.stage'), 'stage is resolved from the SERVER-persisted ChildProgress, not trusted from the client body');
   ok(todaySrc.includes('isValidDay'), 'day is validated before being used as a Firestore document id');

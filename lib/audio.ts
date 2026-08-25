@@ -62,6 +62,7 @@ const VOICE_PROVIDER = process.env.NEXT_PUBLIC_VOICE_PROVIDER;
  *  right now?" for module-level Audio elements that aren't in the DOM. */
 const VOICE_LOG_MAX = 20;
 const _voiceHistory: Record<string, unknown>[] = [];
+const _voiceListeners = new Set<(event: Record<string, unknown>) => void>();
 
 /** The terminal outcome of the MOST RECENT speakPrompt() call — a flat,
  *  no-history-digging answer to "what actually just happened", requested by
@@ -96,6 +97,12 @@ function voiceLog(event: Record<string, unknown>): void {
   console.debug('[Voice]', entry);
   _voiceHistory.push(entry);
   if (_voiceHistory.length > VOICE_LOG_MAX) _voiceHistory.shift();
+  for (const listener of _voiceListeners) listener(entry);
+}
+
+export function subscribeVoiceTelemetry(listener: (event: Record<string, unknown>) => void): () => void {
+  _voiceListeners.add(listener);
+  return () => _voiceListeners.delete(listener);
 }
 
 /** Server-reported voice configuration — GET /api/speech/model returns
@@ -257,6 +264,7 @@ const ELEVENLABS_TIMEOUT_MS = 8000;
  * persistence), capped so a long session can't grow this unboundedly. */
 const ELEVENLABS_CACHE_MAX = 24;
 const _elevenLabsCache = new Map<string, Blob>();
+const _speechPrefetches = new Map<string, Promise<'hit' | 'miss' | 'unavailable'>>();
 
 function _cacheGet(key: string): Blob | undefined {
   const hit = _elevenLabsCache.get(key);
@@ -277,11 +285,45 @@ function _cacheSet(key: string, blob: Blob): void {
   }
 }
 
+function speechCacheKey(text: string, speed = 1): string {
+  return `${speed.toFixed(2)}:${text}`;
+}
+
+/** Warm the same ElevenLabs cache used by playback without taking global
+ * speech ownership. Commercial playback/fallback still remains in
+ * speakPrompt(); this only removes the next-beat network wait. */
+export function prefetchPrompt(text: string, speed = 1): Promise<'hit' | 'miss' | 'unavailable'> {
+  if (typeof window === 'undefined' || VOICE_PROVIDER === 'web-speech') return Promise.resolve('unavailable');
+  const prompt = withTerminalPunctuation(text);
+  const key = speechCacheKey(prompt, speed);
+  if (_cacheGet(key)) return Promise.resolve('hit');
+  const pending = _speechPrefetches.get(key);
+  if (pending) return pending;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
+  const request = fetch('/api/speech/model', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: prompt, speed }),
+    signal: controller.signal,
+  }).then(async (response) => {
+    if (!response.ok) return 'unavailable' as const;
+    _cacheSet(key, await response.blob());
+    voiceLog({ provider: 'elevenlabs', preload: true, cache: 'miss', chars: prompt.length });
+    return 'miss' as const;
+  }).catch(() => 'unavailable' as const).finally(() => {
+    clearTimeout(timeout);
+    _speechPrefetches.delete(key);
+  });
+  _speechPrefetches.set(key, request);
+  return request;
+}
+
 /** Internal: play text via POST /api/speech/model (ElevenLabs stream).
  *  Falls back to Web Speech API on any failure so callers are never blocked. */
 function _speakElevenLabs(
   text: string,
-  opts?: { onStart?: () => void; onEnd?: () => void },
+  opts?: { rate?: number; onStart?: () => void; onEnd?: () => void },
 ): void {
   // This call supersedes anything still in flight — bump the generation
   // before doing anything else so a stale fetch/cache callback below (from a
@@ -419,7 +461,8 @@ function _speakElevenLabs(
     else void startPlayback();
   };
 
-  const cached = _cacheGet(text);
+  const cacheKey = speechCacheKey(text, opts?.rate);
+  const cached = _cacheGet(cacheKey);
   if (cached) {
     if (_transportDebug) _transportDebug.bytesReceived = cached.size;
     voiceLog({ provider: 'elevenlabs', cache: 'hit', chars: text.length });
@@ -455,7 +498,7 @@ function _speakElevenLabs(
     return fetch('/api/speech/model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, speed: opts?.rate }),
       signal: controller.signal,
     })
       .then(async (res) => {
@@ -515,7 +558,7 @@ function _speakElevenLabs(
 
   attempt()
     .then(({ blob, status }) => {
-      _cacheSet(text, blob);
+      _cacheSet(cacheKey, blob);
       voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, httpStatus: status });
       _lastUtterance = {
         requestedProvider: 'elevenlabs',
@@ -544,7 +587,7 @@ function _speakElevenLabs(
       attempt()
         .then(({ blob, status }) => {
           if (myGeneration !== _speechGeneration) return;
-          _cacheSet(text, blob);
+          _cacheSet(cacheKey, blob);
           voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, afterRetry: true, httpStatus: status });
           _lastUtterance = {
             requestedProvider: 'elevenlabs',
@@ -745,6 +788,12 @@ const AUDIO_VOLUMES = {
   ui: 0.28,
   duckFactor: 0.10,
 } as const;
+export type MusicPolicy = 'off' | 'low' | 'normal';
+let musicPolicy: MusicPolicy = 'normal';
+
+function musicPolicyFactor(): number {
+  return musicPolicy === 'off' ? 0 : musicPolicy === 'low' ? 0.5 : 1;
+}
 
 let themeEl: HTMLAudioElement | null = null;
 let themeAsset: string | null = null;
@@ -782,8 +831,15 @@ function speechHasPriority(): boolean {
 
 function applyAmbiencePriority(): void {
   const shouldDuck = ducked || speechHasPriority();
-  fadeElement(themeEl, shouldDuck ? AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.theme);
-  fadeElement(ambienceEl, shouldDuck ? AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.ambience);
+  const factor = musicPolicyFactor() * (shouldDuck ? AUDIO_VOLUMES.duckFactor : 1);
+  fadeElement(themeEl, AUDIO_VOLUMES.theme * factor);
+  fadeElement(ambienceEl, AUDIO_VOLUMES.ambience * factor);
+  fadeElement(musicEl, AUDIO_VOLUMES.music * factor);
+}
+
+export function setMusicPolicy(policy: MusicPolicy): void {
+  musicPolicy = policy;
+  applyAmbiencePriority();
 }
 
 function clearTrack(el: HTMLAudioElement | null): void {
@@ -818,7 +874,7 @@ export function playTheme(): void {
   resumeInterruptedCorrection();
   if (!themeEl) return;
   if (typeof document !== 'undefined' && document.hidden) return; // see speakPrompt()'s guard for why
-  themeEl.volume = (ducked || speechHasPriority()) ? AUDIO_VOLUMES.theme * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.theme;
+  themeEl.volume = AUDIO_VOLUMES.theme * musicPolicyFactor() * ((ducked || speechHasPriority()) ? AUDIO_VOLUMES.duckFactor : 1);
   void themeEl.play().then(() => audioLog(`theme -> ${themeAsset?.replace('/audio/', '').replace('.mp3', '')}`)).catch(() => {});
 }
 
@@ -878,7 +934,7 @@ export function playAmbience(asset: string | null | undefined): void {
   try {
     const el = new Audio(asset);
     el.loop = true;
-    el.volume = (ducked || speechHasPriority()) ? AUDIO_VOLUMES.ambience * AUDIO_VOLUMES.duckFactor : AUDIO_VOLUMES.ambience;
+    el.volume = AUDIO_VOLUMES.ambience * musicPolicyFactor() * ((ducked || speechHasPriority()) ? AUDIO_VOLUMES.duckFactor : 1);
     el.addEventListener('error', () => stopAmbience()); // missing/unsupported asset — stay silent
     void el.play().catch(() => {}); // autoplay-blocked — user interaction can call playAmbience again
     ambienceEl = el;
@@ -953,7 +1009,7 @@ export function playMusic(asset: string | null | undefined): void {
   stopMusic();
   try {
     const el = new Audio(asset);
-    el.volume = AUDIO_VOLUMES.music;
+    el.volume = AUDIO_VOLUMES.music * musicPolicyFactor();
     el.addEventListener('ended', () => stopMusic(), { once: true });
     musicEl = el;
     void el.play().catch(() => stopMusic());

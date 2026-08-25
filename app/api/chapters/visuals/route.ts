@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
-import { adminDb, adminStorage, adminStorageConfigured } from '@/lib/firebase-admin';
+import { adminCredentialsConfigured, adminDb, adminStorage, adminStorageConfigured } from '@/lib/firebase-admin';
 import { requireReadingUser } from '@/lib/route-auth';
 import type { Chapter } from '@/lib/chapters';
 import { buildStoryInteractionManifest } from '@/lib/story-interactions';
@@ -33,6 +33,7 @@ export async function GET(request: NextRequest) {
   const auth = await requireReadingUser(request); if (!auth.ok) return auth.response;
   const chapterId = request.nextUrl.searchParams.get('chapterId');
   if (!chapterId || chapterId.length > 180) return NextResponse.json({ error: 'INVALID_CHAPTER_ID' }, { status: 400 });
+  if (!adminCredentialsConfigured()) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
   if (auth.uid !== 'anonymous' && !(await ownedDailyChapter(auth.uid, chapterId))) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
   const existing = await packageRef(chapterId).get();
   if (!existing.exists) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
@@ -136,6 +137,7 @@ export async function POST(request: NextRequest) {
   const auth = await requireReadingUser(request); if (!auth.ok) return auth.response;
   const body = await request.json().catch(() => null) as { chapter?: unknown } | null;
   if (!validChapter(body?.chapter)) return NextResponse.json({ error: 'INVALID_CHAPTER' }, { status: 400 });
+  if (!adminCredentialsConfigured()) return NextResponse.json({ error: 'SCENE_GENERATION_NOT_CONFIGURED' }, { status: 503 });
   const chapter = body.chapter; const id = packageId(chapter.id); const ref = packageRef(chapter.id);
   if (auth.uid !== 'anonymous' && !(await ownedDailyChapter(auth.uid, chapter.id))) return NextResponse.json({ error: 'CHAPTER_NOT_FOUND' }, { status: 404 });
   const existing = await ref.get();

@@ -27,7 +27,7 @@ import { selectSceneForPage } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
-import { loadProfile, loadReport, saveReport, type ChildProfile } from '@/lib/profile';
+import { fetchRemoteProfile, loadProfile, loadReport, saveProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import { buildSessionPlan, claimEndingCompletion, interactionAfterPage, type SessionBeat } from '@/lib/session-plan';
 import { type ReadingAssessmentResult, type ReadingSession } from '@/lib/pronunciation';
 import { combineVerdicts, isPhraseUnreliable, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
@@ -294,19 +294,27 @@ export default function ReadPage() {
   const pageRereadRef = useRef(false);
 
   useEffect(() => {
+    if (authLoading) return;
     disposedRef.current = false;
-    const p = loadProfile();
-    if (!p) {
-      router.replace('/');
-      return;
-    }
-    setProfile(p);
-    setChapter(chapterFor(p.interests[0], p.childName));
-    sessionIdRef.current = `${p.childName}-${Date.now()}`;
-    startedAtRef.current = new Date().toISOString();
-    sentenceResultsRef.current = [];
-    interventionsRef.current = [];
+    let cancelled = false;
+    void (async () => {
+      let p = loadProfile();
+      if (!p && user && !user.isAnonymous) {
+        const token = await user.getIdToken().catch(() => null);
+        const remote = token ? await fetchRemoteProfile(token).catch(() => null) : null;
+        if (remote) { saveProfile(remote); p = remote; }
+      }
+      if (cancelled) return;
+      if (!p) { router.replace('/'); return; }
+      setProfile(p);
+      setChapter(chapterFor(p.interests[0], p.childName));
+      sessionIdRef.current = `${p.childName}-${Date.now()}`;
+      startedAtRef.current = new Date().toISOString();
+      sentenceResultsRef.current = [];
+      interventionsRef.current = [];
+    })();
     return () => {
+      cancelled = true;
       disposedRef.current = true;
       sessionRef.current?.cancel();
       sessionRef.current = null;
@@ -314,7 +322,7 @@ export default function ReadPage() {
       audioSession.stopTheme();
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
     };
-  }, [router]);
+  }, [authLoading, router, user]);
 
   /* Deterministic test path for the slide-through help interaction:
    * /read?slideDemo forces a real, currently-segmentable word straight into

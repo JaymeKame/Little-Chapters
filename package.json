@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start -p 3001",
     "typecheck": "tsc --noEmit",
+    "test:entry": "node --experimental-strip-types scripts/test-entry-flow.ts",
+    "test:auth-registration": "node --experimental-strip-types scripts/test-auth-registration.ts",
     "test:voice": "node --experimental-strip-types scripts/test-voice-provider.ts",
     "test:foundation": "node --experimental-strip-types scripts/test-product-foundation.ts",
     "test:entry-browser": "node --experimental-strip-types scripts/test-entry-browser.ts",

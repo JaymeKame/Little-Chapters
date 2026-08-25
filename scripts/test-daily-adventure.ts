@@ -17,7 +17,7 @@ const generated: Chapter = { ...chapterFor('ocean','Ari'), character:'Nova', com
 
 async function main() {
 const originalFetch = globalThis.fetch;
-let calls:string[] = []; let generationBody: { profile?: ChildProfile; stage?: unknown; recentlyMissedWords?: unknown; storySoFar?: unknown; skeletonId?: unknown } = {};
+let calls:string[] = []; let generationBody: { profile?: ChildProfile; stage?: unknown; ageDerivedStageEstimate?: unknown; recentlyMissedWords?: unknown; storySoFar?: unknown; skeletonId?: unknown } = {};
 globalThis.fetch = (async (_input, init) => { calls.push(init?.method ?? 'GET'); return new Response('{}',{status:503}); }) as typeof fetch;
 assert.equal(await requestTutorChapter(profile,'uid','token'), null, 'transient lookup failure returns graceful fallback without poisoning storage');
 assert.equal(memory.size, 0);
@@ -28,10 +28,10 @@ globalThis.fetch = (async (_input, init) => {
   return init?.method === 'GET' ? new Response('{}',{status:404}) : new Response(JSON.stringify({chapter:generated}),{status:201,headers:{'Content-Type':'application/json'}});
 }) as typeof fetch;
 assert.equal((await requestTutorChapter(profile,'uid','token'))?.character, 'Nova');
-assert.deepEqual(calls,['GET','POST']);
+assert.deepEqual(calls,['POST'], 'the authoritative persisted today endpoint owns lookup + create atomically');
 assert.equal(generationBody.profile?.childName,'Ari');
 assert.deepEqual(generationBody.profile?.interests,['ocean']);
-assert.equal(typeof generationBody.stage,'number');
+assert.equal(typeof (generationBody.stage ?? generationBody.ageDerivedStageEstimate),'number');
 assert.ok('recentlyMissedWords' in generationBody && 'storySoFar' in generationBody && 'skeletonId' in generationBody);
 calls = [];
 assert.equal((await requestTutorChapter(profile,'uid','token'))?.provenance?.source, 'cached-generated');

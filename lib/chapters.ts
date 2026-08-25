@@ -580,8 +580,13 @@ async function generateTutorChapterPersisted(
     });
     if (!response.ok) return null; // 402 (not subscribed) / 503 / etc — caller stays on the demo arc
     const data = (await response.json()) as {
+      chapter?: Chapter | null;
       record?: { source: 'generated' | 'fallback'; stage: number; draft?: StoryDraft; skeletonId?: string; slots?: Record<string, string> };
     };
+    if (data.chapter?.pages?.length) {
+      try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(data.chapter)); } catch { /* accelerator only */ }
+      return data.chapter;
+    }
     const rec = data.record;
     if (!rec || rec.source !== 'generated' || !rec.draft) return null;
     const skeleton = SKELETONS.find((s) => s.id === rec.skeletonId) ?? context.skeleton;

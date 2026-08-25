@@ -4,12 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
-import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, type ChildProfile } from '@/lib/profile';
+import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, fetchRemoteProfile, loadProfile, saveProfile, type ChildProfile } from '@/lib/profile';
 import { chapterFor, latestChapterGenerationFailure, requestTutorChapter, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage } from '@/lib/scene-selector';
 import { wasChapterCompleted } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
-import { resolveProfile } from '@/lib/profile-repository';
 import { resolveDailyState, type DailyStateKind } from '@/lib/entry-state';
 import { resolvePreferences } from '@/lib/preferences';
 import { themeAssetFor, welcomeLine } from '@/lib/audio';
@@ -37,16 +36,19 @@ export default function ChildHomePage() {
   useEffect(() => {
     if (authLoading) return;
     let cancelled = false;
-    void Promise.all([resolveProfile(user), resolvePreferences(user)]).then(([resolved]) => {
-      if (cancelled) return;
-      if (!resolved.profile) {
-        if (resolved.source === 'unavailable') setProfileUnavailable(true);
-        else router.replace(user && !user.isAnonymous ? '/setup' : '/');
-        return;
+    void (async () => {
+      let resolved = loadProfile();
+      if (!resolved && user && !user.isAnonymous) {
+        const token = await user.getIdToken().catch(() => null);
+        const remote = token ? await fetchRemoteProfile(token).catch(() => null) : null;
+        if (remote) { saveProfile(remote); resolved = remote; }
       }
-      setProfile(resolved.profile);
-      setChapter(chapterFor(resolved.profile.interests[0], resolved.profile.childName));
-    });
+      await resolvePreferences(user);
+      if (cancelled) return;
+      if (!resolved) { router.replace('/'); return; }
+      setProfile(resolved);
+      setChapter(chapterFor(resolved.interests[0], resolved.childName));
+    })().catch(() => { if (!cancelled) setProfileUnavailable(true); });
     return () => { cancelled = true; };
   }, [router, authLoading, user]);
 
@@ -54,8 +56,9 @@ export default function ChildHomePage() {
     if (!profile || authLoading) return;
     let cancelled = false; setChapterSettled(false);
     void (async () => {
+      const uid = user?.uid ?? null;
       const authToken = user ? await user.getIdToken().catch(() => null) : null;
-      return requestTutorChapter(profile, user?.uid ?? null, authToken);
+      return requestTutorChapter(profile, uid, authToken);
     })().then((generated) => {
       if (generated && !cancelled) setChapter(generated);
       else if (!cancelled) setChapter((current) => current ? { ...current, provenance: { source: 'fallback', failureReason: latestChapterGenerationFailure() } } : current);
@@ -74,9 +77,13 @@ export default function ChildHomePage() {
 
   const completedToday = Boolean(chapter && !authLoading && wasChapterCompleted(user?.uid ?? null, chapter.id));
   const entitlement = useEntitlement(chapter?.id ?? null);
-  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, undefined, {
-    childId: profile?.childId, entitlementSource: entitlement.subscribed === true ? 'subscription' : 'free',
-  })), [chapter, scenePackage, profile?.childId, entitlement.subscribed]);
+  // installChapterDebug publishes this chapterDebugInfo as window.__chapterDebug().
+  useEffect(() => installChapterDebug(() => {
+    const chapterDebugInfo = chapterDebugSnapshot(chapter, scenePackage, undefined, {
+      childId: profile?.childId, entitlementSource: entitlement.subscribed === true ? 'subscription' : 'free',
+    });
+    return chapterDebugInfo;
+  }), [chapter, scenePackage, profile?.childId, entitlement.subscribed]);
   const forcedState = typeof window !== 'undefined' && process.env.NODE_ENV === 'development'
     ? new URLSearchParams(window.location.search).get('homeState') as DailyStateKind | null : null;
   const forcedOffline = typeof window !== 'undefined' && process.env.NODE_ENV === 'development'

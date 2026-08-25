@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateChapter, type LlmClient } from '@/reading-tutor/src/generate';
-import { pickSkeleton, SKELETONS } from '@/reading-tutor/src/skeletons';
-import { assignSlots } from '@/reading-tutor/src/slots';
 import { requireReadingUser } from '@/lib/route-auth';
 import { type ChildProfile } from '@/lib/profile';
 import { adaptTutorDraft, type Chapter } from '@/lib/chapters';
 import { dailyChapterRef, ownedDailyChapter, resolveChapterEntitlement } from '@/lib/chapter-entitlement-server';
+import { generateStoryDraft, isStoryGenerationConfigured } from '@/lib/story-generator.server';
+import { adminCredentialsConfigured } from '@/lib/firebase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,6 +26,7 @@ export async function GET(request: NextRequest) {
   const auth = await requireReadingUser(request); if (!auth.ok) return auth.response;
   const chapterId = request.nextUrl.searchParams.get('chapterId');
   if (!chapterId || chapterId.length > 220) return NextResponse.json({ error: 'INVALID_CHAPTER_ID' }, { status: 400 });
+  if (!adminCredentialsConfigured()) return NextResponse.json({ error: 'CHAPTER_NOT_FOUND' }, { status: 404 });
   const stored = await ownedDailyChapter(auth.uid, chapterId);
   if (!stored) return NextResponse.json({ error: 'CHAPTER_NOT_FOUND' }, { status: 404 });
   return NextResponse.json({ chapter: stored.data()?.chapter as Chapter, cache: 'hit' });
@@ -59,12 +59,14 @@ export async function POST(request: NextRequest) {
     if (!profile?.childName || !Array.isArray(profile.interests) || !body.chapterId || body.chapterId.length > 220) {
       return NextResponse.json({ error: 'Invalid profile' }, { status: 400 });
     }
+    if (!adminCredentialsConfigured() && auth.uid === 'anonymous') {
+      return NextResponse.json({ error: 'Story generation persistence is not configured' }, { status: 503 });
+    }
     const existing = await ownedDailyChapter(auth.uid, body.chapterId);
     if (existing) return NextResponse.json({ chapter: existing.data()?.chapter as Chapter, cache: 'hit' });
     const entitlementSource = await resolveChapterEntitlement(auth.uid, body.chapterId);
     if (!entitlementSource) return NextResponse.json({ error: 'CHAPTER_ENTITLEMENT_REQUIRED' }, { status: 402 });
-    const key = process.env.OPENAI_API_KEY;
-    if (!key) return NextResponse.json({ error: 'Story generation is not configured' }, { status: 503 });
+    if (!isStoryGenerationConfigured()) return NextResponse.json({ error: 'Story generation is not configured' }, { status: 503 });
     if (overLimit(auth.uid)) return NextResponse.json({ error: 'RATE_LIMITED' }, { status: 429 });
     const stage = Math.min(10, Math.max(1, Math.round(body.stage || 1)));
     // Both already-existing GenerateRequest fields — see
@@ -76,41 +78,25 @@ export async function POST(request: NextRequest) {
       ? body.recentlyMissedWords.filter((w): w is string => typeof w === 'string').slice(0, 10)
       : [];
     const storySoFar = typeof body.storySoFar === 'string' ? body.storySoFar.slice(0, 500) : '';
-    const skeleton = SKELETONS.find((candidate) => candidate.id === body.skeletonId) ?? pickSkeleton(stage, []);
-    const slots = assignSlots(skeleton.beats, stage);
-    const llm: LlmClient = {
-      async complete(prompt: string) {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: process.env.OPENAI_STORY_MODEL || 'gpt-4o-mini', temperature: 0.4, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: prompt }] }),
-        });
-        if (!response.ok) throw new Error(`story model returned ${response.status}`);
-        const json = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-        return json.choices?.[0]?.message?.content ?? '';
-      },
-    };
     const companionName = companionFor(body.chapterId);
-    const result = await generateChapter({
+    const result = await generateStoryDraft({
+      childName: profile.childName,
+      companionName,
       stage,
-      cast: { childName: profile.childName, petName: companionName },
       interests: profile.interests,
       storySoFar,
       recentlyMissedWords,
-      skeleton,
-      slots,
-    }, llm);
-    if (!result.ok || !result.draft) {
-      console.error('Tutor story generation exhausted retries', result.rejectionLog);
-      return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
-    }
+      skeletonId: body.skeletonId,
+    });
+    if (!result) return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
+    const { draft, skeleton, slots } = result;
     // slots go back too: the client's parent report must name the words the
     // story was actually generated with, not a fresh re-roll.
-    const adapted = adaptTutorDraft(profile, result.draft, skeleton, slots, stage);
+    const adapted = adaptTutorDraft(profile, draft, skeleton, slots, stage);
     if (!adapted) return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
     const chapter = { ...adapted, id: body.chapterId, character: profile.childName, companion: companionName,
       provenance: { ...adapted.provenance, entitlementSource } };
-    const payload = { draft: result.draft, skeleton, slots, chapter };
+    const payload = { draft, skeleton, slots, chapter };
     await dailyChapterRef(body.chapterId).set({ chapter, ownerUid: auth.uid, entitlementSource, generatedAt: new Date().toISOString() });
     return NextResponse.json(payload, { status: 201 });
   } catch (error) {
