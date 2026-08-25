@@ -5,6 +5,7 @@ export type SessionBeat =
   | { id: 'welcome'; kind: 'welcome'; spokenLine: string }
   | { id: string; kind: 'reading'; pageIndexes: number[]; finalChallenge: boolean }
   | { id: 'sound-hunt'; kind: 'sound-hunt'; afterPage: number; activity: StoryInteractionBeat }
+  | { id: 'find-in-scene'; kind: 'find-in-scene'; afterPage: number; activity: StoryInteractionBeat }
   | { id: 'prediction'; kind: 'prediction'; afterPage: number; activity: StoryInteractionBeat }
   | { id: 'word-builder'; kind: 'word-builder'; afterPage: number; activity: StoryInteractionBeat }
   | { id: 'ending'; kind: 'ending' };
@@ -37,16 +38,21 @@ export function buildSessionPlan(chapter: Chapter, childName: string, previousTe
     beats.push({ id: `reading-${index + 1}`, kind: 'reading', pageIndexes, finalChallenge: index === clusters.length - 1 });
     const last = pageIndexes.at(-1)!;
     if (last === soundAfter) beats.push({ id: 'sound-hunt', kind: 'sound-hunt', afterPage: last, activity: interactionManifest.beats.find((beat) => beat.mechanicType === 'find-sound')! });
-    if (last === predictionAfter) beats.push({ id: 'prediction', kind: 'prediction', afterPage: last, activity: interactionManifest.beats.find((beat) => beat.mechanicType === 'what-happens-next')! });
+    if (last === predictionAfter) {
+      const discovery = interactionManifest.beats.find((beat) => beat.mechanicType === 'find-it-in-scene');
+      const useDiscovery = chapter.id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) % 2 === 0;
+      if (useDiscovery && discovery) beats.push({ id: 'find-in-scene', kind: 'find-in-scene', afterPage: last, activity: discovery });
+      else beats.push({ id: 'prediction', kind: 'prediction', afterPage: last, activity: interactionManifest.beats.find((beat) => beat.mechanicType === 'what-happens-next')! });
+    }
     if (pageIndexes.includes(builderAfter)) beats.push({ id: 'word-builder', kind: 'word-builder', afterPage: builderAfter, activity: interactionManifest.beats.find((beat) => beat.mechanicType === 'word-builder')! });
   });
   beats.push({ id: 'ending', kind: 'ending' });
   return beats;
 }
 
-export function interactionAfterPage(plan: SessionBeat[], pageIndex: number): Extract<SessionBeat, { kind: 'sound-hunt' | 'prediction' | 'word-builder' }> | null {
-  return plan.find((beat): beat is Extract<SessionBeat, { kind: 'sound-hunt' | 'prediction' | 'word-builder' }> =>
-    (beat.kind === 'sound-hunt' || beat.kind === 'prediction' || beat.kind === 'word-builder') && beat.afterPage === pageIndex,
+export function interactionAfterPage(plan: SessionBeat[], pageIndex: number): Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' }> | null {
+  return plan.find((beat): beat is Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' }> =>
+    (beat.kind === 'sound-hunt' || beat.kind === 'find-in-scene' || beat.kind === 'prediction' || beat.kind === 'word-builder') && beat.afterPage === pageIndex,
   ) ?? null;
 }
 

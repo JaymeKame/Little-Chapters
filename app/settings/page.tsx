@@ -9,6 +9,7 @@ import {
   DEFAULT_PREFERENCES, resolvePreferences, savePreferences,
   type ConsumerPreferences, type DifficultyObservation, type ParentCommunication,
 } from '@/lib/preferences';
+import { dismissInstallPrompt, shouldShowInstallPrompt } from '@/lib/install-prompt';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -18,6 +19,7 @@ export default function SettingsPage() {
   const [subscription, setSubscription] = useState<'loading' | 'active' | 'inactive' | 'unavailable'>('loading');
   const [status, setStatus] = useState('');
   const [saving, setSaving] = useState(false);
+  const [showInstall, setShowInstall] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -31,6 +33,8 @@ export default function SettingsPage() {
       .then((data) => setSubscription(data ? (data.subscribed ? 'active' : 'inactive') : 'unavailable'))
       .catch(() => setSubscription('unavailable'));
   }, [authLoading, router, user]);
+
+  useEffect(() => setShowInstall(shouldShowInstallPrompt()), []);
 
   function patchPreferences<K extends keyof ConsumerPreferences>(key: K, value: ConsumerPreferences[K]) {
     setPrefs((current) => ({ ...current, [key]: value }));
@@ -88,6 +92,15 @@ export default function SettingsPage() {
         <Segmented<DifficultyObservation> label="How has the reading felt lately?" value={prefs.difficultyObservation} onChange={(value) => patchPreferences('difficultyObservation', value)} options={[['too-easy','Too easy'],['about-right','About right'],['too-hard','Too hard']]} />
         <p className="lc-settings-note">This is guidance for the adaptive system. It never directly replaces validated reading progress.</p>
       </section>
+
+      {showInstall && <section className="lc-install-card" aria-labelledby="install-title">
+        <span className="lc-settings-eyebrow">For their iPad</span>
+        <h2 id="install-title">Put Little Chapters on their iPad</h2>
+        <p>Open Safari&rsquo;s <strong>Share</strong> menu, choose <strong>Add to Home Screen</strong>, then tap <strong>Add</strong>.</p>
+        <ol aria-label="Installation steps"><li><span aria-hidden>⇧</span> Share</li><li><span aria-hidden>＋</span> Add to Home Screen</li><li><span aria-hidden>✓</span> Add</li></ol>
+        <button onClick={() => { dismissInstallPrompt(); setShowInstall(false); }}>Got it</button>
+        <button className="lc-handoff-later" onClick={() => { dismissInstallPrompt(); setShowInstall(false); }}>Not now</button>
+      </section>}
 
       <section className="lc-settings-section">
         <div className="lc-settings-section-title"><span>02</span><div><h2>Reading experience</h2><p>Keep the story calm and comfortable.</p></div></div>

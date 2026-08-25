@@ -12,24 +12,23 @@ await mkdir(out,{recursive:true});
 const { existsSync } = await import('node:fs');
 const sandboxChromium = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 const browser = await chromium.launch(existsSync(sandboxChromium) ? { executablePath: sandboxChromium } : {});
-const viewports = [{w:768,h:1024,n:'ipad-portrait'},{w:1024,h:768,n:'ipad-landscape'},{w:390,h:844,n:'phone'},{w:1440,h:1000,n:'desktop'}];
-const states = ['home-ready','reading','correction','sight-correction','sound-hunt','prediction','word-builder','story-unlock','ending'] as const;
+const viewports = [{w:768,h:1024,n:'ipad-768x1024',primary:true},{w:820,h:1180,n:'ipad-820x1180',primary:true},{w:1024,h:768,n:'ipad-1024x768',primary:true},{w:1180,h:820,n:'ipad-1180x820',primary:true},{w:390,h:844,n:'iphone-390x844',primary:false},{w:430,h:932,n:'iphone-430x932',primary:false},{w:1440,h:1000,n:'desktop-1440x1000',primary:false}];
+const primaryStates = ['reading-tracker','correction','sound-hunt','prediction','word-builder','find-in-scene','story-unlock','ending'] as const;
+const secondaryStates = ['reading-tracker','find-in-scene','ending'] as const;
+let captures = 0;
 
-for (const viewport of viewports) for (const state of states) {
+for (const viewport of viewports) for (const state of (viewport.primary ? primaryStates : secondaryStates).filter((candidate) => !process.env.CAPTURE_STATE || candidate === process.env.CAPTURE_STATE)) {
   const page = await browser.newPage({viewport:{width:viewport.w,height:viewport.h}});
   await page.emulateMedia({reducedMotion:'reduce'});
   await page.route('**/api/chapters/**', (route) => route.fulfill({status:503,contentType:'application/json',body:'{"error":"capture fallback"}'}));
   await page.route('**/api/speech/**', (route) => route.fulfill({status:503,contentType:'application/json',body:'{"error":"capture muted"}'}));
   await page.goto(base,{waitUntil:'domcontentloaded'});
   await page.evaluate(() => localStorage.setItem('little-chapters-profile',JSON.stringify({childId:'daily-capture',childName:'Ari',age:6,interests:['ocean'],avatar:'girl',createdAt:Date.now()})));
-  if (state === 'home-ready') {
-    await page.goto(`${base}/home?homeState=ready`,{waitUntil:'domcontentloaded'}); await page.locator('[data-home-state="ready"]').waitFor();
-  } else {
-    const adventureState = state === 'sound-hunt' || state === 'prediction' || state === 'word-builder' || state === 'correction' || state === 'sight-correction' || state === 'story-unlock' || state === 'ending' ? `&adventureState=${state}` : '';
-    await page.goto(`${base}/read?skipWelcome=1${adventureState}`,{waitUntil:'domcontentloaded'});
-    const selector = state === 'sound-hunt' || state === 'prediction' || state === 'word-builder' || state === 'ending' ? `[data-session-beat="${state}"]` : '.lc-reading-scene';
-    await page.locator(selector).waitFor({timeout:20000});
-  }
+  const adventureState = state !== 'reading-tracker' ? `&adventureState=${state}` : '';
+  await page.goto(`${base}/read?skipWelcome=1${adventureState}`,{waitUntil:'domcontentloaded'});
+  const selector = state === 'sound-hunt' || state === 'prediction' || state === 'word-builder' || state === 'find-in-scene' || state === 'ending' ? `[data-session-beat="${state}"]` : '.lc-reading-scene';
+  await page.locator(selector).waitFor({timeout:20000});
+  if (state === 'reading-tracker') { await page.getByRole('button',{name:'sim: live'}).click(); await page.waitForTimeout(900); }
   const responsive = await page.evaluate(() => {
     const controls = [...document.querySelectorAll<HTMLElement>('button')].filter((item) => item.offsetParent !== null);
     return {
@@ -40,9 +39,10 @@ for (const viewport of viewports) for (const state of states) {
   });
   if (responsive.horizontalOverflow || responsive.clippedControls || responsive.undersizedControls) throw new Error(`${viewport.n}/${state} failed responsive acceptance: ${JSON.stringify(responsive)}`);
   await page.screenshot({path:`${out}/${viewport.n}-${state}.png`,animations:'disabled'});
+  captures += 1;
   await page.close();
 }
 await browser.close();
-console.log(`Daily Adventure responsive capture: ${viewports.length * states.length} screenshots`);
+console.log(`Daily Adventure responsive capture: ${captures} screenshots`);
 }
 void main();

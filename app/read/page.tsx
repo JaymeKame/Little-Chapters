@@ -51,6 +51,9 @@ import { loadPreferences } from '@/lib/preferences';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
 import { loadChapterScenePackage, requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
+import { correctionModel, modelWordThroughSound } from '@/lib/phonics-model';
+import { confidentTrackerWords } from '@/lib/reading-tracker';
+import { TutorPhraseSession } from '@/lib/tutor-intents';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
@@ -58,7 +61,7 @@ type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'c
  * by up to a second, which reads as lag rather than magic. The matcher still
  * runs headlessly (it powers the finished-page fast-stop below); flip this to
  * true to bring the visuals and the `sim: live` button back. */
-const LIVE_HIGHLIGHT = false;
+const LIVE_HIGHLIGHT = true;
 
 /* Graded praise for the celebrate beat — always warm, never a failure state;
  * only the intensity tracks the result. */
@@ -198,7 +201,7 @@ export default function ReadPage() {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [scenePackage, setScenePackage] = useState<ChapterScenePackage | null>(null);
   const [introOpen, setIntroOpen] = useState(() => typeof window === 'undefined' || new URLSearchParams(window.location.search).get('skipWelcome') !== '1');
-  const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'prediction' | 'word-builder' }> | null>(null);
+  const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' }> | null>(null);
   const [interactionChoice, setInteractionChoice] = useState<string | null>(null);
   const [interactionFeedback, setInteractionFeedback] = useState<'idle' | 'try-again' | 'success'>('idle');
   const [wordBuilderProgress, setWordBuilderProgress] = useState(0);
@@ -216,6 +219,7 @@ export default function ReadPage() {
   const [tricky, setTricky] = useState<string | null>(null); // correction-state word
   const [error, setError] = useState<string | null>(null);
   const [readCount, setReadCount] = useState(0); // live karaoke highlight cursor
+  const [silenceNudge, setSilenceNudge] = useState(false);
   const [praise, setPraise] = useState('Great reading!');
   const [speaking, setSpeaking] = useState(false); // TTS replay of the current sentence — distinct from mic-listening
   const [sentenceLeaving, setSentenceLeaving] = useState(false); // brief out-transition before the next sentence mounts
@@ -236,6 +240,7 @@ export default function ReadPage() {
   const listeningCuePlayedRef = useRef(false);
   const sessionRef = useRef<ReadingSession | null>(null);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silenceNudgeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rungRef = useRef<0 | 1 | 2 | 3>(0); // logic source of truth; `rung` state above mirrors it for render
   const awardedRef = useRef(false); // XP granted for the CURRENT page (survives retry-take errors)
   const finishChapterRef = useRef(false);
@@ -255,6 +260,7 @@ export default function ReadPage() {
   const lastCountedPageRef = useRef(-1);
   const lastCountedInteractionRef = useRef<string | null>(null);
   const lastTelemetryPhaseRef = useRef<Phase | null>(null);
+  const tutorPhrasesRef = useRef(new TutorPhraseSession());
 
   /* Paywall. /home already routes a locked tap to /unlock, so this only
    * catches a deep link, a back-button return, or a refresh mid-flow. It
@@ -321,6 +327,7 @@ export default function ReadPage() {
       audioSession.cancelAll();
       audioSession.stopTheme();
       if (silenceTimer.current) clearTimeout(silenceTimer.current);
+      if (silenceNudgeTimer.current) clearTimeout(silenceNudgeTimer.current);
     };
   }, [authLoading, router, user]);
 
@@ -594,8 +601,10 @@ export default function ReadPage() {
       setTimeout(() => enterOrEscalateLadder(sight), 0);
       return;
     }
-    const interaction = sessionPlan.find((beat) => beat.kind === requested);
-    if (interaction && (interaction.kind === 'sound-hunt' || interaction.kind === 'prediction' || interaction.kind === 'word-builder')) setActiveInteraction(interaction);
+    const planned = sessionPlan.find((beat) => beat.kind === requested);
+    const manifestBeat = requested === 'find-in-scene' ? interactionManifest?.beats.find((beat) => beat.mechanicType === 'find-it-in-scene') : null;
+    const interaction = planned ?? (manifestBeat ? { id:'find-in-scene', kind:'find-in-scene', afterPage:pageIdx, activity:manifestBeat } as const : null);
+    if (interaction && (interaction.kind === 'sound-hunt' || interaction.kind === 'find-in-scene' || interaction.kind === 'prediction' || interaction.kind === 'word-builder')) setActiveInteraction(interaction);
   }, [chapter, sessionPlan]);
   const lookaheadBeat = useMemo(() => {
     if (!interactionManifest) return null;
@@ -638,7 +647,11 @@ export default function ReadPage() {
 
   useEffect(() => {
     if (!activeInteraction) return;
-    audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: activeInteraction.kind === 'prediction' ? 'prediction' : 'instruction' });
+    if (activeInteraction.kind === 'sound-hunt') {
+      audioSession.speakSequence(modelWordThroughSound(activeInteraction.activity.correctTarget ?? '', activeInteraction.activity.literacyTarget ?? ''));
+      return;
+    }
+    audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: activeInteraction.kind === 'prediction' ? 'prediction' : activeInteraction.kind === 'find-in-scene' ? 'discovery' : 'instruction' });
   }, [activeInteraction]);
 
   if (!profile || !chapter) return <main className="lc-home-v11 lc-home-loading" data-read-state="loading"><div className="lc-loading-sky" /><div className="lc-loading-book"><span /><span /><span /></div><p>Opening today&rsquo;s story…</p></main>;
@@ -685,8 +698,10 @@ export default function ReadPage() {
     audioSession.speak(tricky ?? page.text, { purpose: 'sentence-replay', onEnd: () => setSpeaking(false) });
   }
 
-  function armSilenceStop(ms = 3000) {
+  function armSilenceStop(ms = 8000) {
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
+    if (silenceNudgeTimer.current) clearTimeout(silenceNudgeTimer.current);
+    setSilenceNudge(false);
     // Default must exceed Azure's 2.2 s segmentation pause, and gets re-armed
     // by every partial transcript — so it measures silence since the child
     // last SPOKE, not since the last finalized segment. A 5-year-old's
@@ -694,6 +709,7 @@ export default function ReadPage() {
     // reading. Once the live matcher has seen the page's FINAL word, the
     // grace drops to ~1 s: the page is done, so feedback should be quick.
     silenceTimer.current = setTimeout(() => void finishListening(), ms);
+    if (ms > 4500) silenceNudgeTimer.current = setTimeout(() => setSilenceNudge(true), 4500);
   }
 
   async function beginListening(referenceText: string) {
@@ -741,17 +757,18 @@ export default function ReadPage() {
           if (s === 'error' && sessionRef.current) void finishListening();
         },
         onPartialTranscript: (text) => {
-          // Active speech keeps postponing the stop — and moves the cursor.
+          // A partial proves the child is still speaking, but its alignment is
+          // intentionally not displayed: Azure may revise it substantially.
           if (disposedRef.current) return;
-          const n = liveRef.current ? liveRef.current.partial(text) : 0;
-          if (LIVE_HIGHLIGHT) setReadCount(n);
-          armSilenceStop(liveRef.current?.isComplete() ? 1000 : 3000);
+          liveRef.current?.partial(text);
+          armSilenceStop(liveRef.current?.isComplete() ? 1000 : 8000);
         },
         onSegment: (words) => {
           if (disposedRef.current) return;
-          const n = liveRef.current ? liveRef.current.segment(words.map((w) => w.word)) : 0;
+          const confident = confidentTrackerWords(words);
+          const n = confident.length && liveRef.current ? liveRef.current.segment(confident) : readCount;
           if (LIVE_HIGHLIGHT) setReadCount(n);
-          armSilenceStop(liveRef.current?.isComplete() ? 1000 : 3000);
+          armSilenceStop(liveRef.current?.isComplete() ? 1000 : 8000);
         },
       });
       clearTimeout(setupWatchdog);
@@ -781,6 +798,8 @@ export default function ReadPage() {
     if (!session) return;
     sessionRef.current = null;
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
+    if (silenceNudgeTimer.current) clearTimeout(silenceNudgeTimer.current);
+    setSilenceNudge(false);
     setPhase('scoring');
     let result: ReadingAssessmentResult;
     try {
@@ -1296,7 +1315,7 @@ export default function ReadPage() {
     setInteractionChoice(choice);
     if (activeInteraction.kind === 'prediction') {
       setInteractionFeedback('success');
-      audioSession.speak(activeInteraction.activity.spokenSuccess, {
+      audioSession.speak(tutorPhrasesRef.current.line('PREDICTION_RESPONSE', { prediction: choice }), {
         purpose: 'prediction-acknowledgment',
         onEnd: () => setTimeout(continueAfterInteraction, 350),
       });
@@ -1305,10 +1324,13 @@ export default function ReadPage() {
     const correct = choice === activeInteraction.activity.correctTarget;
     setInteractionFeedback(correct ? 'success' : 'try-again');
     const pattern = activeInteraction.activity.literacyTarget ?? '';
-    audioSession.speak(correct ? activeInteraction.activity.spokenSuccess : `${choice}. Listen again… ${pattern}.`, {
-      purpose: correct ? 'sound-hunt-success' : 'sound-hunt-retry',
-      onEnd: correct ? () => setTimeout(continueAfterInteraction, 700) : undefined,
-    });
+    if (activeInteraction.kind === 'find-in-scene') {
+      audioSession.speak(activeInteraction.activity.spokenSuccess, { purpose: 'discovery', onEnd: () => setTimeout(continueAfterInteraction, 700) });
+    } else if (correct) {
+      audioSession.speak(activeInteraction.activity.spokenSuccess, { purpose: 'sound-hunt-success', onEnd: () => setTimeout(continueAfterInteraction, 700) });
+    } else {
+      audioSession.speakSequence(correctionModel(activeInteraction.activity.correctTarget ?? choice, pattern), undefined);
+    }
   }
 
   function chooseWordPart(index: number) {
@@ -1437,7 +1459,7 @@ export default function ReadPage() {
   if (introOpen) {
     const welcome = sessionPlan.find((beat): beat is Extract<SessionBeat, { kind: 'welcome' }> => beat.kind === 'welcome');
     return (
-      <div className="lc-session-interaction" data-session-beat="welcome">
+      <div className="lc-session-interaction" data-session-beat="welcome" data-layout-mode="story">
         <SceneBackground src={sceneBg} focal={sceneFocal} />
         <div className="lc-interaction-card lc-scene-content">
           <p className="lc-interaction-kicker">Welcome to today’s chapter</p>
@@ -1467,12 +1489,27 @@ export default function ReadPage() {
           ? `You found ${sound?.literacyTarget}!`
           : `Listen again… ${sound?.literacyTarget}.`
       : null;
+    if (activeInteraction.kind === 'find-in-scene') {
+      const target = activeInteraction.activity.correctTarget ?? activeInteraction.activity.interactiveObjects[0]?.label ?? 'story clue';
+      const generatedScene = scenePackage?.scenes.find((scene) => scene.sceneId === activeInteraction.activity.visualSceneId);
+      const entity = generatedScene?.entities.find((item) => item.label.toLowerCase() === target.toLowerCase()) ?? generatedScene?.entities[0];
+      if (entity) {
+      const region = entity.approximateRegion;
+      return <div className="lc-session-interaction lc-find-scene" data-session-beat="find-in-scene" data-layout-mode="story">
+        <SceneBackground src={sceneBg} focal={sceneFocal} />
+        <button className="lc-prompt-speaker" aria-label="Hear the clue again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction,{purpose:'discovery'})}><img src="/icons/speaker-audio.png" alt="" /></button>
+        <div className="lc-find-scene-clue"><span>Look in the story world</span><strong>Find the {target}</strong></div>
+        <button className={`lc-scene-hotspot${interactionFeedback === 'success' ? ' is-success' : ''}`} style={{left:`${region.x*100}%`,top:`${region.y*100}%`,width:`${region.width*100}%`,height:`${region.height*100}%`}} aria-label={`Found the ${target}`} onClick={() => chooseInteraction(target)}><span>{target}</span></button>
+        <SessionProgress current={sessionPlan.findIndex((beat) => beat.id === activeInteraction.id)} total={sessionPlan.length} />
+      </div>;
+      }
+    }
     return (
-      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind}>
+      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind} data-layout-mode={activeInteraction.kind === 'word-builder' ? 'focus' : 'interaction'}>
         <SceneBackground src={sceneBg} focal={sceneFocal} />
         <div className="lc-interaction-card lc-scene-content">
           <button className="lc-prompt-speaker" aria-label="Hear the question again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: 'interaction-prompt-replay' })}><img src="/icons/speaker-audio.png" alt="" /></button>
-          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the word' : activeInteraction.kind === 'word-builder' ? 'Build the story word' : 'What happens next?'}</p>
+          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the word' : activeInteraction.kind === 'word-builder' ? 'Build the story word' : activeInteraction.kind === 'find-in-scene' ? 'Find the story clue' : 'What happens next?'}</p>
           {/* Sound-hunt no longer shows a giant naked phoneme in a pill —
               that read as a worksheet and the phoneme was also spoken
               naked. The prompt is voice-led (real word modelled inside the
@@ -1482,7 +1519,7 @@ export default function ReadPage() {
               because the child needs to see it. */}
           {activeInteraction.kind === 'sound-hunt'
             ? <p className="lc-sound-hunt-prompt">Which word did you hear?</p>
-            : <h1>{activeInteraction.kind === 'word-builder' ? activeInteraction.activity.literacyTarget?.toUpperCase() : 'Choose a picture'}</h1>}
+            : <h1>{activeInteraction.kind === 'word-builder' ? activeInteraction.activity.literacyTarget?.toUpperCase() : activeInteraction.kind === 'find-in-scene' ? 'Tap the story word' : 'Choose a picture'}</h1>}
           <div className={`lc-choice-grid is-${activeInteraction.kind}${interactionFeedback === 'success' ? ' is-world-reacting' : ''}`}>
             {choices.map((choice, index) => <button key={choice.objectId} data-correct={activeInteraction.kind === 'sound-hunt' && choice.label === sound?.correctTarget ? 'true' : undefined} className={`${interactionChoice === choice.label ? 'is-chosen' : ''}${interactionChoice === choice.label && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice.label && interactionFeedback === 'success' ? ' is-success' : ''}${activeInteraction.kind === 'word-builder' && index < wordBuilderProgress ? ' is-built' : ''}`} onClick={() => activeInteraction.kind === 'word-builder' ? chooseWordPart(index) : chooseInteraction(choice.label)} aria-label={choice.spokenLabel}>
               {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${index + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{index === 0 ? '✦' : ')))'}</i></span>}
@@ -1500,7 +1537,7 @@ export default function ReadPage() {
   if (phase === 'chapter-end') {
     const finalUnlock = interactionManifest?.beats.find((beat) => beat.mechanicType === 'final-story-unlock');
     return (
-      <div className="lc-session-interaction lc-ending-v11" data-session-beat="ending">
+      <div className="lc-session-interaction lc-ending-v11" data-session-beat="ending" data-layout-mode="story">
         <SceneBackground src={sceneBg} focal={sceneFocal} cliff />
         <div className="lc-interaction-card lc-scene-content">
           <div className="lc-ending-stars" aria-hidden>
@@ -1521,7 +1558,7 @@ export default function ReadPage() {
 
   /* ── Screen 4: reading ── */
   return (
-    <div className={`scene lc-scenic lc-reading-scene${phase === 'listening' ? ' lc-listening' : ''}`} style={{ position: 'relative' }}>
+    <div className={`scene lc-scenic lc-reading-scene${phase === 'listening' ? ' lc-listening' : ''}`} data-layout-mode="story" style={{ position: 'relative' }}>
     <SceneBackground src={sceneBg} focal={sceneFocal} />
     <div className="screen lc-scene-content">
       <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
@@ -1794,7 +1831,7 @@ export default function ReadPage() {
               <ListenBars active={phase === 'listening'} />
             )}
             {phase === 'ready' && 'Tap to read out loud!'}
-            {phase === 'listening' && 'I’m listening…'}
+            {phase === 'listening' && (silenceNudge ? 'Take your time — the story is listening.' : 'I’m listening…')}
             {phase === 'scoring' && (scoringSlow ? 'Still working on it…' : 'One moment…')}
           </button>
         )}

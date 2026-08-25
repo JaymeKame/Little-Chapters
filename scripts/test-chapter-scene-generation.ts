@@ -26,7 +26,7 @@ const chapters = [
 for (const value of chapters) {
   const manifest = buildStoryInteractionManifest(value);
   assert.equal(manifest.scenes.length, 4);
-  assert.deepEqual(manifest.beats.map((beat)=>beat.mechanicType), ['find-sound','what-happens-next','word-builder','final-story-unlock']);
+  assert.deepEqual(manifest.beats.map((beat)=>beat.mechanicType), ['find-sound','find-it-in-scene','what-happens-next','word-builder','final-story-unlock']);
   assert.ok(manifest.scenes.every((scene)=>scene.visualPrompt.includes(value.setting)));
   assert.equal(JSON.stringify(manifest).includes('Chug'), false);
 }
