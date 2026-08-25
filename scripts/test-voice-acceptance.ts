@@ -265,7 +265,13 @@ async function main() {
       await vpPage.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
       await vpPage.waitForSelector('button:has-text("sim: good")', { timeout: 15000 });
       await vpPage.click('button:has-text("sim: good")');
-      const star = vpPage.locator('img[src="/icons/success-star.png"]');
+      // Star is now the inline-SVG <SuccessStar> component (deterministic
+      // 100×100 viewBox — see components/SuccessStar.tsx for why the PNG
+      // was retired) rather than an <img>. Its wrapper always carries
+      // .lc-success-star. The mid-chapter praise instance is wrapped by
+      // .lc-success-pop; scope to that so the ending row's three stars
+      // never satisfy this check.
+      const star = vpPage.locator('.lc-success-pop .lc-success-star').first();
       try {
         await star.waitFor({ state: 'visible', timeout: 3000 });
         const box = await star.boundingBox();
