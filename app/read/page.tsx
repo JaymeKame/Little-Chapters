@@ -21,6 +21,7 @@ import { AudioWordHelp } from '@/components/AudioWordHelp';
 import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
 import { MicIcon } from '@/components/icons/MicIcon';
 import { QuietCheckIcon } from '@/components/icons/QuietCheckIcon';
+import { SuccessStar } from '@/components/SuccessStar';
 import { chapterFor, latestChapterGenerationFailure, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
@@ -573,6 +574,18 @@ export default function ReadPage() {
     if (requested === 'ending') { setPageIdx(chapter.pages.length - 1); setPhase('chapter-end'); return; }
     if (requested === 'story-unlock') { setPageIdx(chapter.pages.length - 1); setPhase('ready'); return; }
     if (requested === 'correction') { setTimeout(() => enterOrEscalateLadder(chapter.pages[0].focusWords[0] ?? 'ship'), 0); return; }
+    if (requested === 'sight-correction') {
+      // Deterministic AudioWordHelp render for capture/dev review.
+      // Prefer a word from page 0 that canTeachWithSlider() refuses at
+      // this child's stage (sight word / non-segmentable); fall back to a
+      // canonical irregular word if no page word qualifies. The ladder
+      // machinery works for a word not present in page.text — tricky is a
+      // string, not an offset.
+      const words = (chapter.pages[0].text.match(/[a-z']+/gi) ?? []).map((w) => w.toLowerCase());
+      const sight = words.find((w) => w.length >= 2 && !canTeachWithSlider(w, stageForAge(profile?.age ?? 6))) ?? 'the';
+      setTimeout(() => enterOrEscalateLadder(sight), 0);
+      return;
+    }
     const interaction = sessionPlan.find((beat) => beat.kind === requested);
     if (interaction && (interaction.kind === 'sound-hunt' || interaction.kind === 'prediction' || interaction.kind === 'word-builder')) setActiveInteraction(interaction);
   }, [chapter, sessionPlan]);
@@ -1311,10 +1324,24 @@ export default function ReadPage() {
    * hand-rolled verdict list) so the sim's flagging decision and the
    * adapter's `interventions` output are always consistent with each other
    * — see docs/HELP_LADDER_INTEGRATION.md. */
-  function simulate(kind: 'good' | 'tricky') {
+  function simulate(kind: 'good' | 'tricky' | 'sight') {
     startedReadingRef.current = true; // sims count as reading — no chapter swaps mid-flow
     const words = page.text.split(/\s+/).map((t) => t.toLowerCase().replace(/[^a-z']/g, '')).filter(Boolean);
-    const bad = (i: number) => kind === 'tricky' && i === words.length - 1;
+    // 'sight' picks a real word from the current page that canTeachWithSlider()
+    // will refuse (either non-segmentable or still-a-sight-word for this
+    // stage), so the correction flow reliably renders AudioWordHelp
+    // instead of SlideWordHelp — exactly the state that was hard to
+    // reproduce manually. Falls back to 'tricky' behaviour (last word) if
+    // every word on this page is slider-eligible, and logs a note so a
+    // developer knows why the button didn't do what it usually does.
+    const sightIndex = kind === 'sight'
+      ? words.findIndex((w) => w.length >= 2 && !canTeachWithSlider(w, stage))
+      : -1;
+    if (kind === 'sight' && sightIndex === -1) {
+      console.warn('[sim:sight] no page word is a sight word at stage', stage, '- falling back to last-word tricky simulation');
+    }
+    const badIndex = kind === 'sight' && sightIndex !== -1 ? sightIndex : words.length - 1;
+    const bad = (i: number) => (kind === 'tricky' || kind === 'sight') && i === badIndex;
     const fakeResult = {
       scores: { pronunciation: 90, accuracy: kind === 'good' ? 94 : 70, fluency: 90, completeness: 100, prosody: 80 },
       words: words.map((w, i) => ({
@@ -1437,8 +1464,17 @@ export default function ReadPage() {
         <SceneBackground src={sceneBg} focal={sceneFocal} />
         <div className="lc-interaction-card lc-scene-content">
           <button className="lc-prompt-speaker" aria-label="Hear the question again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: 'interaction-prompt-replay' })}><img src="/icons/speaker-audio.png" alt="" /></button>
-          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the sound' : activeInteraction.kind === 'word-builder' ? 'Build the story word' : 'What happens next?'}</p>
-          <h1>{activeInteraction.kind === 'sound-hunt' ? sound?.literacyTarget?.toUpperCase() : activeInteraction.kind === 'word-builder' ? activeInteraction.activity.literacyTarget?.toUpperCase() : 'Choose a picture'}</h1>
+          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the word' : activeInteraction.kind === 'word-builder' ? 'Build the story word' : 'What happens next?'}</p>
+          {/* Sound-hunt no longer shows a giant naked phoneme in a pill —
+              that read as a worksheet and the phoneme was also spoken
+              naked. The prompt is voice-led (real word modelled inside the
+              spoken instruction; see lib/story-interactions.ts's
+              find-sound beat) and the visual just asks the child to pick.
+              The other kinds still surface their target word inline
+              because the child needs to see it. */}
+          {activeInteraction.kind === 'sound-hunt'
+            ? <p className="lc-sound-hunt-prompt">Which word did you hear?</p>
+            : <h1>{activeInteraction.kind === 'word-builder' ? activeInteraction.activity.literacyTarget?.toUpperCase() : 'Choose a picture'}</h1>}
           <div className={`lc-choice-grid is-${activeInteraction.kind}${interactionFeedback === 'success' ? ' is-world-reacting' : ''}`}>
             {choices.map((choice, index) => <button key={choice.objectId} data-correct={activeInteraction.kind === 'sound-hunt' && choice.label === sound?.correctTarget ? 'true' : undefined} className={`${interactionChoice === choice.label ? 'is-chosen' : ''}${interactionChoice === choice.label && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice.label && interactionFeedback === 'success' ? ' is-success' : ''}${activeInteraction.kind === 'word-builder' && index < wordBuilderProgress ? ' is-built' : ''}`} onClick={() => activeInteraction.kind === 'word-builder' ? chooseWordPart(index) : chooseInteraction(choice.label)} aria-label={choice.spokenLabel}>
               {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${index + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{index === 0 ? '✦' : ')))'}</i></span>}
@@ -1459,7 +1495,11 @@ export default function ReadPage() {
       <div className="lc-session-interaction lc-ending-v11" data-session-beat="ending">
         <SceneBackground src={sceneBg} focal={sceneFocal} cliff />
         <div className="lc-interaction-card lc-scene-content">
-          <div className="lc-ending-stars" aria-hidden>{[0,1,2].map((star) => <img key={star} src="/icons/success-star.png" alt="" />)}</div>
+          <div className="lc-ending-stars" aria-hidden>
+            <SuccessStar size={48} />
+            <SuccessStar size={60} />
+            <SuccessStar size={48} />
+          </div>
           <p className="lc-interaction-kicker">Adventure complete</p>
           <h1>You did it, {profile.childName}!</h1>
           <div className="lc-ending-event"><strong>{finalUnlock?.successStoryAction ?? chapter.cliffhanger[0]}</strong><span>{chapter.teaser}</span></div>
@@ -1524,7 +1564,13 @@ export default function ReadPage() {
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '4px 22px 26px' }}>
         <div
-          className={phase === 'celebrate' && celebrateCue ? 'lc-reading-card-in lc-celebrate-glow' : 'lc-reading-card-in'}
+          className={
+            phase === 'celebrate' && celebrateCue
+              ? 'lc-reading-card-in lc-celebrate-glow'
+              : (phase === 'correction' && tricky && rung < 3)
+                ? 'lc-reading-card-in lc-help-halo'
+                : 'lc-reading-card-in'
+          }
           style={{
             background: '#fffdf8',
             borderRadius: 18,
@@ -1615,7 +1661,7 @@ export default function ReadPage() {
             // succeeded.
             <div role="status" className="lc-fade-up lc-celebrate-beat" style={{ textAlign: 'center' }}>
               <span aria-hidden className="lc-success-pop" style={{ display: 'inline-block', position: 'relative' }}>
-                <img src="/icons/success-star.png" alt="" style={{ height: 60, width: 'auto' }} />
+                <SuccessStar size={60} />
                 <span className="lc-sparkle lc-sparkle-1" aria-hidden />
                 <span className="lc-sparkle lc-sparkle-2" aria-hidden />
                 <span className="lc-sparkle lc-sparkle-3" aria-hidden />
@@ -1752,6 +1798,9 @@ export default function ReadPage() {
             </button>
             <button onClick={() => simulate('tricky')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>
               sim: tricky
+            </button>
+            <button onClick={() => simulate('sight')} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }} title="Force a sight-word / non-segmentable correction (renders AudioWordHelp)">
+              sim: sight
             </button>
             {LIVE_HIGHLIGHT && (
               <button onClick={simulateLive} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.5)', color: 'var(--ink-soft)' }}>

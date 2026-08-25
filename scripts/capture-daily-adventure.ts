@@ -5,9 +5,15 @@ const base = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';
 const out = process.env.DAILY_ADVENTURE_SCREENSHOT_DIR ?? 'artifacts/daily-adventure';
 async function main() {
 await mkdir(out,{recursive:true});
-const browser = await chromium.launch();
+// The remote sandbox pre-installs Chromium at /opt/pw-browsers/chromium-1194
+// (see /opt/pw-browsers). Playwright's own postinstall would try to fetch a
+// version-mismatched build and fail — point directly at the pre-installed
+// executable when it exists so this script runs locally AND in the sandbox.
+const { existsSync } = await import('node:fs');
+const sandboxChromium = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const browser = await chromium.launch(existsSync(sandboxChromium) ? { executablePath: sandboxChromium } : {});
 const viewports = [{w:768,h:1024,n:'ipad-portrait'},{w:1024,h:768,n:'ipad-landscape'},{w:390,h:844,n:'phone'},{w:1440,h:1000,n:'desktop'}];
-const states = ['home-ready','reading','correction','sound-hunt','prediction','word-builder','story-unlock','ending'] as const;
+const states = ['home-ready','reading','correction','sight-correction','sound-hunt','prediction','word-builder','story-unlock','ending'] as const;
 
 for (const viewport of viewports) for (const state of states) {
   const page = await browser.newPage({viewport:{width:viewport.w,height:viewport.h}});
@@ -19,7 +25,7 @@ for (const viewport of viewports) for (const state of states) {
   if (state === 'home-ready') {
     await page.goto(`${base}/home?homeState=ready`,{waitUntil:'domcontentloaded'}); await page.locator('[data-home-state="ready"]').waitFor();
   } else {
-    const adventureState = state === 'sound-hunt' || state === 'prediction' || state === 'word-builder' || state === 'correction' || state === 'story-unlock' || state === 'ending' ? `&adventureState=${state}` : '';
+    const adventureState = state === 'sound-hunt' || state === 'prediction' || state === 'word-builder' || state === 'correction' || state === 'sight-correction' || state === 'story-unlock' || state === 'ending' ? `&adventureState=${state}` : '';
     await page.goto(`${base}/read?skipWelcome=1${adventureState}`,{waitUntil:'domcontentloaded'});
     const selector = state === 'sound-hunt' || state === 'prediction' || state === 'word-builder' || state === 'ending' ? `[data-session-beat="${state}"]` : '.lc-reading-scene';
     await page.locator(selector).waitFor({timeout:20000});

@@ -120,11 +120,20 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
   const beats: StoryInteractionBeat[] = [
     {
       beatId: 'find-sound', mechanicType: 'find-sound', literacyTarget: sound,
-      spokenInstruction: `Listen. Which one has ${sound}?`, storyEntities: soundChoices,
+      // Natural word modeling instead of the naked phoneme. TTS speaking a
+      // bare "TH" sounds robotic and unhelpful; anchoring the sound inside
+      // a real word the child recognises (the correct answer) is the same
+      // pattern any classroom phonics session uses — "Listen: thumb…
+      // th…umb. Can you hear the th? Which one?" — and it stays legitimate
+      // teaching, not a giveaway, because the child still has to MATCH the
+      // heard word to one of the visible tiles. Success line likewise
+      // never voices the phoneme in isolation.
+      spokenInstruction: `Listen: ${soundAnswer}. ${soundAnswer}. Can you hear the ${sound} sound? Which one is it?`,
+      storyEntities: soundChoices,
       visualSceneId: sceneForPage(scenes, Math.max(0, Math.floor(chapter.pages.length / 3) - 1)),
       interactiveObjects: soundChoices.map((label, index) => ({ objectId: `sound-${index}`, label, spokenLabel: label, visualSceneId: sceneForPage(scenes, 1), visualCue: 'word-object' })),
       correctTarget: soundAnswer, successStoryAction: `The ${soundAnswer} clue responds and the story moves on.`,
-      spokenSuccess: `You found ${sound} in ${soundAnswer}.`, transitionTarget: 'reading-2',
+      spokenSuccess: `You found it — ${soundAnswer}.`, transitionTarget: 'reading-2',
     },
     {
       beatId: 'prediction', mechanicType: 'what-happens-next', literacyTarget: null,
