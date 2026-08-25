@@ -93,6 +93,7 @@ assert.doesNotMatch(home, /!scenePackageResolved/);
 assert.match(home, /sceneUrl\(scenePackage, 'scene-1'\) \?\? scene\?\.asset\.src/);
 const read = readFileSync('app/read/page.tsx','utf8');
 assert.doesNotMatch(read, /return <div className="screen" \/>/);
-assert.match(read, /sceneUrl\(scenePackage, currentSceneId\) : null\) \?\? sceneSelection\?\.asset\.src/);
+assert.match(read, /requestedSceneId = activeInteraction\?\.activity\.visualSceneId \?\? pageAuthoredSceneId/);
+assert.match(read, /sceneBg = resolvedSceneUrl \?\? sceneSelection\?\.asset\.src/);
 
 console.log('Chapter scene generation contract: 32 passed, 0 failed');

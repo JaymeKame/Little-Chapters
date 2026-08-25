@@ -447,10 +447,6 @@ export default function ReadPage() {
     if (phase === 'correction' && lastTelemetryPhaseRef.current !== 'correction') adventureTelemetryRef.current.count('correction');
     lastTelemetryPhaseRef.current = phase;
   }, [activeInteraction, phase]);
-  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, adventureTelemetryRef.current, {
-    childId: profile?.childId, entitlementSource: subscribed === true ? 'subscription' : 'free',
-  })), [chapter, scenePackage, profile?.childId, subscribed]);
-
   // Reuse the same flat story theme as Home; the controller prevents duplicate loops.
   // Owns theme for as long as this effect's chapter/profile identity holds —
   // cleanup must stop the SAME track it started. This previously called
@@ -657,7 +653,37 @@ export default function ReadPage() {
       return [scene.sceneId, sceneUrl(scenePackage, scene.sceneId) ?? selectSceneForPage(chapter, chapter.pages[index], index, profile?.avatar, user?.uid ?? null).asset.src];
     }));
   }, [chapter, interactionManifest, scenePackage, profile?.avatar, user?.uid]);
+  const pageAuthoredSceneId = interactionManifest?.scenes.find((scene) => scene.pageIndexes.includes(pageIdx))?.sceneId ?? null;
+  const requestedSceneId = activeInteraction?.activity.visualSceneId ?? pageAuthoredSceneId;
+  const resolvedSceneUrl = requestedSceneId ? sceneAssetUrls[requestedSceneId] ?? null : null;
   const lookaheadScene = lookaheadBeat ? sceneAssetUrls[lookaheadBeat.visualSceneId] ?? null : null;
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development' || !interactionManifest || new URLSearchParams(window.location.search).get('sceneProgressionTest') !== '1') return;
+    const target = window as typeof window & { __sceneProgressionTestState?: (next: { pageIdx: number; beatId?: string }) => void };
+    target.__sceneProgressionTestState = ({ pageIdx: nextPageIdx, beatId }) => {
+      setPageIdx(nextPageIdx);
+      if (!beatId) { setActiveInteraction(null); return; }
+      const activity = interactionManifest.beats.find((beat) => beat.beatId === beatId);
+      const kind = activity?.mechanicType === 'find-sound' ? 'sound-hunt'
+        : activity?.mechanicType === 'find-it-in-scene' ? 'find-in-scene'
+        : activity?.mechanicType === 'what-happens-next' ? 'prediction'
+        : activity?.mechanicType === 'word-builder' ? 'word-builder' : null;
+      if (activity && kind) setActiveInteraction({ id: kind, kind, afterPage: nextPageIdx, activity } as Extract<SessionBeat, { kind: MechanicKind }>);
+    };
+    return () => { delete target.__sceneProgressionTestState; };
+  }, [interactionManifest]);
+
+  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, adventureTelemetryRef.current, {
+    childId: profile?.childId, entitlementSource: subscribed === true ? 'subscription' : 'free',
+    scene: {
+      pageIdx, phase,
+      activeInteractionId: activeInteraction?.id ?? null,
+      activeInteractionKind: activeInteraction?.kind ?? null,
+      activeInteractionVisualSceneId: activeInteraction?.activity.visualSceneId ?? null,
+      pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls,
+    },
+  })), [chapter, scenePackage, profile?.childId, subscribed, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls]);
 
   useEffect(() => {
     if (!chapter || !interactionManifest || authLoading) return;
@@ -715,8 +741,7 @@ export default function ReadPage() {
 
   if (!profile || !chapter) return <main className="lc-home-v11 lc-home-loading" data-read-state="loading"><div className="lc-loading-sky" /><div className="lc-loading-book"><span /><span /><span /></div><p>Opening today&rsquo;s story…</p></main>;
   const page = chapter.pages[pageIdx];
-  const currentSceneId = interactionManifest?.scenes.find((scene) => scene.pageIndexes.includes(pageIdx))?.sceneId;
-  const sceneBg = (currentSceneId ? sceneUrl(scenePackage, currentSceneId) : null) ?? sceneSelection?.asset.src ?? null;
+  const sceneBg = resolvedSceneUrl ?? sceneSelection?.asset.src ?? null;
   const sceneFocal = sceneSelection?.asset.focal;
   // Computed for the current tricky word at ANY rung < 3, not just rung 2:
   // with the escalation remap below, a segmentable word now shows the slide
