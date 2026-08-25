@@ -29,38 +29,30 @@ function pass(label: string) { passed++; console.log(`  ✓ ${label}`); }
 /* ── Section 6-8: Find the Sound modeling ─────────────────────────── */
 {
   const ship = modelWordThroughSound('ship', 'sh');
-  const phoneme = ship.find((segment) => segment.purpose === 'phoneme-model');
-  const rime = ship.find((segment) => segment.purpose === 'rime');
+  // Correction pass 2, Section 1: pedagogy replaced — /sh/ is no longer
+  // stretched. See test-experience-correction-pass-2.ts for the current
+  // reference-word contract. This block validates the shape/holds only.
+  const referenceSegments = ship.filter((segment) => segment.purpose === 'reference-word');
   const whole = ship.find((segment) => segment.purpose === 'word-blend');
-  assert.ok(phoneme && /^shhhh/.test(phoneme.text), 'onset /sh/ is stretched');
-  assert.ok(rime && /ip/.test(rime.text), 'rime "ip" spoken separately');
-  assert.ok(whole && /ship/.test(whole.text), 'whole word is the acoustic anchor');
-  assert.ok((phoneme?.holdMs ?? 0) >= 420, 'phoneme model has ≥420 ms hold');
-  assert.ok((rime?.holdMs ?? 0) >= 380, 'rime segment has ≥380 ms hold');
-  pass('Find the Sound: onset stretched, rime paced, whole word anchored');
-
-  // A "ch" word — different phoneme rendering strategy than /sh/.
-  const chip = modelWordThroughSound('chip', 'ch');
-  assert.ok(chip.find((segment) => segment.purpose === 'phoneme-model')?.text.startsWith('ch'), '/ch/ renders per its stop-affricate pattern (not "chhhh")');
-  pass('Find the Sound: /ch/ uses its own stretching pattern');
-
-  // A stop like /p/ shouldn't fake a vowel tail.
-  const pat = modelWordThroughSound('pat', 'p');
-  assert.ok(pat.find((segment) => segment.purpose === 'phoneme-model')?.text.match(/^p-p-p/), 'stops get repeated, not lengthened with a bogus vowel');
-  pass('Find the Sound: stop consonants get real modeling (no "phhhh")');
+  assert.ok(referenceSegments.length >= 2, 'at least two reference words spoken');
+  assert.ok(whole && /ship/.test(whole.text), 'target story word is the acoustic anchor');
+  assert.ok(ship.every((segment) => (segment.holdMs ?? 0) >= 200), 'every segment holds ≥200 ms');
+  pass('Find the Sound: reference-word pedagogy replaces onset stretching');
 }
 
-/* ── Section 8: wrong-word correction structure ───────────────────── */
+/* ── Section 8: wrong-word correction structure (updated for pass 2) ── */
 {
+  // Choice-less entry: no "That's X." — just re-listen → reference → target → compare → retry.
   const seq = correctionModel('shut', 'sh');
-  assert.deepEqual(seq.map((segment) => segment.purpose), ['instruction','instruction','phoneme-model','rime','word-blend','retry']);
-  assert.match(seq[0].text, /This word is shut\./);
-  assert.match(seq[1].text, /Listen to the beginning\./);
-  assert.match(seq[2].text, /^shhhh/);
-  assert.match(seq[3].text, /ut/);
-  assert.match(seq[4].text, /shut/);
-  assert.equal(seq[5].text, 'Your turn.');
-  pass('Wrong-word feedback: identify → beginning → sound → rime → whole → invite');
+  assert.equal(seq[0].text, 'Listen again.', 'anonymous correction opens with re-listen');
+  assert.ok(seq.some((segment) => segment.purpose === 'reference-word'), 'anonymous correction models a reference word');
+  assert.ok(seq.some((segment) => segment.text === 'shut.'), 'anonymous correction voices the target');
+  assert.equal(seq.at(-1)?.text, 'Try one more time.', 'anonymous correction invites retry');
+
+  // With child choice: opens with "That's rex."
+  const withChoice = correctionModel('shut', 'sh', 'rex');
+  assert.match(withChoice[0].text, /That's rex\./);
+  pass('Wrong-word feedback: reference-word structure honored with and without choice');
 }
 
 /* ── Sections 11-14: Word Builder chunk model + pieces ────────────── */
@@ -174,15 +166,21 @@ function pass(label: string) { passed++; console.log(`  ✓ ${label}`); }
   pass('Scene grounding: verified-visible contract enforced end-to-end');
 }
 
-/* ── Section 24-25: permanent app icon ───────────────────────────── */
+/* ── Section 7 (correction pass 2): icon paths reverted ────────────
+ * The user rejected the sprint-1 invented book/portal icon and the
+ * repository/git history contains no unambiguous approved Little Chapters
+ * mark to substitute (see the acceptance report). The invented SVG +
+ * favicon are removed; the manifest and app metadata reference only the
+ * pre-sprint icon paths so nothing 404s while the approved artwork is
+ * supplied out-of-band. */
 {
   const manifest = JSON.parse(readFileSync('public/manifest.webmanifest','utf8'));
-  assert.ok(manifest.icons.some((icon: { src: string; type: string }) => icon.src === '/pwa/icon.svg'), 'manifest declares the SVG portal icon');
-  assert.ok(manifest.icons.every((icon: { src: string }) => !/child|avatar|profile|face|kid/i.test(icon.src)), 'no child-profile image controls the app icon');
-  const svg = readFileSync('public/pwa/icon.svg','utf8');
-  assert.match(svg, /aria-label="Little Chapters"/, 'icon carries a Little Chapters label');
-  assert.ok(!/data:image|<foreignObject|<text\b/.test(svg), 'icon has no embedded raster or text — pure vector portal');
-  pass('Icon: permanent SVG portal identity, no child face, no embedded text');
+  assert.ok(!manifest.icons.some((icon: { src: string }) => icon.src === '/pwa/icon.svg'), 'invented SVG icon reverted from manifest');
+  assert.ok(manifest.icons.every((icon: { src: string }) => icon.src.startsWith('/pwa/icon-')), 'manifest only references the pre-sprint icon paths');
+  try { readFileSync('public/pwa/icon.svg'); assert.fail('invented SVG asset must be removed'); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  pass('Icon: invented sprint-1 asset removed; awaiting approved artwork');
 }
 
 console.log(`\nCorrection sprint: ${passed} checks passed.`);

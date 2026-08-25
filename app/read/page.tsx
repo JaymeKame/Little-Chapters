@@ -52,7 +52,7 @@ import { loadPreferences } from '@/lib/preferences';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
 import { loadChapterScenePackage, requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
-import { correctionModel, modelWordThroughSound, wordBuilderChunkModel } from '@/lib/phonics-model';
+import { correctionModel, modelWordThroughSound, wordBuilderChunkModel, estimateSequenceDurationMs } from '@/lib/phonics-model';
 import { confidentTrackerWords } from '@/lib/reading-tracker';
 import { TutorPhraseSession } from '@/lib/tutor-intents';
 
@@ -684,39 +684,74 @@ export default function ReadPage() {
   useEffect(() => {
     if (!activeInteraction) { setInteractionReady(false); setCorrectionSpeaking(false); return; }
     // A fresh interaction ALWAYS starts inert — the initial tutor model owns
-    // the "you may now choose" gate.
+    // the "you may now choose" gate. But (correction pass 2, Section 2) a
+    // WATCHDOG guarantees the gate always opens: an interrupted speech chain
+    // (a competing speak() from another effect superseding the sequence, iOS
+    // autoplay silently blocking, ElevenLabs slow-fallback, a stale onEnd
+    // callback) must never leave the child staring at a tappable-looking
+    // screen that ignores them. The watchdog ceiling is a conservative
+    // upper bound on how long a healthy sequence would take.
     setInteractionReady(false);
     setCorrectionSpeaking(false);
+    const openGate = () => setInteractionReady(true);
+    let watchdog: number | null = null;
+    const armWatchdog = (ms: number) => {
+      if (watchdog !== null) window.clearTimeout(watchdog);
+      watchdog = window.setTimeout(() => {
+        if (disposedRef.current) return;
+        openGate();
+      }, ms);
+    };
     if (activeInteraction.kind === 'sound-hunt') {
-      audioSession.speakSequence(
-        modelWordThroughSound(activeInteraction.activity.correctTarget ?? '', activeInteraction.activity.literacyTarget ?? ''),
-        () => setInteractionReady(true),
+      const sequence = modelWordThroughSound(
+        activeInteraction.activity.correctTarget ?? '',
+        activeInteraction.activity.literacyTarget ?? '',
       );
-      return;
+      armWatchdog(estimateSequenceDurationMs(sequence) + 3500);
+      audioSession.speakSequence(sequence, () => { if (watchdog !== null) window.clearTimeout(watchdog); openGate(); });
+      return () => { if (watchdog !== null) window.clearTimeout(watchdog); };
     }
     if (activeInteraction.kind === 'word-builder') {
       // Say the invitation, then model each chunk with real pauses, then
       // open the assembly surface for the child to tap the pieces into
       // place. See wordBuilderChunkModel — chunk audio precedes assembly.
+      const pieces = activeInteraction.activity.interactiveObjects.map((object) => object.label);
+      const chunkSequence = wordBuilderChunkModel(pieces);
+      const invitationEstimate = estimateSequenceDurationMs([{ text: activeInteraction.activity.spokenInstruction, purpose: 'instruction', holdMs: 200 }]);
+      armWatchdog(invitationEstimate + estimateSequenceDurationMs(chunkSequence) + 3500);
       audioSession.speak(activeInteraction.activity.spokenInstruction, {
         purpose: 'instruction',
         onEnd: () => {
-          const pieces = activeInteraction.activity.interactiveObjects.map((object) => object.label);
-          audioSession.speakSequence(wordBuilderChunkModel(pieces), () => setInteractionReady(true));
+          audioSession.speakSequence(chunkSequence, () => { if (watchdog !== null) window.clearTimeout(watchdog); openGate(); });
         },
       });
-      return;
+      return () => { if (watchdog !== null) window.clearTimeout(watchdog); };
     }
+    const purpose = activeInteraction.kind === 'prediction' ? 'prediction' : activeInteraction.kind === 'find-in-scene' ? 'discovery' : 'instruction';
+    // estimateSequenceDurationMs only reads text length and holdMs — the
+    // 'instruction' surrogate here is only used for its purpose-based
+    // hold default, never spoken.
+    armWatchdog(estimateSequenceDurationMs([{ text: activeInteraction.activity.spokenInstruction, purpose: 'instruction', holdMs: 200 }]) + 3500);
     audioSession.speak(activeInteraction.activity.spokenInstruction, {
-      purpose: activeInteraction.kind === 'prediction' ? 'prediction' : activeInteraction.kind === 'find-in-scene' ? 'discovery' : 'instruction',
-      onEnd: () => setInteractionReady(true),
+      purpose,
+      onEnd: () => { if (watchdog !== null) window.clearTimeout(watchdog); openGate(); },
     });
+    return () => { if (watchdog !== null) window.clearTimeout(watchdog); };
   }, [activeInteraction]);
 
   if (!profile || !chapter) return <main className="lc-home-v11 lc-home-loading" data-read-state="loading"><div className="lc-loading-sky" /><div className="lc-loading-book"><span /><span /><span /></div><p>Opening today&rsquo;s story…</p></main>;
   const page = chapter.pages[pageIdx];
-  const currentSceneId = interactionManifest?.scenes.find((scene) => scene.pageIndexes.includes(pageIdx))?.sceneId;
-  const sceneBg = (currentSceneId ? sceneUrl(scenePackage, currentSceneId) : null) ?? sceneSelection?.asset.src ?? null;
+  const pageSceneId = interactionManifest?.scenes.find((scene) => scene.pageIndexes.includes(pageIdx))?.sceneId;
+  // Correction pass 2, Section 5: an interaction is a story BEAT, and each
+  // beat is authored against its own scene (interaction.activity.visualSceneId
+  // — e.g. find-in-scene lives on the midpoint scene, word-builder on the
+  // penultimate scene). Prefer that scene during an interaction so the visual
+  // actually progresses through the storybook as the child moves through it,
+  // rather than lingering on the last-read page's scene.
+  const currentSceneId = activeInteraction ? (activeInteraction.activity.visualSceneId ?? pageSceneId) : pageSceneId;
+  const sceneBg = (currentSceneId ? sceneUrl(scenePackage, currentSceneId) : null)
+    ?? (activeInteraction && sceneAssetUrls[activeInteraction.activity.visualSceneId] ? sceneAssetUrls[activeInteraction.activity.visualSceneId] : null)
+    ?? sceneSelection?.asset.src ?? null;
   const sceneFocal = sceneSelection?.asset.focal;
   // Computed for the current tricky word at ANY rung < 3, not just rung 2:
   // with the escalation remap below, a segmentable word now shows the slide
@@ -1378,10 +1413,18 @@ export default function ReadPage() {
     setInteractionChoice(choice);
     if (activeInteraction.kind === 'prediction') {
       setInteractionFeedback('success');
-      audioSession.speak(tutorPhrasesRef.current.line('PREDICTION_RESPONSE', { prediction: choice }), {
-        purpose: 'prediction-acknowledgment',
-        onEnd: () => setTimeout(continueAfterInteraction, 350),
-      });
+      // Correction pass 2, Section 4: read the child's chosen SENTENCE back
+      // (never the bare token label — that produced "Ooh, mike could
+      // happen" on the physical device), then a warm acknowledgment.
+      const picked = activeInteraction.activity.interactiveObjects.find((option) => option.label === choice);
+      const spokenChoice = picked?.caption ?? picked?.spokenLabel ?? choice;
+      audioSession.speakSequence(
+        [
+          { text: spokenChoice, purpose: 'prediction' },
+          { text: tutorPhrasesRef.current.line('PREDICTION_RESPONSE'), purpose: 'prediction-acknowledgment' },
+        ],
+        () => setTimeout(continueAfterInteraction, 350),
+      );
       return;
     }
     const correct = choice === activeInteraction.activity.correctTarget;
@@ -1392,19 +1435,28 @@ export default function ReadPage() {
     } else if (correct) {
       audioSession.speak(activeInteraction.activity.spokenSuccess, { purpose: 'sound-hunt-success', onEnd: () => setTimeout(continueAfterInteraction, 700) });
     } else {
-      // Section 8: model correct word → highlight the sound → model again →
-      // invite retry. The choice grid is inert until the whole sequence
-      // finishes (correctionSpeaking gate), then re-opens with feedback
-      // cleared so the child can select the correct tile.
+      // Correction pass 2, Section 3: model the child's choice, model a
+      // reference word, model the target, compare, invite retry. The choice
+      // grid stays inert until the whole sequence finishes, then re-opens
+      // with feedback cleared so the child can pick the correct tile. A
+      // WATCHDOG here matches the initial-model watchdog above (see the
+      // useEffect for activeInteraction) so an interrupted or silently-
+      // failing correction speech never traps the child on a dead screen.
       setCorrectionSpeaking(true);
-      audioSession.speakSequence(
-        correctionModel(activeInteraction.activity.correctTarget ?? choice, pattern),
-        () => {
-          setCorrectionSpeaking(false);
-          setInteractionFeedback('idle');
-          setInteractionChoice(null);
-        },
-      );
+      const correctionSeq = correctionModel(activeInteraction.activity.correctTarget ?? choice, pattern, choice);
+      const releaseCorrection = () => {
+        setCorrectionSpeaking(false);
+        setInteractionFeedback('idle');
+        setInteractionChoice(null);
+      };
+      const correctionWatchdog = window.setTimeout(() => {
+        if (disposedRef.current) return;
+        releaseCorrection();
+      }, estimateSequenceDurationMs(correctionSeq) + 3500);
+      audioSession.speakSequence(correctionSeq, () => {
+        window.clearTimeout(correctionWatchdog);
+        releaseCorrection();
+      });
     }
   }
 
@@ -1687,7 +1739,7 @@ export default function ReadPage() {
                 disabled={!interactionReady || correctionSpeaking}
               >
                 {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${activeInteraction.activity.interactiveObjects.indexOf(choice) + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{activeInteraction.activity.interactiveObjects.indexOf(choice) === 0 ? '✦' : ')))'}</i></span>}
-                <strong>{choice.label}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
+                <strong>{activeInteraction.kind === 'prediction' ? (choice.caption ?? choice.label) : choice.label}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
               </button>
             ))}
           </div>

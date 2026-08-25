@@ -18,6 +18,7 @@
     "test:daily-adventure": "tsx scripts/test-daily-adventure.ts",
     "test:experience": "tsx scripts/test-experience-sprint.ts",
     "test:correction": "tsx scripts/test-experience-correction.ts",
+    "test:correction-pass-2": "tsx scripts/test-experience-correction-pass-2.ts",
     "capture:daily-adventure": "tsx scripts/capture-daily-adventure.ts"
   },
   "dependencies": {

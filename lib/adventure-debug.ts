@@ -1,8 +1,33 @@
 import type { Chapter } from './chapters';
 import { latestChapterGenerationFailure } from './chapters';
 import type { ChapterScenePackage } from './chapter-scenes';
-import { visualProvenance } from './chapter-scenes';
+import { visualProvenance, sceneUrl } from './chapter-scenes';
 import { audioSession } from './audio-session';
+import { buildStoryInteractionManifest } from './story-interactions';
+
+/** Diagnostic mapping for scene progression (correction pass 2, Section 5).
+ *  Confirms that a chapter's visible scene actually changes at the intended
+ *  narrative moments — one row per page + one row per interaction beat. */
+export function sceneProgressionSnapshot(chapter: Chapter | null, scenePackage: ChapterScenePackage | null) {
+  if (!chapter) return { pages: [], beats: [] };
+  const manifest = buildStoryInteractionManifest(chapter);
+  const pages = chapter.pages.map((_, pageIndex) => {
+    const scene = manifest.scenes.find((entry) => entry.pageIndexes.includes(pageIndex));
+    return {
+      pageIndex,
+      sceneId: scene?.sceneId ?? null,
+      visualPurpose: scene?.visualPurpose ?? null,
+      assetUrl: scene ? sceneUrl(scenePackage, scene.sceneId) : null,
+    };
+  });
+  const beats = manifest.beats.map((beat) => ({
+    beatId: beat.beatId,
+    mechanicType: beat.mechanicType,
+    sceneId: beat.visualSceneId,
+    assetUrl: sceneUrl(scenePackage, beat.visualSceneId),
+  }));
+  return { pages, beats };
+}
 
 export interface SessionTimingSnapshot {
   totalDurationMs: number; readingDurationMs: number; listeningDurationMs: number;
@@ -39,6 +64,7 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
     staticFallbackUsed: visual.source === 'approved-static-fallback', storyGenerationFailureReason: chapter?.provenance?.failureReason ?? latestChapterGenerationFailure() ?? null,
     visualGenerationFailureReason: visual.failureReason ?? null, tutorProviderActuallyPlayed: provider?.provider ?? null,
     voiceFallbackReason: provider?.reason ?? null, session: session?.snapshot() ?? null,
+    sceneProgression: sceneProgressionSnapshot(chapter, scenePackage),
   };
 }
 

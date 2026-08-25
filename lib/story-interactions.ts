@@ -33,6 +33,12 @@ export interface InteractiveObject {
   spokenLabel: string;
   visualSceneId: string;
   visualCue: 'word-object' | 'scene-crop';
+  /** Correction pass 2, Section 4: for prediction beats specifically, a full
+   *  grammatically-valid sentence describing the possible next-story action.
+   *  Renderers display `caption ?? label` so single-word tokens (find-sound,
+   *  find-in-scene, word-builder) are unchanged, but prediction shows a
+   *  complete, plausible outcome instead of a bare noun. */
+  caption?: string;
 }
 
 export interface StoryInteractionBeat {
@@ -79,6 +85,121 @@ function sceneForPage(scenes: StoryScene[], pageIndex: number): string {
 }
 
 const COMMON_GRAPHEMES = ['tch','igh','sh','ch','th','wh','ck','ng','ee','oo','ai','oa','er','ar','or'];
+
+/* ── Prediction sentence construction (Correction pass 2, Section 4) ──────
+ * Physical testing surfaced malformed prediction tiles like "Mike happened
+ * next?" — the result of a single-word noun label being displayed under a
+ * "What do you think happens next?" prompt. The child interprets that as a
+ * grammatical fragment. Predictions now render as SHORT COMPLETE SENTENCES
+ * built deterministically from the chapter's own visible entities + a small
+ * pool of story-neutral verb templates that read as plausible next-story
+ * actions. Every constructed caption is validated before use; anything that
+ * fails validation is replaced by a hand-authored fallback shape. */
+
+interface PredictionOption { tokenLabel: string; caption: string }
+
+const PREDICTION_TEMPLATES: Array<(subject: string, object: string) => string> = [
+  (subject, object) => `${capitalize(subject)} follows the ${object}.`,
+  (subject, object) => `${capitalize(subject)} finds a new ${object}.`,
+  (subject, object) => `Something moves behind the ${object}.`,
+  (subject, object) => `${capitalize(subject)} steps closer to the ${object}.`,
+  (subject, object) => `A ${object} shows a hidden path.`,
+];
+
+/** Validate a prediction caption for a young reader — reject malformed AI
+ *  or template artifacts. */
+export function isValidPredictionCaption(text: string): boolean {
+  if (typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length < 8) return false;
+  const words = trimmed.replace(/[.!?]+$/, '').split(/\s+/).filter(Boolean);
+  if (words.length < 3 || words.length > 12) return false;
+  const lower = trimmed.toLowerCase();
+  // Template / generation artifacts observed in the physical device test.
+  if (/happened next\??$/.test(lower)) return false;
+  if (/^(the )?next thing/.test(lower)) return false;
+  if (/^what (happens|happened) next/.test(lower)) return false;
+  if (/^something happens\.?$/.test(lower)) return false;
+  if (/^[a-z]+ next\.?$/.test(lower)) return false;
+  // Repeats itself.
+  const uniqueWords = new Set(words.map((word) => word.toLowerCase()));
+  if (uniqueWords.size < Math.ceil(words.length * 0.7)) return false;
+  // Must contain a verb-shaped word: any non-stopword ≥3 chars other than
+  // the subject/object satisfies the check for this small template pool.
+  const verbCandidates = words.slice(1, -1).filter((word) => word.length >= 3 && !STOP_WORDS.has(word.toLowerCase()));
+  if (verbCandidates.length === 0) return false;
+  // First character capitalized (sentence-shaped).
+  if (!/^[A-Z]/.test(trimmed)) return false;
+  // Ends with a full stop or exclamation (never a question — the tutor asks
+  // the question; the tiles are answers).
+  if (!/[.!]$/.test(trimmed)) return false;
+  return true;
+}
+
+function capitalize(text: string): string {
+  if (!text) return text;
+  return text[0].toUpperCase() + text.slice(1);
+}
+
+/** Deterministic hand-authored fallback captions — used when nothing in the
+ *  chapter's entities produces a validated sentence. Both captions are always
+ *  grammatical, plausible, and meaningfully different. */
+function fallbackPredictionCaptions(chapter: Chapter): PredictionOption[] {
+  const character = capitalize(chapter.character || 'The reader');
+  return [
+    { tokenLabel: chapter.character.toLowerCase() || 'follows', caption: `${character} follows the next clue.` },
+    { tokenLabel: 'reveal', caption: 'Something new appears in the story.' },
+  ];
+}
+
+function buildPredictionCaptions(
+  chapter: Chapter,
+  visualEntities: string[],
+  settingEntities: string[],
+  soundAnswer: string,
+): PredictionOption[] {
+  const character = chapter.character || 'the reader';
+  const nouns = [...visualEntities, ...settingEntities, soundAnswer]
+    .filter((word): word is string => typeof word === 'string' && word.length >= 3 && !STOP_WORDS.has(word.toLowerCase()) && !NON_VISUAL_WORDS.has(word.toLowerCase()));
+  const uniqueNouns = [...new Set(nouns.map((word) => word.toLowerCase()))].filter((word) => word !== character.toLowerCase());
+  const options: PredictionOption[] = [];
+  const seenCaptions = new Set<string>();
+  const seenTokens = new Set<string>();
+  // Try each noun through each template; keep the first two DIFFERENT, VALID
+  // captions we can produce. Different means different template + different
+  // primary noun so the two tiles are meaningfully distinct.
+  const usedTemplates = new Set<number>();
+  const usedNouns = new Set<string>();
+  outer: for (let templateIndex = 0; templateIndex < PREDICTION_TEMPLATES.length && options.length < 2; templateIndex++) {
+    if (usedTemplates.has(templateIndex)) continue;
+    for (const noun of uniqueNouns) {
+      if (usedNouns.has(noun)) continue;
+      const caption = PREDICTION_TEMPLATES[templateIndex](character, noun);
+      if (!isValidPredictionCaption(caption)) continue;
+      if (seenCaptions.has(caption.toLowerCase())) continue;
+      const tokenLabel = noun;
+      if (seenTokens.has(tokenLabel)) continue;
+      seenCaptions.add(caption.toLowerCase());
+      seenTokens.add(tokenLabel);
+      usedTemplates.add(templateIndex);
+      usedNouns.add(noun);
+      options.push({ tokenLabel, caption });
+      if (options.length >= 2) break outer;
+    }
+  }
+  if (options.length >= 2) return options.slice(0, 2);
+  // Not enough nouns to produce two distinct valid captions — fill with
+  // hand-authored fallbacks. Never render an unvalidated caption.
+  const fallback = fallbackPredictionCaptions(chapter);
+  for (const option of fallback) {
+    if (options.length >= 2) break;
+    if (seenTokens.has(option.tokenLabel)) continue;
+    options.push(option);
+    seenTokens.add(option.tokenLabel);
+  }
+  return options.slice(0, 2);
+}
+
 export function wordBuilderPieces(word: string): string[] {
   const clean = word.toLowerCase().replace(/[^a-z]/g, '');
   const pieces: string[] = [];
@@ -129,7 +250,11 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
   const soundChoices = [distractors[0], soundAnswer, distractors[1]];
   const visualEntities = entities.filter((word) => word !== soundAnswer && word !== chapter.character.toLowerCase() && !NON_VISUAL_WORDS.has(word));
   const settingEntities = (chapter.setting.toLowerCase().match(/[a-z']+/g) ?? []).filter((word) => word.length > 3 && !STOP_WORDS.has(word) && !NON_VISUAL_WORDS.has(word));
-  const predictionEntities = [chapter.character.toLowerCase(), settingEntities.at(-1) ?? visualEntities[0] ?? soundAnswer];
+  // Correction pass 2, Section 4: prediction choices are FULL SENTENCES —
+  // grammatical, plausible next-story actions — not bare-noun tokens. See
+  // buildPredictionCaptions below.
+  const predictionCaptions = buildPredictionCaptions(chapter, visualEntities, settingEntities, soundAnswer);
+  const predictionEntities = predictionCaptions.map((row) => row.tokenLabel);
   const lastPage = chapter.pages.length - 1;
   const finalTarget = chapter.pages[lastPage]?.focusWords.at(-1)?.toLowerCase() ?? entities.at(-1) ?? soundAnswer;
   const builderTarget = chapter.pages.slice(1, -1).flatMap((page) => page.focusWords)
@@ -166,7 +291,14 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
       beatId: 'prediction', mechanicType: 'what-happens-next', literacyTarget: null,
       spokenInstruction: 'What do you think happens next?', storyEntities: predictionEntities,
       visualSceneId: sceneForPage(scenes, Math.max(1, Math.floor(chapter.pages.length * 2 / 3))),
-      interactiveObjects: predictionEntities.map((label, index) => ({ objectId: `prediction-${index}`, label, spokenLabel: label, visualSceneId: scenes[Math.min(scenes.length - 1, Math.max(1, index + 1))].sceneId, visualCue: 'scene-crop' })),
+      interactiveObjects: predictionCaptions.map((row, index) => ({
+        objectId: `prediction-${index}`,
+        label: row.tokenLabel,
+        spokenLabel: row.caption,
+        visualSceneId: scenes[Math.min(scenes.length - 1, Math.max(1, index + 1))].sceneId,
+        visualCue: 'scene-crop',
+        caption: row.caption,
+      })),
       correctTarget: null, successStoryAction: 'The selected possibility glows, then the canonical story continues.',
       spokenSuccess: 'Ooh, maybe! Let’s see.', transitionTarget: 'reading-3',
     },

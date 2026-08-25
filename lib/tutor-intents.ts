@@ -88,9 +88,12 @@ const FALLBACKS: Record<TutorIntent, Array<(context: TutorContext) => string>> =
     () => 'The next line might surprise us.',
   ],
   PREDICTION_RESPONSE: [
-    (c) => `Ooh, ${c.prediction ?? 'that'} could happen. Let’s see.`,
+    // Correction pass 2, Section 4: the child's chosen SENTENCE is spoken
+    // separately before this line — these responses stay generic on purpose
+    // so we never repeat their tap-token as a bare noun.
+    () => 'That could happen. Let’s see.',
     () => 'That’s an interesting idea. Watch what the story does.',
-    (c) => `Maybe ${c.prediction ?? 'that'} — let’s find out.`,
+    () => 'Ooh — let’s find out.',
     () => 'Good guess. The story picks now.',
   ],
   WORD_GAME_TRANSITION: [
