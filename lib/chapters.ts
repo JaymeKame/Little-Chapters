@@ -38,7 +38,11 @@ export interface Chapter {
   cliffhanger: [string, string];
   teaser: string;
   phonics: { hint: string; words: string[] }[];
+  provenance?: ChapterProvenance;
 }
+
+export type ChapterSource = 'generated' | 'cached-generated' | 'fallback' | 'demo/static';
+export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string }
 
 const SETTINGS: Record<
   InterestId,
@@ -242,6 +246,7 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
     cliffhanger: [fillTemplate(skeleton.cliffhanger[0], vars), skeleton.cliffhanger[1]],
     teaser: fillTemplate(skeleton.teaser, vars),
     phonics: derivePhonics(pages, [s.character]),
+    provenance: { source: 'demo/static' },
   };
 }
 
@@ -397,6 +402,7 @@ export function adaptTutorDraft(
     cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
     teaser: draft.summaryLine || `${profile.childName} has more to discover tomorrow...`,
     phonics: [{ hint: `Stage ${stage} practice`, words: practiceWords }],
+    provenance: { source: 'generated', generatedAt: new Date().toISOString() },
   };
 }
 
@@ -405,7 +411,9 @@ const TUTOR_CACHE_PREFIX = 'little-chapters-tutor-chapter:';
 function loadCachedTutorChapter(id: string): Chapter | null {
   try {
     const raw = JSON.parse(localStorage.getItem(TUTOR_CACHE_PREFIX + id) ?? 'null') as Chapter | null;
-    return raw && Array.isArray(raw.pages) && raw.pages.length > 0 ? raw : null;
+    return raw && Array.isArray(raw.pages) && raw.pages.length > 0
+      ? { ...raw, provenance: { ...raw.provenance, source: 'cached-generated' } }
+      : null;
   } catch {
     return null;
   }
@@ -415,6 +423,13 @@ function loadCachedTutorChapter(id: string): Chapter | null {
  * model call, and React StrictMode fires the mount effect twice in dev — so
  * without this, the first load of a day buys the same story twice. */
 const inFlight = new Map<string, Promise<Chapter | null>>();
+const generationFailures = new Map<string, string>();
+let latestGenerationFailure: string | undefined;
+
+export function chapterGenerationFailure(chapterId: string): string | undefined {
+  return generationFailures.get(chapterId);
+}
+export function latestChapterGenerationFailure(): string | undefined { return latestGenerationFailure; }
 
 /** The two existing, already-supported GenerateRequest personalization
  *  inputs this task wires up (see docs/ADAPTIVE_LOOP.md, Phase 2) —
@@ -472,13 +487,27 @@ async function generateTutorChapter(
 ): Promise<Chapter | null> {
   const context = resolveGenerationContext(profile, uid);
   try {
+    const headers = { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) };
+    const lookup = await fetch(`/api/chapters/story?chapterId=${encodeURIComponent(id)}`, { method: 'GET', headers });
+    if (lookup.ok) {
+      const stored = await lookup.json() as { chapter?: Chapter };
+      if (stored.chapter?.pages?.length) {
+        const chapter = { ...stored.chapter, provenance: { ...stored.chapter.provenance, source: 'cached-generated' as const } };
+        try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter)); } catch { /* accelerator only */ }
+        generationFailures.delete(id);
+        latestGenerationFailure = undefined;
+        return chapter;
+      }
+    } else if (lookup.status !== 404) {
+      generationFailures.set(id, `story-lookup-${lookup.status}`);
+      latestGenerationFailure = `story-lookup-${lookup.status}`;
+      return null;
+    }
     const response = await fetch('/api/chapters/story', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
+      headers,
       body: JSON.stringify({
+        chapterId: id,
         profile,
         stage: context.stage,
         skeletonId: context.skeleton.id,
@@ -486,18 +515,28 @@ async function generateTutorChapter(
         storySoFar: context.storySoFar,
       }),
     });
-    if (!response.ok) return null;
-    const data = await response.json() as { draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string> };
-    if (!data.draft || !data.skeleton) return null;
+    if (!response.ok) { generationFailures.set(id, `story-generation-${response.status}`); latestGenerationFailure = `story-generation-${response.status}`; return null; }
+    const data = await response.json() as { chapter?: Chapter; draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string> };
+    if (data.chapter?.pages?.length) {
+      generationFailures.delete(id);
+      latestGenerationFailure = undefined;
+      try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(data.chapter)); } catch { /* accelerator only */ }
+      return data.chapter;
+    }
+    if (!data.draft || !data.skeleton) { generationFailures.set(id, 'story-generation-invalid-response'); return null; }
     const chapter = adaptTutorDraft(profile, data.draft, data.skeleton, data.slots, context.stage);
-    if (!chapter) return null;
+    if (!chapter) { generationFailures.set(id, 'story-generation-invalid-draft'); return null; }
+    generationFailures.delete(id);
+    latestGenerationFailure = undefined;
     try {
       localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));
     } catch {
       /* best-effort cache */
     }
     return chapter;
-  } catch {
+  } catch (error) {
+    generationFailures.set(id, error instanceof Error ? error.message : 'story-generation-network');
+    latestGenerationFailure = error instanceof Error ? error.message : 'story-generation-network';
     return null;
   }
 }

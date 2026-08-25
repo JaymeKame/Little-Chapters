@@ -25,6 +25,38 @@ export { exactlyOnce } from './exactly-once';
 
 export type AudioSessionMode = 'idle' | 'speaking' | 'listening' | 'processing' | 'backgrounded';
 export type MusicPreference = 'off' | 'low' | 'normal';
+export type TutorPurpose = 'story-intro' | 'instruction' | 'phoneme-model' | 'word-blend' | 'retry' | 'encouragement' | 'prediction' | 'discovery' | 'celebration' | 'cliffhanger';
+export interface TutorPerformance { rate: number; pitch: number; pauseStyle: 'natural' | 'clear' | 'deliberate' | 'bright' | 'suspense' }
+export const TUTOR_PERFORMANCE: Record<TutorPurpose, TutorPerformance> = {
+  'story-intro': { rate: .9, pitch: 1.02, pauseStyle: 'natural' },
+  instruction: { rate: .86, pitch: 1, pauseStyle: 'clear' },
+  'phoneme-model': { rate: .72, pitch: 1, pauseStyle: 'deliberate' },
+  'word-blend': { rate: .82, pitch: 1.01, pauseStyle: 'deliberate' },
+  retry: { rate: .86, pitch: 1, pauseStyle: 'clear' },
+  encouragement: { rate: .92, pitch: 1.04, pauseStyle: 'bright' },
+  prediction: { rate: .9, pitch: 1.03, pauseStyle: 'natural' },
+  discovery: { rate: .9, pitch: 1.04, pauseStyle: 'bright' },
+  celebration: { rate: .96, pitch: 1.06, pauseStyle: 'bright' },
+  cliffhanger: { rate: .82, pitch: 1.01, pauseStyle: 'suspense' },
+};
+
+export function tutorPurposeFor(purpose: string): TutorPurpose {
+  if (/phoneme|sound-hunt-retry/.test(purpose)) return 'phoneme-model';
+  if (/blend|word-builder/.test(purpose)) return 'word-blend';
+  if (/retry/.test(purpose)) return 'retry';
+  if (/prediction/.test(purpose)) return 'prediction';
+  if (/celebr|success|praise/.test(purpose)) return 'celebration';
+  if (/cliff|ending|final-story/.test(purpose)) return 'cliffhanger';
+  if (/welcome|intro/.test(purpose)) return 'story-intro';
+  if (/instruction|prompt|help/.test(purpose)) return 'instruction';
+  return 'encouragement';
+}
+
+function performText(text: string, performance: TutorPerformance): string {
+  if (performance.pauseStyle === 'suspense') return text.replace(/([,.!?])\s*/g, '$1 … ');
+  if (performance.pauseStyle === 'deliberate') return text.replace(/\s*\+\s*/g, ' … ');
+  return text;
+}
 export interface AudioSessionEvent {
   type: 'mode' | 'speech-request' | 'speech-preload' | 'speech-complete' | 'speech-cancel' | 'listening-start' | 'listening-stop' | 'background' | 'foreground' | 'provider';
   mode: AudioSessionMode;
@@ -42,9 +74,11 @@ export class AudioSessionController {
   private speechToken = 0;
   private reading: ReadingSession | null = null;
   private foregroundMode: Exclude<AudioSessionMode, 'backgrounded'> = 'idle';
+  private lastProvider: Record<string, unknown> | null = null;
 
   constructor() {
     subscribeVoiceTelemetry((provider) => {
+      this.lastProvider = provider;
       const event: AudioSessionEvent = { type: 'provider', mode: this.mode, at: Date.now(), provider };
       for (const listener of this.listeners) listener(event);
     });
@@ -56,6 +90,7 @@ export class AudioSessionController {
   }
 
   currentMode(): AudioSessionMode { return this.mode; }
+  providerSnapshot(): Record<string, unknown> | null { return this.lastProvider ? { ...this.lastProvider } : null; }
 
   private emit(type: AudioSessionEvent['type'], purpose?: string): void {
     const event = { type, mode: this.mode, at: Date.now(), purpose };
@@ -80,7 +115,8 @@ export class AudioSessionController {
   playCliffhanger(): void { playCliffhanger(); }
   stopMusic(): void { stopMusic(); }
   async preloadSpeech(text: string, purpose: string): Promise<'hit' | 'miss' | 'unavailable'> {
-    const result = await prefetchPrompt(text);
+    const performance = TUTOR_PERFORMANCE[tutorPurposeFor(purpose)];
+    const result = await prefetchPrompt(performText(text, performance), performance.rate);
     this.emit('speech-preload', `${purpose}:${result}`);
     return result;
   }
@@ -100,10 +136,11 @@ export class AudioSessionController {
       options.onEnd?.();
     });
     this.speechDone = complete;
+    const performance = TUTOR_PERFORMANCE[tutorPurposeFor(options.purpose)];
     const start = () => {
       if (token !== this.speechToken) return;
       if (typeof document !== 'undefined' && document.hidden) { complete(); return; }
-      speakPrompt(text, { rate: options.rate, pitch: options.pitch, onEnd: complete });
+      speakPrompt(performText(text, performance), { rate: options.rate ?? performance.rate, pitch: options.pitch ?? performance.pitch, onEnd: complete });
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(start);
     else start();

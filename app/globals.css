@@ -1378,6 +1378,32 @@ a {
 @media(max-height:620px){.lc-chapter-book{min-height:190px;padding-top:25px;padding-bottom:20px}.lc-home-listen{margin-top:6px}.lc-home-tomorrow{padding:8px 12px}.lc-home-kicker{margin-bottom:4px}.lc-chapter-book h1{font-size:27px}}
 @media(prefers-reduced-motion:reduce){.lc-home-v11 *,.lc-session-interaction *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
+/* Daily Adventure is tablet-canonical: the scene remains the world and the
+ * paper interaction surface stays within a comfortable two-hand reach. */
+.lc-home-v11 button,.lc-session-interaction button,.lc-reading-scene button{min-width:44px;min-height:44px}
+.lc-choice-grid.is-word-builder{grid-template-columns:repeat(auto-fit,minmax(72px,1fr));align-items:center;gap:14px}
+.lc-choice-grid.is-word-builder button{min-height:88px;font-size:30px;text-transform:uppercase;box-shadow:0 7px 0 #bba779;transition:transform .28s ease,background .28s ease}
+.lc-choice-grid.is-word-builder button.is-built{background:#e7f5df;border-color:#5c9c67;transform:translateY(-5px)}
+.lc-choice-grid.is-word-builder.is-world-reacting button{transform:translateX(0) scale(1.04);box-shadow:0 0 24px rgba(242,200,72,.7)}
+@media(min-width:700px){
+  .lc-session-interaction .lc-interaction-card{width:min(620px,78vw);padding:34px 38px}
+  .lc-choice-grid button{min-height:88px}
+  .lc-choice-grid.is-sound-hunt{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(min-width:900px) and (orientation:landscape){
+  .lc-session-interaction{align-items:flex-end;justify-content:center;padding:4vh 5vw}
+  .lc-session-interaction .lc-scene-bg{width:62%;right:auto}
+  .lc-session-interaction .lc-interaction-card{width:38%;max-width:520px;margin:auto 0;padding:28px 30px}
+  .lc-choice-grid.is-sound-hunt{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .lc-choice-grid.is-prediction button{min-height:210px}
+}
+@media(min-width:1280px){.lc-session-interaction{padding-left:max(5vw,calc((100vw - 1360px)/2));padding-right:max(5vw,calc((100vw - 1360px)/2))}}
+@media(max-width:520px){
+  .lc-interaction-card{margin:10px 14px 20px;padding:22px 16px}
+  .lc-choice-grid button{min-height:64px}
+  .lc-choice-grid.is-word-builder{gap:9px}.lc-choice-grid.is-word-builder button{min-height:70px;font-size:24px}
+}
+
 /* ── Child-native story games and performed ending ───────────────────── */
 .lc-prompt-speaker{position:absolute;right:18px;top:18px;width:48px;height:48px;border:1px solid rgba(69,85,62,.25);border-radius:50%;background:#fff7df;box-shadow:0 5px 14px rgba(35,56,39,.16)}
 .lc-prompt-speaker img,.lc-word-speaker img{width:25px;height:25px;object-fit:contain}

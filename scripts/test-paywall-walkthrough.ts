@@ -86,7 +86,7 @@ async function main() {
     let manifestCacheChecked = false;
     const maxPages = 12;
     while (pages < maxPages) {
-      const interaction = page.locator('[data-session-beat="sound-hunt"], [data-session-beat="prediction"]');
+      const interaction = page.locator('[data-session-beat="sound-hunt"], [data-session-beat="prediction"], [data-session-beat="word-builder"]');
       if (await interaction.count()) {
         const beat = await interaction.getAttribute('data-session-beat');
         const manifestBeat = beat === 'sound-hunt' ? 'find-sound' : beat;
@@ -104,7 +104,10 @@ async function main() {
         else fail(`${beat} did not receive both lookahead media preparations`);
         await page.screenshot({ path: `${screenshotDir}/${beat}-390x844.png`, animations: 'disabled' });
         const soundAnswer = interaction.locator('[data-correct="true"]');
-        if (await soundAnswer.count()) {
+        if (beat === 'word-builder') {
+          const pieces = interaction.locator('.lc-choice-grid button');
+          for (let index = 0; index < await pieces.count(); index += 1) await pieces.nth(index).click();
+        } else if (await soundAnswer.count()) {
           await interaction.locator('.lc-choice-grid button:not([data-correct="true"])').first().click();
           await interaction.getByRole('status').waitFor();
           if (!(await interaction.count())) fail('an incorrect sound-hunt choice advanced the story');

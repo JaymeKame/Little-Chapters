@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
 import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, type ChildProfile } from '@/lib/profile';
-import { chapterFor, requestTutorChapter, type Chapter } from '@/lib/chapters';
+import { chapterFor, latestChapterGenerationFailure, requestTutorChapter, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage } from '@/lib/scene-selector';
 import { wasChapterCompleted } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
@@ -16,6 +16,7 @@ import { themeAssetFor, welcomeLine } from '@/lib/audio';
 import { audioSession } from '@/lib/audio-session';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
+import { chapterDebugSnapshot, installChapterDebug } from '@/lib/adventure-debug';
 
 export default function ChildHomePage() {
   const router = useRouter();
@@ -54,6 +55,7 @@ export default function ChildHomePage() {
     let cancelled = false; setChapterSettled(false);
     void requestTutorChapter(profile, user?.uid ?? null).then((generated) => {
       if (generated && !cancelled) setChapter(generated);
+      else if (!cancelled) setChapter((current) => current ? { ...current, provenance: { source: 'fallback', failureReason: latestChapterGenerationFailure() } } : current);
     }).finally(() => { if (!cancelled) setChapterSettled(true); });
     return () => { cancelled = true; };
   }, [profile, user, authLoading]);
@@ -66,6 +68,8 @@ export default function ChildHomePage() {
     });
     return () => { cancelled = true; };
   }, [chapter, user, authLoading, chapterSettled]);
+
+  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage)), [chapter, scenePackage]);
 
   const completedToday = Boolean(chapter && !authLoading && wasChapterCompleted(user?.uid ?? null, chapter.id));
   const entitlement = useEntitlement(chapter?.id ?? null);

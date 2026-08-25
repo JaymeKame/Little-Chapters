@@ -41,6 +41,15 @@ function trackGradient(count: number): string {
   return `linear-gradient(90deg, ${stops.join(', ')})`;
 }
 
+export function spokenPhoneme(segment: WordSegment): string {
+  const cue = segment.phoneme?.split(' as in ')[0].replaceAll('/', '').trim();
+  if (!cue) return segment.text;
+  if (cue === 'sh') return 'shhh';
+  if (cue === 's') return 'ssss';
+  if (cue === 'm') return 'mmmm';
+  return cue;
+}
+
 export function SlideWordHelp({
   word,
   segments,
@@ -90,13 +99,15 @@ export function SlideWordHelp({
     // "back to nothing selected yet" position (0), which isn't a real letter.
     if (next !== value && next > 0) audioSession.playHomeSound('tap-soft.mp3');
     setValue(next);
+    const segment = segments[Math.min(next - 1, count - 1)];
     if (next >= count) {
       if (!firedRef.current) {
         firedRef.current = true;
-        onComplete();
+        audioSession.speak(spokenPhoneme(segment), { purpose: 'phoneme-model', onEnd: onComplete });
       }
     } else {
       firedRef.current = false;
+      if (next > 0) audioSession.speak(spokenPhoneme(segment), { purpose: 'phoneme-model' });
     }
   }
 
@@ -126,7 +137,7 @@ export function SlideWordHelp({
       </div>
 
       <p className="lc-slide-caption" role="status">
-        {complete ? 'Great job! Now say the whole word…' : 'Slide to sound it out.'}
+        {complete ? 'The sounds are coming together…' : 'Slide to build the word.'}
       </p>
     </div>
   );

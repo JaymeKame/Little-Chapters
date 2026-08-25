@@ -1,0 +1,48 @@
+import type { Chapter } from './chapters';
+import { latestChapterGenerationFailure } from './chapters';
+import type { ChapterScenePackage } from './chapter-scenes';
+import { visualProvenance } from './chapter-scenes';
+import { audioSession } from './audio-session';
+
+export interface SessionTimingSnapshot {
+  totalDurationMs: number; readingDurationMs: number; listeningDurationMs: number;
+  correctionDurationMs: number; interactionDurationMs: number; generationWaitDurationMs: number;
+  readingBeats: number; gameBeats: number; corrections: number; tutorUtterances: number;
+}
+
+export class AdventureTelemetry {
+  private started = Date.now(); private phaseStarted = this.started;
+  private phase: 'reading' | 'listening' | 'correction' | 'interaction' | 'generation-wait' = 'generation-wait';
+  private durations = { reading: 0, listening: 0, correction: 0, interaction: 0, 'generation-wait': 0 };
+  readingBeats = 0; gameBeats = 0; corrections = 0; tutorUtterances = 0;
+  enter(phase: AdventureTelemetry['phase']): void { const now = Date.now(); this.durations[this.phase] += now - this.phaseStarted; this.phase = phase; this.phaseStarted = now; }
+  count(kind: 'reading' | 'game' | 'correction' | 'utterance'): void {
+    if (kind === 'reading') this.readingBeats += 1; else if (kind === 'game') this.gameBeats += 1;
+    else if (kind === 'correction') this.corrections += 1; else this.tutorUtterances += 1;
+  }
+  snapshot(now = Date.now()): SessionTimingSnapshot {
+    const current = { ...this.durations }; current[this.phase] += now - this.phaseStarted;
+    return { totalDurationMs: now - this.started, readingDurationMs: current.reading, listeningDurationMs: current.listening,
+      correctionDurationMs: current.correction, interactionDurationMs: current.interaction, generationWaitDurationMs: current['generation-wait'],
+      readingBeats: this.readingBeats, gameBeats: this.gameBeats, corrections: this.corrections, tutorUtterances: this.tutorUtterances };
+  }
+}
+
+export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: ChapterScenePackage | null, session?: AdventureTelemetry) {
+  const visual = visualProvenance(); const provider = audioSession.providerSnapshot();
+  return {
+    chapterId: chapter?.id ?? null, chapterSource: chapter?.provenance?.source ?? 'fallback', generatedAt: chapter?.provenance?.generatedAt ?? null,
+    visualPackageId: scenePackage ? `${scenePackage.chapterId}:v${scenePackage.visualBibleVersion}` : null,
+    visualSource: visual.source, scenes: scenePackage?.scenes.map(({ sceneId, assetUrl }) => ({ sceneId, assetUrl })) ?? [],
+    staticFallbackUsed: visual.source === 'approved-static-fallback', storyGenerationFailureReason: chapter?.provenance?.failureReason ?? latestChapterGenerationFailure() ?? null,
+    visualGenerationFailureReason: visual.failureReason ?? null, tutorProviderActuallyPlayed: provider?.provider ?? null,
+    voiceFallbackReason: provider?.reason ?? null, session: session?.snapshot() ?? null,
+  };
+}
+
+export function installChapterDebug(getSnapshot: () => ReturnType<typeof chapterDebugSnapshot>): () => void {
+  if (typeof window === 'undefined' || process.env.NODE_ENV !== 'development') return () => {};
+  const target = window as typeof window & { __chapterDebug?: typeof getSnapshot; __sessionDebug?: () => SessionTimingSnapshot | null };
+  target.__chapterDebug = getSnapshot;
+  return () => { delete target.__chapterDebug; };
+}

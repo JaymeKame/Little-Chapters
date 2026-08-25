@@ -155,30 +155,31 @@ function _cacheSet(key: string, blob: Blob): void {
 }
 
 /** Warms the exact cache used by speakPrompt without taking playback ownership. */
-export function prefetchPrompt(text: string): Promise<'hit' | 'miss' | 'unavailable'> {
+export function prefetchPrompt(text: string, speed = 1): Promise<'hit' | 'miss' | 'unavailable'> {
   if (typeof window === 'undefined' || VOICE_PROVIDER === 'web-speech') return Promise.resolve('unavailable');
   const prompt = withTerminalPunctuation(text);
-  if (_cacheGet(prompt)) {
+  const cacheKey = `${speed.toFixed(2)}:${prompt}`;
+  if (_cacheGet(cacheKey)) {
     voiceLog({ provider: 'elevenlabs', preload: true, cache: 'hit', chars: prompt.length });
     return Promise.resolve('hit');
   }
-  const existing = _speechPrefetches.get(prompt);
+  const existing = _speechPrefetches.get(cacheKey);
   if (existing) return existing;
   const started = performance.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
   const request = fetch('/api/speech/model', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: prompt }), signal: controller.signal,
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: prompt, speed }), signal: controller.signal,
   }).then(async (response) => {
     if (!response.ok) return 'unavailable' as const;
-    _cacheSet(prompt, await response.blob());
+    _cacheSet(cacheKey, await response.blob());
     voiceLog({ provider: 'elevenlabs', preload: true, cache: 'miss', chars: prompt.length, latencyMs: Math.round(performance.now() - started) });
     return 'miss' as const;
   }).catch(() => 'unavailable' as const).finally(() => {
     clearTimeout(timeout);
-    _speechPrefetches.delete(prompt);
+    _speechPrefetches.delete(cacheKey);
   });
-  _speechPrefetches.set(prompt, request);
+  _speechPrefetches.set(cacheKey, request);
   return request;
 }
 
@@ -186,7 +187,7 @@ export function prefetchPrompt(text: string): Promise<'hit' | 'miss' | 'unavaila
  *  Falls back to Web Speech API on any failure so callers are never blocked. */
 function _speakElevenLabs(
   text: string,
-  opts?: { onEnd?: () => void },
+  opts?: { rate?: number; pitch?: number; onEnd?: () => void },
 ): void {
   // This call supersedes anything still in flight — bump the generation
   // before doing anything else so a stale fetch/cache callback below (from a
@@ -223,7 +224,9 @@ function _speakElevenLabs(
     void el.play().catch(() => { cleanup(); opts?.onEnd?.(); });
   };
 
-  const cached = _cacheGet(text);
+  const speed = opts?.rate ?? 1;
+  const cacheKey = `${speed.toFixed(2)}:${text}`;
+  const cached = _cacheGet(cacheKey);
   if (cached) {
     voiceLog({ provider: 'elevenlabs', cache: 'hit', chars: text.length });
     playBlob(cached);
@@ -245,7 +248,7 @@ function _speakElevenLabs(
     return fetch('/api/speech/model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, speed }),
       signal: controller.signal,
     })
       .then(async (res) => {
@@ -282,7 +285,7 @@ function _speakElevenLabs(
 
   attempt()
     .then((blob) => {
-      _cacheSet(text, blob);
+      _cacheSet(cacheKey, blob);
       voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length });
       playBlob(blob);
     })
@@ -300,7 +303,7 @@ function _speakElevenLabs(
       attempt()
         .then((blob) => {
           if (myGeneration !== _speechGeneration) return;
-          _cacheSet(text, blob);
+          _cacheSet(cacheKey, blob);
           voiceLog({ provider: 'elevenlabs', cache: 'miss', chars: text.length, afterRetry: true });
           playBlob(blob);
         })

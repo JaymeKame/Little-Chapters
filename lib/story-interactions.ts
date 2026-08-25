@@ -1,6 +1,6 @@
 import type { Chapter } from './chapters';
 
-export type StoryMechanicType = 'find-sound' | 'what-happens-next' | 'final-story-unlock';
+export type StoryMechanicType = 'find-sound' | 'what-happens-next' | 'word-builder' | 'final-story-unlock';
 
 export interface ChapterVisualBible {
   style: string;
@@ -70,6 +70,17 @@ function sceneForPage(scenes: StoryScene[], pageIndex: number): string {
   return scenes.find((scene) => scene.pageIndexes.includes(pageIndex))?.sceneId ?? scenes[0].sceneId;
 }
 
+const COMMON_GRAPHEMES = ['tch','igh','sh','ch','th','wh','ck','ng','ee','oo','ai','oa','er','ar','or'];
+export function wordBuilderPieces(word: string): string[] {
+  const clean = word.toLowerCase().replace(/[^a-z]/g, '');
+  const pieces: string[] = [];
+  for (let index = 0; index < clean.length;) {
+    const grapheme = COMMON_GRAPHEMES.find((item) => clean.startsWith(item, index)) ?? clean[index];
+    pieces.push(grapheme); index += grapheme.length;
+  }
+  return pieces;
+}
+
 export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractionManifest {
   const entities = storyWords(chapter);
   const groups = sceneGroups(chapter.pages.length);
@@ -102,6 +113,9 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
   const predictionEntities = [chapter.character.toLowerCase(), settingEntities.at(-1) ?? visualEntities[0] ?? soundAnswer];
   const lastPage = chapter.pages.length - 1;
   const finalTarget = chapter.pages[lastPage]?.focusWords.at(-1)?.toLowerCase() ?? entities.at(-1) ?? soundAnswer;
+  const builderTarget = chapter.pages.slice(1, -1).flatMap((page) => page.focusWords)
+    .map((word) => word.toLowerCase()).find((word) => /^[a-z]{3,6}$/.test(word)) ?? soundAnswer;
+  const builderPieces = wordBuilderPieces(builderTarget);
 
   const beats: StoryInteractionBeat[] = [
     {
@@ -119,6 +133,14 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
       interactiveObjects: predictionEntities.map((label, index) => ({ objectId: `prediction-${index}`, label, spokenLabel: label, visualSceneId: scenes[Math.min(scenes.length - 1, Math.max(1, index + 1))].sceneId, visualCue: 'scene-crop' })),
       correctTarget: null, successStoryAction: 'The selected possibility glows, then the canonical story continues.',
       spokenSuccess: 'Ooh, maybe! Let’s see.', transitionTarget: 'reading-3',
+    },
+    {
+      beatId: 'word-builder', mechanicType: 'word-builder', literacyTarget: builderTarget,
+      spokenInstruction: `Let’s build ${builderTarget} to move the story.`, storyEntities: [builderTarget],
+      visualSceneId: sceneForPage(scenes, Math.max(1, lastPage - 1)),
+      interactiveObjects: builderPieces.map((label, index) => ({ objectId: `word-part-${index}`, label, spokenLabel: label, visualSceneId: sceneForPage(scenes, lastPage - 1), visualCue: 'word-object' })),
+      correctTarget: builderTarget, successStoryAction: `The ${builderTarget} makes the story world respond.`,
+      spokenSuccess: `${builderTarget}! You built it.`, transitionTarget: 'final-unlock',
     },
     {
       beatId: 'final-unlock', mechanicType: 'final-story-unlock', literacyTarget: finalTarget,

@@ -15,9 +15,10 @@ const chapter: Chapter = {
 };
 
 const plan = buildSessionPlan(chapter, 'Sam', 'Rex found a map.');
-assert.deepEqual(plan.map((beat) => beat.kind), ['welcome','reading','sound-hunt','reading','prediction','reading','ending']);
+assert.deepEqual(plan.map((beat) => beat.kind), ['welcome','reading','sound-hunt','reading','prediction','reading','word-builder','reading','ending']);
 assert.equal(plan.filter((beat) => beat.kind === 'sound-hunt').length, 1);
 assert.equal(plan.filter((beat) => beat.kind === 'prediction').length, 1);
+assert.equal(plan.filter((beat) => beat.kind === 'word-builder').length, 1);
 assert.equal(plan.filter((beat) => beat.kind === 'reading').flatMap((beat) => beat.kind === 'reading' ? beat.pageIndexes : []).length, chapter.pages.length);
 const hunt = buildSoundHunt(chapter);
 assert.ok(chapter.pages.some((page) => page.text.toLowerCase().includes(hunt.answer)));

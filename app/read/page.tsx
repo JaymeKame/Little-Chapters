@@ -21,7 +21,7 @@ import { AudioWordHelp } from '@/components/AudioWordHelp';
 import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
 import { MicIcon } from '@/components/icons/MicIcon';
 import { QuietCheckIcon } from '@/components/icons/QuietCheckIcon';
-import { chapterFor, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
+import { chapterFor, latestChapterGenerationFailure, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
@@ -45,6 +45,7 @@ import {
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '@/reading-tutor/src/types';
 import { themeAssetFor } from '@/lib/audio';
 import { audioSession } from '@/lib/audio-session';
+import { AdventureTelemetry, chapterDebugSnapshot, installChapterDebug } from '@/lib/adventure-debug';
 import { loadPreferences } from '@/lib/preferences';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
@@ -196,9 +197,10 @@ export default function ReadPage() {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [scenePackage, setScenePackage] = useState<ChapterScenePackage | null>(null);
   const [introOpen, setIntroOpen] = useState(() => typeof window === 'undefined' || new URLSearchParams(window.location.search).get('skipWelcome') !== '1');
-  const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'prediction' }> | null>(null);
+  const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'prediction' | 'word-builder' }> | null>(null);
   const [interactionChoice, setInteractionChoice] = useState<string | null>(null);
   const [interactionFeedback, setInteractionFeedback] = useState<'idle' | 'try-again' | 'success'>('idle');
+  const [wordBuilderProgress, setWordBuilderProgress] = useState(0);
   const [pendingNextPage, setPendingNextPage] = useState<number | null>(null);
   const [pageIdx, setPageIdx] = useState(0);
   const [phase, setPhase] = useState<Phase>('ready');
@@ -248,6 +250,10 @@ export default function ReadPage() {
   const phraseRetryRef = useRef(0);
   const startedReadingRef = useRef(false); // once true, never swap the chapter text
   const disposedRef = useRef(false);
+  const adventureTelemetryRef = useRef(new AdventureTelemetry());
+  const lastCountedPageRef = useRef(-1);
+  const lastCountedInteractionRef = useRef<string | null>(null);
+  const lastTelemetryPhaseRef = useRef<Phase | null>(null);
 
   /* Paywall. /home already routes a locked tap to /unlock, so this only
    * catches a deep link, a back-button return, or a refresh mid-flow. It
@@ -396,12 +402,27 @@ export default function ReadPage() {
       const tutorChapter = await requestTutorChapter(profile, user?.uid ?? null, authToken);
       if (tutorChapter && !cancelled && !disposedRef.current && !startedReadingRef.current) {
         setChapter(tutorChapter);
+      } else if (!cancelled && !disposedRef.current && !startedReadingRef.current) {
+        setChapter((current) => current ? { ...current, provenance: { source: 'fallback', failureReason: latestChapterGenerationFailure() } } : current);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [profile, user, authLoading]);
+
+  useEffect(() => audioSession.subscribe((event) => { if (event.type === 'speech-request') adventureTelemetryRef.current.count('utterance'); }), []);
+  useEffect(() => {
+    if (lastCountedPageRef.current !== pageIdx) { lastCountedPageRef.current = pageIdx; adventureTelemetryRef.current.count('reading'); }
+  }, [pageIdx]);
+  useEffect(() => {
+    const id = activeInteraction?.id ?? null;
+    if (id && lastCountedInteractionRef.current !== id) { lastCountedInteractionRef.current = id; adventureTelemetryRef.current.count('game'); }
+    adventureTelemetryRef.current.enter(id ? 'interaction' : phase === 'listening' ? 'listening' : phase === 'correction' ? 'correction' : 'reading');
+    if (phase === 'correction' && lastTelemetryPhaseRef.current !== 'correction') adventureTelemetryRef.current.count('correction');
+    lastTelemetryPhaseRef.current = phase;
+  }, [activeInteraction, phase]);
+  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, adventureTelemetryRef.current)), [chapter, scenePackage]);
 
   // Reuse the same flat story theme as Home; the controller prevents duplicate loops.
   // Owns theme for as long as this effect's chapter/profile identity holds —
@@ -545,6 +566,18 @@ export default function ReadPage() {
     () => chapter && profile && interactionManifest ? buildSessionPlan(chapter, profile.childName, loadReport()?.teaser ?? '', interactionManifest) : [],
     [chapter, profile, interactionManifest],
   );
+  const adventureStateAppliedRef = useRef(false);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development' || adventureStateAppliedRef.current || !chapter || !sessionPlan.length) return;
+    const requested = new URLSearchParams(window.location.search).get('adventureState');
+    if (!requested) return;
+    adventureStateAppliedRef.current = true; setIntroOpen(false);
+    if (requested === 'ending') { setPageIdx(chapter.pages.length - 1); setPhase('chapter-end'); return; }
+    if (requested === 'story-unlock') { setPageIdx(chapter.pages.length - 1); setPhase('ready'); return; }
+    if (requested === 'correction') { setTimeout(() => enterOrEscalateLadder(chapter.pages[0].focusWords[0] ?? 'ship'), 0); return; }
+    const interaction = sessionPlan.find((beat) => beat.kind === requested);
+    if (interaction && (interaction.kind === 'sound-hunt' || interaction.kind === 'prediction' || interaction.kind === 'word-builder')) setActiveInteraction(interaction);
+  }, [chapter, sessionPlan]);
   const lookaheadBeat = useMemo(() => {
     if (!interactionManifest) return null;
     if (activeInteraction) {
@@ -586,7 +619,7 @@ export default function ReadPage() {
 
   useEffect(() => {
     if (!activeInteraction) return;
-    audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: `${activeInteraction.kind}-prompt` });
+    audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: activeInteraction.kind === 'prediction' ? 'prediction' : 'instruction' });
   }, [activeInteraction]);
 
   if (!profile || !chapter) return <main className="lc-home-v11 lc-home-loading" data-read-state="loading"><div className="lc-loading-sky" /><div className="lc-loading-book"><span /><span /><span /></div><p>Opening today&rsquo;s story…</p></main>;
@@ -1235,6 +1268,7 @@ export default function ReadPage() {
     setActiveInteraction(null);
     setInteractionChoice(null);
     setInteractionFeedback('idle');
+    setWordBuilderProgress(0);
     setPhase('ready');
   }
 
@@ -1255,6 +1289,22 @@ export default function ReadPage() {
     audioSession.speak(correct ? activeInteraction.activity.spokenSuccess : `${choice}. Listen again… ${pattern}.`, {
       purpose: correct ? 'sound-hunt-success' : 'sound-hunt-retry',
       onEnd: correct ? () => setTimeout(continueAfterInteraction, 700) : undefined,
+    });
+  }
+
+  function chooseWordPart(index: number) {
+    if (!activeInteraction || activeInteraction.kind !== 'word-builder' || index !== wordBuilderProgress) return;
+    const part = activeInteraction.activity.interactiveObjects[index];
+    const next = index + 1;
+    setWordBuilderProgress(next);
+    audioSession.speak(part.spokenLabel, {
+      purpose: 'phoneme-model',
+      onEnd: next === activeInteraction.activity.interactiveObjects.length ? () => {
+        setInteractionFeedback('success');
+        audioSession.speak(activeInteraction.activity.spokenSuccess, {
+          purpose: 'word-blend', onEnd: () => setTimeout(continueAfterInteraction, 650),
+        });
+      } : undefined,
     });
   }
 
@@ -1375,7 +1425,9 @@ export default function ReadPage() {
   if (activeInteraction) {
     const sound = activeInteraction.kind === 'sound-hunt' ? activeInteraction.activity : null;
     const choices = activeInteraction.activity.interactiveObjects;
-    const acknowledged = interactionChoice
+    const acknowledged = activeInteraction.kind === 'word-builder' && interactionFeedback === 'success'
+      ? activeInteraction.activity.successStoryAction
+      : interactionChoice
       ? activeInteraction.kind === 'prediction'
         ? `Let’s see!`
         : interactionFeedback === 'success'
@@ -1387,12 +1439,12 @@ export default function ReadPage() {
         <SceneBackground src={sceneBg} focal={sceneFocal} />
         <div className="lc-interaction-card lc-scene-content">
           <button className="lc-prompt-speaker" aria-label="Hear the question again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: 'interaction-prompt-replay' })}><img src="/icons/speaker-audio.png" alt="" /></button>
-          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the sound' : 'What happens next?'}</p>
-          <h1>{activeInteraction.kind === 'sound-hunt' ? sound?.literacyTarget?.toUpperCase() : 'Choose a picture'}</h1>
-          <div className={`lc-choice-grid is-${activeInteraction.kind}`}>
-            {choices.map((choice, index) => <button key={choice.objectId} data-correct={activeInteraction.kind === 'sound-hunt' && choice.label === sound?.correctTarget ? 'true' : undefined} className={`${interactionChoice === choice.label ? 'is-chosen' : ''}${interactionChoice === choice.label && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice.label && interactionFeedback === 'success' ? ' is-success' : ''}`} onClick={() => chooseInteraction(choice.label)} aria-label={choice.spokenLabel}>
+          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the sound' : activeInteraction.kind === 'word-builder' ? 'Build the story word' : 'What happens next?'}</p>
+          <h1>{activeInteraction.kind === 'sound-hunt' ? sound?.literacyTarget?.toUpperCase() : activeInteraction.kind === 'word-builder' ? activeInteraction.activity.literacyTarget?.toUpperCase() : 'Choose a picture'}</h1>
+          <div className={`lc-choice-grid is-${activeInteraction.kind}${interactionFeedback === 'success' ? ' is-world-reacting' : ''}`}>
+            {choices.map((choice, index) => <button key={choice.objectId} data-correct={activeInteraction.kind === 'sound-hunt' && choice.label === sound?.correctTarget ? 'true' : undefined} className={`${interactionChoice === choice.label ? 'is-chosen' : ''}${interactionChoice === choice.label && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice.label && interactionFeedback === 'success' ? ' is-success' : ''}${activeInteraction.kind === 'word-builder' && index < wordBuilderProgress ? ' is-built' : ''}`} onClick={() => activeInteraction.kind === 'word-builder' ? chooseWordPart(index) : chooseInteraction(choice.label)} aria-label={choice.spokenLabel}>
               {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${index + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{index === 0 ? '✦' : ')))'}</i></span>}
-              <strong>{choice.label}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
+              <strong>{choice.label}</strong>{activeInteraction.kind !== 'word-builder' && <span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>}
             </button>)}
           </div>
           {acknowledged && <p role="status">{acknowledged}</p>}
