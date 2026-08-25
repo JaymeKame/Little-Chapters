@@ -69,10 +69,10 @@ export default function RegisterPage() {
     <div className="screen" style={{ padding: '20px', maxWidth: '400px', margin: '0 auto' }}>
       <header style={{ marginBottom: '30px', textAlign: 'center' }}>
         <h1 style={{ fontFamily: 'var(--serif)', fontSize: '28px', margin: '0 0 10px' }}>
-          Create Your Account
+          Save their adventure
         </h1>
         <p style={{ color: 'var(--ink-soft)', fontSize: 14, margin: 0 }}>
-          Sign in to get daily progress updates via SMS
+          Create your parent account so tomorrow&rsquo;s chapter can continue where they left off.
         </p>
       </header>
 

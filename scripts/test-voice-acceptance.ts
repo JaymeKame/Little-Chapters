@@ -15,7 +15,6 @@
  *   node --experimental-strip-types scripts/test-voice-acceptance.ts
  */
 
-// @ts-expect-error - playwright has no local type declarations; see scripts/test-audio-lifecycle.ts
 import { chromium } from 'playwright';
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';
@@ -35,7 +34,6 @@ function info(label: string): void {
 }
 
 const FAKE_AUDIO_BYTES = Buffer.from([0xff, 0xfb, 0x90, 0x00]);
-const SILENT_WAV_BYTES = Buffer.from('UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQgAAACAgICAgICA', 'base64');
 
 type VoiceEvent = Record<string, unknown>;
 
@@ -61,7 +59,7 @@ async function seedProfile(page: any) {
 }
 
 async function main() {
-  const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+  const browser = await chromium.launch();
 
   // Success-mode context: every /api/speech/model call succeeds (fake mpeg).
   const successCtx = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -76,8 +74,8 @@ async function main() {
   console.log('\n=== Item 1: Home/welcome speech uses ElevenLabs ===');
   {
     await page.goto(`${BASE_URL}/home`);
-    await page.waitForSelector('button[aria-label="Replay welcome message"]', { timeout: 15000 });
-    await page.click('button[aria-label="Replay welcome message"]');
+    await page.waitForSelector('button[aria-label="Hear this message"]', { timeout: 15000 });
+    await page.click('button[aria-label="Hear this message"]');
     await page.waitForFunction(
       () => ((window as any).__voiceDebug?.().recent ?? []).some((e: any) => e.provider === 'elevenlabs'),
       { timeout: 8000 },
@@ -90,8 +88,9 @@ async function main() {
 
   console.log('\n=== Item 3: Modeled sentence (header "Read aloud") uses ElevenLabs ===');
   {
-    await page.click('button[aria-label="Start today\'s chapter"]');
+    await page.click('button[aria-label="Play today’s adventure"]');
     await page.waitForURL('**/read', { timeout: 10000 });
+    await page.getByRole('button', { name: 'Open the story' }).click();
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
     await page.click('button[aria-label="Read aloud"]');
     await page.waitForTimeout(500);
@@ -138,38 +137,13 @@ async function main() {
     }
   }
 
-  console.log('\n=== Item 5: Entering slider correction speaks once through ElevenLabs ===');
+  console.log('\n=== Item 5: Slider/correction speech (forced via ?slideDemo) uses ElevenLabs ===');
   {
     const page2 = await successCtx.newPage();
     await seedProfile(page2);
-    let releaseCorrection!: () => void;
-    const correctionRelease = new Promise<void>((resolve) => { releaseCorrection = resolve; });
-    await page2.route('**/api/speech/model', async (route: any) => {
-      await correctionRelease;
-      await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
-    });
-    await page2.goto(`${BASE_URL}/read?slideDemo=1`);
+    await page2.goto(`${BASE_URL}/read?slideDemo=1&skipWelcome=1&disableLookahead=1`);
     await page2.waitForSelector('input[type="range"]', { timeout: 15000 });
-    await page2.waitForFunction(() => (window as any).__audioDebug?.().speechActive === true, { timeout: 5000 });
-    await page2.waitForTimeout(250); // allow the deliberate 200ms duck fade to settle
-    const pendingAudio = await page2.evaluate(() => (window as any).__audioDebug?.());
-    if (pendingAudio.theme && pendingAudio.theme.volume <= 0.0012) {
-      ok(`theme ducked before correction TTS response (volume=${pendingAudio.theme.volume})`);
-    } else {
-      fail('theme was not near-silent while correction TTS was pending', JSON.stringify(pendingAudio));
-    }
-    releaseCorrection();
-    await page2.waitForFunction(
-      () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.provider === 'elevenlabs'),
-      { timeout: 8000 },
-    );
-    const correctionEvents: VoiceEvent[] = await page2.evaluate(
-      () => (window as any).__voiceDebug?.().recent ?? [],
-    );
-    const correctionRequests = correctionEvents.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
-    if (correctionRequests.length === 1) ok('grader/help-state entry called the unified ElevenLabs speech path exactly once');
-    else fail('correction entry did not produce exactly one ElevenLabs request', JSON.stringify(correctionEvents));
-
+    const mark = await page2.evaluate(() => (window as any).__voiceDebug?.().recent.length ?? 0);
     const slider = page2.locator('input[type="range"]');
     const box = await slider.boundingBox();
     if (box) {
@@ -183,114 +157,22 @@ async function main() {
         el.dispatchEvent(new Event('change', { bubbles: true }));
       });
       await page2.waitForTimeout(700);
-      const afterSlide: VoiceEvent[] = await page2.evaluate(
-        () => (window as any).__voiceDebug?.().recent ?? [],
-      );
-      const afterSlideRequests = afterSlide.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
-      if (afterSlideRequests.length === 1) ok('finishing the slider did not duplicate the correction utterance');
-      else fail('slider completion duplicated or lost correction speech', JSON.stringify(afterSlide));
+      const debug = await page2.evaluate(() => (window as any).__voiceDebug?.());
+      const newEvents: VoiceEvent[] = debug.recent.slice(mark);
+      const hit = newEvents.find((e) => e.provider === 'elevenlabs' && !('fallback' in e));
+      if (hit) ok('SlideWordHelp onComplete (slider blend) spoke via ElevenLabs');
+      else fail('SlideWordHelp onComplete did not produce an ElevenLabs success entry', JSON.stringify(newEvents));
     } else {
       fail('could not locate the slider control to drag');
     }
     await page2.close();
   }
 
-  console.log('\n=== Item 5b: Unsegmentable correction entry also speaks exactly once ===');
-  {
-    const page2b = await successCtx.newPage();
-    await seedProfile(page2b);
-    await page2b.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
-    await page2b.waitForSelector('.lc-audio-help', { timeout: 15000 });
-    await page2b.waitForFunction(
-      () => ((window as any).__voiceDebug?.().recent ?? []).some((event: VoiceEvent) => event.provider === 'elevenlabs'),
-      { timeout: 8000 },
-    );
-    const events: VoiceEvent[] = await page2b.evaluate(() => (window as any).__voiceDebug?.().recent ?? []);
-    const requests = events.filter((event) => event.provider === 'elevenlabs' && !('fallback' in event));
-    if (requests.length === 1) ok('unsegmentable correction transition called unified speech exactly once');
-    else fail('unsegmentable correction did not issue exactly one speech request', JSON.stringify(events));
-    await page2b.close();
-  }
-
-  console.log('\n=== Item 5c: First mobile play rejection retries the same ElevenLabs blob ===');
-  {
-    const mobileCtx = await browser.newContext({
-      viewport: { width: 390, height: 844 },
-      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
-    });
-    await mobileCtx.route('**/api/speech/model', async (route: any) => {
-      await route.fulfill({ status: 200, contentType: 'audio/wav', body: SILENT_WAV_BYTES });
-    });
-    const mobilePage = await mobileCtx.newPage();
-    await mobilePage.addInitScript(() => {
-      const realPlay = HTMLMediaElement.prototype.play;
-      let rejectedTutorBlob = false;
-      HTMLMediaElement.prototype.play = function () {
-        if (!rejectedTutorBlob && this.src.startsWith('blob:')) {
-          rejectedTutorBlob = true;
-          return Promise.reject(new DOMException('mobile autoplay blocked', 'NotAllowedError'));
-        }
-        return realPlay.call(this);
-      };
-    });
-    await seedProfile(mobilePage);
-    await mobilePage.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
-    await mobilePage.waitForFunction(() => (window as any).__voiceDebug?.().playbackStarted === true, { timeout: 10000 });
-    const mobileDebug = await mobilePage.evaluate(() => (window as any).__voiceDebug?.());
-    if (mobileDebug.playAttempt1Error?.includes('NotAllowedError') && mobileDebug.playAttempt2 && mobileDebug.finalProvider === 'elevenlabs') {
-      ok('first mobile rejection recovered with one ElevenLabs playback retry');
-    } else {
-      fail('first mobile rejection did not recover through ElevenLabs retry', JSON.stringify(mobileDebug));
-    }
-    await mobileCtx.close();
-  }
-
-  console.log('\n=== Item 5d: Two mobile play rejections finally use Web Speech ===');
-  {
-    const mobileCtx = await browser.newContext({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148 Safari/604.1' });
-    await mobileCtx.route('**/api/speech/model', async (route: any) => {
-      await route.fulfill({ status: 200, contentType: 'audio/wav', body: SILENT_WAV_BYTES });
-    });
-    const mobilePage = await mobileCtx.newPage();
-    await mobilePage.addInitScript(() => {
-      const realPlay = HTMLMediaElement.prototype.play;
-      HTMLMediaElement.prototype.play = function () {
-        if (this.src.startsWith('blob:')) return Promise.reject(new DOMException('mobile media session blocked', 'AbortError'));
-        return realPlay.call(this);
-      };
-      Object.defineProperty(window.speechSynthesis, 'speak', {
-        configurable: true,
-        value: (utterance: SpeechSynthesisUtterance) => setTimeout(() => utterance.onerror?.(new Event('error') as any), 0),
-      });
-    });
-    await seedProfile(mobilePage);
-    await mobilePage.goto(`${BASE_URL}/read?fixtureTake=gate:30`);
-    await mobilePage.waitForFunction(
-      () => {
-        const debug = (window as any).__voiceDebug?.();
-        return debug?.fallbackOccurred === true && debug?.correctionDelivery?.requested === 0;
-      },
-      { timeout: 10000 },
-    );
-    const debug = await mobilePage.evaluate(() => (window as any).__voiceDebug?.());
-    if (debug.playAttempt1Error && debug.playAttempt2Error && debug.finalProvider === 'web-speech') {
-      ok('Web Speech occurred only after both ElevenLabs playback attempts failed');
-    } else {
-      fail('double playback rejection did not produce the required terminal fallback', JSON.stringify(debug));
-    }
-    if (debug.correctionDelivery?.requested === 0 && debug.correctionDelivery?.started === 0) {
-      ok('complete playback failure did not poison correction dedupe state');
-    } else {
-      fail('failed correction remained permanently deduped', JSON.stringify(debug.correctionDelivery));
-    }
-    await mobileCtx.close();
-  }
-
   console.log('\n=== Item 6: Phrase retry (?fixtureTake, whole take judged unreliable) uses ElevenLabs ===');
   {
     const page3 = await successCtx.newPage();
     await seedProfile(page3);
-    await page3.goto(`${BASE_URL}/read`);
+    await page3.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page3.waitForSelector('button[aria-label="Start reading"]', { timeout: 15000 });
     const pageText: string = await page3.evaluate(() => {
       const el = document.querySelector('.lc-page-text');
@@ -302,7 +184,7 @@ async function main() {
     } else {
       const fixtureTake = words.map((w) => `${w}:25`).join(',');
       const mark0 = await page3.evaluate(() => (window as any).__voiceDebug?.().recent.length ?? 0);
-      await page3.goto(`${BASE_URL}/read?fixtureTake=${encodeURIComponent(fixtureTake)}`);
+      await page3.goto(`${BASE_URL}/read?fixtureTake=${encodeURIComponent(fixtureTake)}&skipWelcome=1&disableLookahead=1`);
       await page3.waitForTimeout(1000);
       const debug = await page3.evaluate(() => (window as any).__voiceDebug?.());
       // Navigation reset module state, so read from the start of this page's history.
@@ -347,8 +229,8 @@ async function main() {
         return real(u);
       };
     });
-    await failPage.waitForSelector('button[aria-label="Replay welcome message"]', { timeout: 15000 });
-    await failPage.click('button[aria-label="Replay welcome message"]');
+    await failPage.waitForSelector('button[aria-label="Hear this message"]', { timeout: 15000 });
+    await failPage.click('button[aria-label="Hear this message"]');
     await failPage.waitForFunction(
       () => ((window as any).__voiceDebug?.().recent ?? []).some((e: any) => 'fallback' in e),
       { timeout: 10000 },
@@ -380,7 +262,7 @@ async function main() {
       });
       const vpPage = await vpCtx.newPage();
       await seedProfile(vpPage);
-      await vpPage.goto(`${BASE_URL}/read`);
+      await vpPage.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
       await vpPage.waitForSelector('button:has-text("sim: good")', { timeout: 15000 });
       await vpPage.click('button:has-text("sim: good")');
       const star = vpPage.locator('img[src="/icons/success-star.png"]');

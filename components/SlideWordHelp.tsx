@@ -3,8 +3,7 @@
 /* The help ladder's slide-through word help for a SEGMENTABLE word: the
  * child drags one handle left to right across the tricky word's graphemes
  * (segmentWord() in lib/help-ladder.ts), one coloured segment per grapheme,
- * while the tutor speaks the whole-word correction on entry. Shown as soon
- * as the word first becomes
+ * then hears the whole word blended. Shown as soon as the word first becomes
  * tricky (rung 1) — see app/read/page.tsx's enterOrEscalateLadder for why a
  * second failure on an already-slid word skips straight to rung 3 rather
  * than repeating this. AudioWordHelp is its sibling for words segmentWord()
@@ -26,7 +25,7 @@
  * obvious from a static circle alone. Stops the instant a real drag starts. */
 
 import { useEffect, useRef, useState } from 'react';
-import { playUISound, primeTutorAudio } from '@/lib/audio';
+import { audioSession } from '@/lib/audio-session';
 import type { WordSegment } from '@/lib/help-ladder';
 
 const SEGMENT_COLORS = ['var(--leaf)', 'var(--sky)', 'var(--blue)', 'var(--sunshine)'];
@@ -42,17 +41,30 @@ function trackGradient(count: number): string {
   return `linear-gradient(90deg, ${stops.join(', ')})`;
 }
 
+export function spokenPhoneme(segment: WordSegment): string {
+  const cue = segment.phoneme?.split(' as in ')[0].replaceAll('/', '').trim();
+  if (!cue) return segment.text;
+  if (cue === 'sh') return 'shhh';
+  if (cue === 's') return 'ssss';
+  if (cue === 'm') return 'mmmm';
+  return cue;
+}
+
 export function SlideWordHelp({
   word,
   segments,
   onComplete,
 }: {
-  /** The tricky word used for the accessible slider label. The parent
-   *  correction state owns its single speakPrompt() call. */
+  /** The tricky word, exactly as it will be sent to speakPrompt() on
+   *  completion — audio only, never rendered as text here. */
   word: string;
   segments: WordSegment[];
-  /** Called exactly once the first time the child reaches the final segment;
-   *  the parent uses it to unlock the child's retry after correction help. */
+  /** Called exactly once, the first time the child reaches the final
+   *  segment. The caller owns starting/ending `speaking` state around its
+   *  own speakPrompt(word) call — this component never touches it directly,
+   *  so the existing `phase === 'correction' && speaking` branch keeps
+   *  hiding the mic/keep-going buttons during the blend exactly as it
+   *  already does for rung 2/3's own lines. */
   onComplete: () => void;
 }) {
   const [value, setValue] = useState(0);
@@ -81,20 +93,21 @@ export function SlideWordHelp({
   }, [word]);
 
   function handleChange(next: number) {
-    primeTutorAudio(); // existing slider gesture re-establishes mobile output permission
     // With step={1}, every onChange already represents landing on a genuinely
     // new segment (the browser only fires onChange at integer boundaries) —
     // no extra "did this actually change" bookkeeping needed. Skip only the
     // "back to nothing selected yet" position (0), which isn't a real letter.
-    if (next !== value && next > 0) playUISound('/audio/tap-soft.mp3');
+    if (next !== value && next > 0) audioSession.playHomeSound('tap-soft.mp3');
     setValue(next);
+    const segment = segments[Math.min(next - 1, count - 1)];
     if (next >= count) {
       if (!firedRef.current) {
         firedRef.current = true;
-        onComplete();
+        audioSession.speak(spokenPhoneme(segment), { purpose: 'phoneme-model', onEnd: onComplete });
       }
     } else {
       firedRef.current = false;
+      if (next > 0) audioSession.speak(spokenPhoneme(segment), { purpose: 'phoneme-model' });
     }
   }
 
@@ -124,7 +137,7 @@ export function SlideWordHelp({
       </div>
 
       <p className="lc-slide-caption" role="status">
-        {complete ? 'Great job! Now say the whole word…' : 'Slide to sound it out.'}
+        {complete ? 'The sounds are coming together…' : 'Slide to build the word.'}
       </p>
     </div>
   );
