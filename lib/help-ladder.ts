@@ -77,6 +77,8 @@ export interface WordSegment {
   /** The literal letters this segment covers, exactly as they appear in the
    *  word (child-facing — never a phoneme label; see segmentWord's doc). */
   text: string;
+  /** Curriculum phoneme cue for spoken modeling; never a letter name. */
+  phoneme?: string;
 }
 
 /** Some grapheme ids in stages.json carry a pronunciation-disambiguation
@@ -121,17 +123,17 @@ export function segmentWord(word: string, stage: number): WordSegment[] | null {
   // inflated, id length cumulativeGraphemes sorts by) so a real two-letter
   // match is never skipped in favor of a shorter one, and vice versa.
   const candidates = cumulativeGraphemes(stage)
-    .map((g) => surfaceForm(g.grapheme))
-    .filter((s): s is string => !!s)
-    .sort((a, b) => b.length - a.length);
+    .map((g) => ({ surface: surfaceForm(g.grapheme), phoneme: g.phoneme }))
+    .filter((item): item is { surface: string; phoneme: string } => !!item.surface)
+    .sort((a, b) => b.surface.length - a.surface.length);
 
   const segments: WordSegment[] = [];
   let i = 0;
   while (i < lower.length) {
-    const match = candidates.find((s) => lower.startsWith(s, i));
+    const match = candidates.find((item) => lower.startsWith(item.surface, i));
     if (!match) return null; // stuck — do not guess
-    segments.push({ text: lower.slice(i, i + match.length) });
-    i += match.length;
+    segments.push({ text: lower.slice(i, i + match.surface.length), phoneme: match.phoneme });
+    i += match.surface.length;
   }
 
   // A word can still greedily "succeed" letter-by-letter while actually

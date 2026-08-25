@@ -25,7 +25,6 @@
  *   node --experimental-strip-types scripts/test-auth-registration.ts
  */
 
-// @ts-expect-error - playwright has no local type declarations; see scripts/test-audio-lifecycle.ts
 import { chromium } from 'playwright';
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';

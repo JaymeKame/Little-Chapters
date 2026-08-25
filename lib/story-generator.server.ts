@@ -15,6 +15,7 @@ import type { InterestId } from './profile';
 
 export interface StoryGenerationParams {
   childName: string;
+  companionName?: string;
   interests: InterestId[];
   stage: number;
   skeletonId?: string;
@@ -72,7 +73,7 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
     const result = await generateChapter(
       {
         stage,
-        cast: { childName: params.childName, petName: 'Momo' }, // Momo the reading pet, not the child twice
+        cast: { childName: params.childName, petName: params.companionName ?? 'Momo' },
         interests: params.interests,
         storySoFar,
         recentlyMissedWords,

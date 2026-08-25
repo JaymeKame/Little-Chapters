@@ -28,6 +28,7 @@ export interface PersistedChapterRecord {
   chapterId: string;
   stage: number;
   source: 'generated' | 'fallback';
+  entitlementSource?: 'free' | 'subscription';
   draft?: StoryDraft;
   skeletonId?: string;
   slots?: Record<string, string>;
