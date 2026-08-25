@@ -139,12 +139,12 @@ async function main() {
     check('a chapter the child already completed is never re-locked, regardless of subscription state', /alreadyOwned/.test(useEntitlement) && /wasChapterCompleted/.test(useEntitlement));
   }
 
-  console.log('\n=== Static source checks: paid AI generation enforces server-side (fails CLOSED) ===');
+  console.log('\n=== Static source checks: entitled free and paid chapters share generation ===');
   {
     const storyRoute = src('app/api/chapters/story/route.ts');
-    check('imports hasActiveSubscription from lib/entitlement-server', storyRoute.includes("from '@/lib/entitlement-server'"));
-    check('returns 402 SUBSCRIPTION_REQUIRED for a non-anonymous, unsubscribed uid', /SUBSCRIPTION_REQUIRED/.test(storyRoute) && /status:\s*402/.test(storyRoute));
-    check('exempts the anonymous stand-in uid from the subscription check (demo arc has no server generation to gate)', /auth\.uid !== 'anonymous'/.test(storyRoute));
+    check('story generation resolves a chapter entitlement rather than requiring a subscription', /resolveChapterEntitlement/.test(storyRoute) && !/SUBSCRIPTION_REQUIRED/.test(storyRoute));
+    check('a caller with neither free nor subscription entitlement is still rejected server-side', /CHAPTER_ENTITLEMENT_REQUIRED/.test(storyRoute) && /status:\s*402/.test(storyRoute));
+    check('the stored chapter records which entitlement admitted the same generation pipeline', /entitlementSource/.test(storyRoute));
   }
 
   console.log('\n=== Static source checks: Stripe ownership verification is not bypassable ===');
@@ -194,13 +194,13 @@ async function main() {
   {
     const home = src('app/home/page.tsx');
     check('Home imports useEntitlement', home.includes("from '@/lib/use-entitlement'"));
-    check('Home gates startChapter() on locked, routing to /unlock instead of /read', /if \(locked\) \{[\s\S]*?router\.push\('\/unlock'\)/.test(home));
+    check('locked Home hands subscription actions to a grown-up through Settings', /dailyState === 'locked'/.test(home) && /go\('grown-up'\)/.test(home) && /Ask a grown-up/.test(home));
     check('Home still calls the scene-selector unconditionally (paywall gating did not touch scene selection)', home.includes('selectSceneForPage'));
 
     const read = src('app/read/page.tsx');
     check('Read imports useEntitlement', read.includes("from '@/lib/use-entitlement'"));
     check('Read deep-link guard never fires while a chapter is already in progress (startedReadingRef)', /chapterLocked && !startedReadingRef\.current/.test(read));
-    check('the chapter-end upgrade card is suppressed entirely for an already-subscribed reader', /subscribed !== true/.test(read));
+    check('the child payoff hands conversion to completed Home instead of covering the ending', /grownupHandoff=1/.test(read) && /Save .*adventure/.test(home));
     check('Read still imports the scene-selector (paywall gating did not touch per-page scene selection)', read.includes('selectSceneForPage'));
     check('Read still imports combineVerdicts/reading-verdict (grading untouched)', read.includes("from '@/lib/reading-verdict'"));
 

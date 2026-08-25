@@ -44,6 +44,8 @@ export interface ElevenLabsOptions {
   /** 0–1 (v2 models only). Adds expressiveness. Default 0.0 (neutral/safe). */
   style?: number;
   speakerBoost?: boolean;
+  /** 0.7–1.2. Purpose-specific delivery speed. */
+  speed?: number;
 }
 
 /** True when ELEVENLABS_API_KEY is present in the environment. */
@@ -83,6 +85,7 @@ export async function synthesize(
       // exaggeration 0.0 was originally chosen to avoid.
       style: opts.style ?? 0.25,
       use_speaker_boost: opts.speakerBoost ?? true,
+      speed: Math.max(0.7, Math.min(1.2, opts.speed ?? 1)),
     },
   };
 

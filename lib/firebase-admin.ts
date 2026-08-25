@@ -14,6 +14,7 @@ import {
 } from 'firebase-admin/app';
 import { getAuth, type Auth } from 'firebase-admin/auth';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
+import { getStorage, type Storage } from 'firebase-admin/storage';
 
 let cached: App | undefined;
 
@@ -37,7 +38,7 @@ function adminApp(): App {
   const credential = raw
     ? cert(JSON.parse(raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8')))
     : applicationDefault();
-  cached = initializeApp({ credential });
+  cached = initializeApp({ credential, storageBucket: process.env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET });
   return cached;
 }
 
@@ -47,4 +48,12 @@ export function adminAuth(): Auth {
 
 export function adminDb(): Firestore {
   return getFirestore(adminApp());
+}
+
+export function adminStorage(): Storage {
+  return getStorage(adminApp());
+}
+
+export function adminStorageConfigured(): boolean {
+  return adminCredentialsConfigured() && Boolean(process.env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET);
 }
