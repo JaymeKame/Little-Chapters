@@ -45,7 +45,13 @@ const builder = manifest.beats.find((beat)=>beat.mechanicType === 'word-builder'
 assert.ok(builder.interactiveObjects.length >= 2);
 assert.equal(builder.interactiveObjects.map((part)=>part.label).join(''), builder.correctTarget);
 assert.equal(JSON.stringify(manifest).match(/Chug|Rex|Momo/g), null, 'daily engine has no fixed-character assumptions');
-assert.ok(['prediction','find-in-scene'].includes(buildSessionPlan(generated,'Ari')[4].kind));
+// Correction sprint Sections 15-20: the session composer varies which
+// mechanic lands in each slot. Assert the plan is well-formed and contains
+// at least one interaction — not a specific mechanic in a specific slot.
+const generatedPlan = buildSessionPlan(generated,'Ari');
+assert.equal(generatedPlan[0].kind, 'welcome');
+assert.equal(generatedPlan.at(-1)!.kind, 'ending');
+assert.ok(generatedPlan.some((beat) => beat.kind === 'sound-hunt' || beat.kind === 'find-in-scene' || beat.kind === 'prediction' || beat.kind === 'word-builder'), 'plan contains at least one composed interaction');
 assert.equal(decideChapterEntitlement({chapterId:'today',subscribed:false,consumedFreeChapterId:null}),'free');
 assert.equal(decideChapterEntitlement({chapterId:'today',subscribed:true,consumedFreeChapterId:null}),'subscription');
 assert.equal(decideChapterEntitlement({chapterId:'tomorrow',subscribed:false,consumedFreeChapterId:'today'}),null);

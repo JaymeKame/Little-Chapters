@@ -148,8 +148,12 @@ export class AudioSessionController {
 
   /** Plays short pedagogical segments in order so a modeled word, its sound,
    * and the retry invitation retain distinct human pacing. The sequence owns
-   * one cancellation token; no segment can leak after a newer utterance. */
-  speakSequence(segments: Array<{ text: string; purpose: string }>, onEnd?: () => void): void {
+   * one cancellation token; no segment can leak after a newer utterance.
+   *
+   * Per-segment `holdMs` (correction sprint Section 7) is used when present —
+   * phoneme modeling / onset+rime need real listening time. Otherwise a
+   * purpose-based default keeps the older callers behaving as before. */
+  speakSequence(segments: Array<{ text: string; purpose: string; holdMs?: number }>, onEnd?: () => void): void {
     this.cancelSpeech();
     const sequenceToken = this.speechToken;
     const play = (index: number, expectedToken: number) => {
@@ -159,7 +163,15 @@ export class AudioSessionController {
       this.speak(segment.text, { purpose: segment.purpose, onEnd: () => {
         if (sequenceToken + index + 1 !== this.speechToken) return;
         const nextToken = this.speechToken;
-        window.setTimeout(() => play(index + 1, nextToken), segment.purpose === 'phoneme-model' ? 280 : 160);
+        const purposeHold = segment.purpose === 'phoneme-model'
+          ? 440
+          : segment.purpose === 'onset' || segment.purpose === 'rime'
+            ? 380
+            : segment.purpose === 'word-blend'
+              ? 320
+              : 160;
+        const hold = typeof segment.holdMs === 'number' && segment.holdMs >= 0 ? segment.holdMs : purposeHold;
+        window.setTimeout(() => play(index + 1, nextToken), hold);
       } });
     };
     play(0, sequenceToken);

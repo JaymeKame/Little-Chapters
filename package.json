@@ -17,6 +17,7 @@
     "test:chapter-scenes": "node --experimental-strip-types scripts/test-chapter-scene-generation.ts",
     "test:daily-adventure": "tsx scripts/test-daily-adventure.ts",
     "test:experience": "tsx scripts/test-experience-sprint.ts",
+    "test:correction": "tsx scripts/test-experience-correction.ts",
     "capture:daily-adventure": "tsx scripts/capture-daily-adventure.ts"
   },
   "dependencies": {

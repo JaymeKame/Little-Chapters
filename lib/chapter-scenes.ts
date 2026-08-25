@@ -3,14 +3,28 @@ import type { User } from 'firebase/auth';
 import type { Chapter } from './chapters';
 import type { StoryInteractionManifest } from './story-interactions';
 
-export const VISUAL_BIBLE_VERSION = 1;
+export const VISUAL_BIBLE_VERSION = 2;
 export interface SceneEntityRegion { x: number; y: number; width: number; height: number }
+
+/** Correction sprint Sections 3-5: distinguish a REQUESTED entity (present in
+ *  the generation prompt / interaction manifest) from a VERIFIED VISIBLE
+ *  entity — one whose presence in the final rendered image has been confirmed
+ *  by the image-review pass. Only VERIFIED entities may back a spatial "find
+ *  it in the scene" interaction; every other beat must gracefully fall back
+ *  to the tactile-card render so a child is never asked to locate an object
+ *  that is not actually in the picture. */
+export type EntityVerificationSource = 'reviewer' | 'inferred' | 'unverified';
 export interface SceneEntityMetadata {
   entityId: string;
   label: string;
   semanticRole: 'character' | 'story-object' | 'clue' | 'setting' | 'literacy-target';
   interactionBeatIds: string[];
   approximateRegion: SceneEntityRegion;
+  /** 0..1 — how confident the review stage was that this entity is visible
+   *  in the final image. Consumers requiring spatial interaction MUST
+   *  refuse below 0.6 and switch to a tactile-card fallback. */
+  verificationConfidence: number;
+  verificationSource: EntityVerificationSource;
 }
 export interface GeneratedSceneAsset {
   sceneId: string;

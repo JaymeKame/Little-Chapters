@@ -181,23 +181,39 @@ a {
   animation: lc-focus-word-glow 700ms ease-out both;
 }
 
-/* Live karaoke highlight while the mic is on: unread words dim, heard words
- * return to full strength, the most recent one glows sunshine. */
+/* Live reading tracker (Sections 9-10 of the correction sprint): every word
+ * remains fully legible at every moment. Progress reads as a soft warm
+ * underline that appears beneath words the tracker has confidently passed,
+ * plus a slightly firmer underline and micro-lift on the current probable
+ * word. Never a blur, never an opacity mask, never a spotlight tunnel. */
 .lc-page-text .lc-word {
-  border-radius: 6px;
-  transition: opacity 0.25s ease, background-color 0.25s ease, box-shadow 0.25s ease;
+  border-radius: 4px;
+  background-image: linear-gradient(transparent, transparent);
+  background-repeat: no-repeat;
+  background-position: 0 92%;
+  background-size: 0 3px;
+  transition: background-size 0.32s ease, transform 0.22s ease;
+  display: inline-block;
 }
 
-.lc-page-text .lc-word-dim {
-  /* Keep dimmed words genuinely readable: the child decodes words while
-   * they are still dim (the highlight trails recognition). 0.65 keeps ink
-   * ≈4.5:1 and the bold blue focus words ≈3:1 on the white card. */
-  opacity: 0.72;
+/* Already-read words: warm, quiet underline. Text color and opacity are
+ * unchanged so the whole sentence stays readable. */
+.lc-page-text .lc-word-read {
+  background-image: linear-gradient(rgba(244, 201, 93, 0.55), rgba(244, 201, 93, 0.55));
+  background-size: 100% 2px;
 }
 
+/* Current probable word: same underline, slightly firmer + a 1px lift so the
+ * eye tracks it. No box background, no glow, no red/green. */
 .lc-page-text .lc-word-now {
-  background: linear-gradient(transparent 68%, rgba(244, 201, 93, 0.48) 68% 92%, transparent 92%);
-  box-shadow: none;
+  background-image: linear-gradient(rgba(244, 201, 93, 0.85), rgba(244, 201, 93, 0.85));
+  background-size: 100% 3px;
+  transform: translateY(-1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lc-page-text .lc-word { transition: none; }
+  .lc-page-text .lc-word-now { transform: none; }
 }
 
 .lc-tricky-word {
@@ -1392,9 +1408,32 @@ a {
  * paper interaction surface stays within a comfortable two-hand reach. */
 .lc-home-v11 button,.lc-session-interaction button,.lc-reading-scene button{min-width:44px;min-height:44px}
 .lc-choice-grid.is-word-builder{grid-template-columns:repeat(auto-fit,minmax(72px,1fr));align-items:center;gap:14px}
-.lc-choice-grid.is-word-builder button{min-height:88px;font-size:30px;text-transform:uppercase;box-shadow:0 7px 0 #bba779;transition:transform .28s ease,background .28s ease}
-.lc-choice-grid.is-word-builder button.is-built{background:#e7f5df;border-color:#5c9c67;transform:translateY(-5px)}
+.lc-choice-grid.is-word-builder button{min-height:88px;font-size:30px;text-transform:uppercase;box-shadow:0 7px 0 #bba779;transition:transform .28s ease,background .28s ease,opacity .28s ease,filter .28s ease}
+.lc-choice-grid.is-word-builder button.is-built{background:#efe7cf;border-color:#c8b990;color:#8a7d5a;opacity:.55;transform:translateY(2px);box-shadow:0 3px 0 #bba779}
+.lc-choice-grid.is-word-builder button.is-next{border-color:var(--leaf);box-shadow:0 7px 0 #bba779,0 0 0 3px rgba(46,125,99,.24)}
+.lc-choice-grid.is-word-builder button:disabled{cursor:default}
 .lc-choice-grid.is-word-builder.is-world-reacting button{transform:translateX(0) scale(1.04);box-shadow:0 0 24px rgba(242,200,72,.7)}
+
+/* Correction sprint Sections 11-14: Word Builder assembly bar.
+ * The top row is the ASSEMBLY SURFACE — a set of outlined slots that fill
+ * with pieces as the child taps them; the tray below stays visible with
+ * placed pieces ghosted so the child sees the mapping. On completion the
+ * slots collide into one word and the whole word is modeled. */
+.lc-word-builder .lc-wb-assembly{display:flex;justify-content:center;gap:12px;margin:8px auto 6px;padding:6px 0;min-height:76px}
+.lc-word-builder .lc-wb-slot{min-width:60px;min-height:64px;display:inline-flex;align-items:center;justify-content:center;padding:6px 14px;border:2px dashed rgba(46,125,99,.42);border-radius:12px;font-family:var(--serif);font-size:32px;font-weight:700;color:var(--dark);background:rgba(255,253,246,.72);transition:all .32s cubic-bezier(.2,.8,.2,1)}
+.lc-word-builder .lc-wb-slot.is-filled{border-style:solid;border-color:var(--leaf);background:#e7f5df;box-shadow:0 4px 0 #a7c69c;animation:lc-wb-snap .28s ease-out both}
+.lc-word-builder .lc-wb-slot i{display:inline-block;width:22px;height:2px;background:rgba(46,125,99,.28);border-radius:2px}
+.lc-word-builder .lc-wb-assembly.is-joined{gap:0}
+.lc-word-builder .lc-wb-assembly.is-joined .lc-wb-slot{border-radius:0;border-color:transparent;background:transparent;box-shadow:none;padding:6px 2px}
+.lc-word-builder .lc-wb-assembly.is-joined .lc-wb-slot:first-child{border-top-left-radius:14px;border-bottom-left-radius:14px}
+.lc-word-builder .lc-wb-assembly.is-joined .lc-wb-slot:last-child{border-top-right-radius:14px;border-bottom-right-radius:14px}
+.lc-word-builder .lc-wb-hint{margin:6px 0 14px;font-size:14px;color:var(--ink-soft);text-align:center}
+.lc-word-builder .lc-wb-whole{font-family:var(--serif);font-size:44px;font-weight:800;color:var(--leaf);letter-spacing:.06em;margin:12px auto 8px;text-align:center;animation:lc-wb-whole 520ms ease-out both}
+.lc-word-builder .lc-wb-story-reaction{margin-top:12px;background:rgba(46,125,99,.08);color:var(--dark);padding:10px 14px;border-radius:12px;font-family:var(--serif);font-size:15px}
+.lc-word-builder.is-complete .lc-wb-assembly{filter:drop-shadow(0 0 18px rgba(242,200,72,.55))}
+@keyframes lc-wb-snap{0%{transform:translateY(-6px) scale(.94)}60%{transform:translateY(2px) scale(1.04)}100%{transform:translateY(0) scale(1)}}
+@keyframes lc-wb-whole{from{transform:scale(.9);opacity:0}to{transform:scale(1);opacity:1}}
+@media(prefers-reduced-motion:reduce){.lc-word-builder .lc-wb-slot.is-filled,.lc-word-builder .lc-wb-whole{animation:none}}
 @media(min-width:700px){
   .lc-session-interaction .lc-interaction-card{width:min(620px,78vw);padding:34px 38px}
   .lc-choice-grid button{min-height:88px}

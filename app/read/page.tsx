@@ -29,6 +29,7 @@ import { useEntitlement } from '@/lib/use-entitlement';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
 import { fetchRemoteProfile, loadProfile, loadReport, saveProfile, saveReport, type ChildProfile } from '@/lib/profile';
 import { buildSessionPlan, claimEndingCompletion, interactionAfterPage, type SessionBeat } from '@/lib/session-plan';
+import { loadRecentSessionMechanics, recordSessionMechanics, type MechanicKind } from '@/lib/session-composer';
 import { type ReadingAssessmentResult, type ReadingSession } from '@/lib/pronunciation';
 import { combineVerdicts, isPhraseUnreliable, type DecodeResult, type WordVerdict } from '@/lib/reading-verdict';
 import { buildReadingDebugPayload, readingDebugEnabled } from '@/lib/reading-debug';
@@ -51,16 +52,17 @@ import { loadPreferences } from '@/lib/preferences';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
 import { loadChapterScenePackage, requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
-import { correctionModel, modelWordThroughSound } from '@/lib/phonics-model';
+import { correctionModel, modelWordThroughSound, wordBuilderChunkModel } from '@/lib/phonics-model';
 import { confidentTrackerWords } from '@/lib/reading-tracker';
 import { TutorPhraseSession } from '@/lib/tutor-intents';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
-/* Live karaoke highlight: SHELVED for now — Azure partials trail real speech
- * by up to a second, which reads as lag rather than magic. The matcher still
- * runs headlessly (it powers the finished-page fast-stop below); flip this to
- * true to bring the visuals and the `sim: live` button back. */
+/* Live reading tracker — subtle progressive underline (never blur/opacity/
+ * spotlight). Every word stays fully legible; already-read words receive a
+ * soft warm underline and the current word a slightly firmer one. The tracker
+ * follows Azure PARTIAL transcripts and is only ever guidance — grading is the
+ * source of truth, and the tracker never marks a word wrong. */
 const LIVE_HIGHLIGHT = true;
 
 /* Graded praise for the celebrate beat — always warm, never a failure state;
@@ -136,10 +138,12 @@ function ListenBars({ active }: { active: boolean }) {
 /** Handoff spec: one sentence per line with breathing room; every focus word
  *  bold in the accessible reading blue (#075DAD).
  *
- *  While the mic is live, words light up karaoke-style as the child reads
- *  them: unread words sit dimmed, heard words return to full strength, and
- *  the most recent one glows sunshine. Lighting tracks position, never
- *  correctness — a misread word still lights when the child moves on.       */
+ *  Progress tracker (Sections 9-10 of the correction sprint): every word stays
+ *  fully legible — no blur, no opacity fade, no spotlight tunnel, no karaoke
+ *  mask. As the child moves through the sentence, already-read words receive
+ *  a soft warm underline (`lc-word-read`) and the current probable word a
+ *  slightly firmer underline plus a tiny lift (`lc-word-now`). Ambiguity is
+ *  represented by doing nothing: unread words remain visually normal.       */
 function PageText({
   text,
   focusWords,
@@ -164,15 +168,13 @@ function PageText({
             const clean = tok.replace(/[’ʼ]/g, "'").toLowerCase().replace(/[^a-z0-9']/g, '');
             if (!clean) return <span key={i}>{tok}</span>;
             const idx = wordIdx++;
+            const isRead = live && readCount > 0 && idx < readCount - 1;
+            const isCurrent = live && readCount > 0 && idx === readCount - 1;
             const cls = [
               'lc-word',
               lower.includes(clean) ? 'lc-focus-word' : '',
-              // Strictly greater: the word the child is decoding RIGHT NOW
-              // (idx === readCount) stays at full strength — the highlight
-              // trails recognition, so dimming it would dim the very word
-              // being read.
-              live && idx > readCount ? 'lc-word-dim' : '',
-              live && idx === readCount - 1 ? 'lc-word-now' : '',
+              isRead ? 'lc-word-read' : '',
+              isCurrent ? 'lc-word-now' : '',
             ]
               .filter(Boolean)
               .join(' ');
@@ -205,6 +207,17 @@ export default function ReadPage() {
   const [interactionChoice, setInteractionChoice] = useState<string | null>(null);
   const [interactionFeedback, setInteractionFeedback] = useState<'idle' | 'try-again' | 'success'>('idle');
   const [wordBuilderProgress, setWordBuilderProgress] = useState(0);
+  // Correction sprint Sections 6-8: the choice grid stays inert until the
+  // tutor's initial modeling sequence has finished — a 5-year-old cannot
+  // "listen for the sound" while still being told what it is. Also inert
+  // while wrong-word correction is speaking.
+  const [interactionReady, setInteractionReady] = useState(false);
+  const [correctionSpeaking, setCorrectionSpeaking] = useState(false);
+  // Verified-visible-entity fallback (Correction sprint Sections 3-5). Set
+  // true to force the "find it in scene" beat to the tactile-card fallback
+  // even when the reviewer verified the target — used only by the debug
+  // ?adventureState= path for capture and manual verification.
+  const [findItFallback] = useState(false);
   const [pendingNextPage, setPendingNextPage] = useState<number | null>(null);
   const [pageIdx, setPageIdx] = useState(0);
   const [phase, setPhase] = useState<Phase>('ready');
@@ -576,10 +589,33 @@ export default function ReadPage() {
     [chapter, pageIdx, profile?.avatar, user?.uid],
   );
   const interactionManifest = useMemo(() => chapter ? resolveStoryInteractionManifest(chapter) : null, [chapter]);
-  const sessionPlan = useMemo(
-    () => chapter && profile && interactionManifest ? buildSessionPlan(chapter, profile.childName, loadReport()?.teaser ?? '', interactionManifest) : [],
-    [chapter, profile, interactionManifest],
+  // Correction sprint Sections 15-20: variation memory. Recent mechanic
+  // sequences flow into the composer so today's plan avoids repeating the
+  // last few days' shape. Loaded from localStorage per uid (matches pet/
+  // chapter-history keys). Recorded after the plan actually starts running.
+  const recentSessionMechanics = useMemo(
+    () => (authLoading ? [] : loadRecentSessionMechanics(user?.uid ?? null)),
+    [authLoading, user?.uid],
   );
+  const sessionPlan = useMemo(
+    () => chapter && profile && interactionManifest
+      ? buildSessionPlan(chapter, profile.childName, loadReport()?.teaser ?? '', interactionManifest, recentSessionMechanics)
+      : [],
+    [chapter, profile, interactionManifest, recentSessionMechanics],
+  );
+  const mechanicHistoryRecordedRef = useRef(false);
+  useEffect(() => {
+    if (authLoading || mechanicHistoryRecordedRef.current || !chapter || !sessionPlan.length) return;
+    if (!startedReadingRef.current) return; // record once reading actually begins
+    const sequence = sessionPlan
+      .filter((beat): beat is Extract<SessionBeat, { kind: MechanicKind }> =>
+        beat.kind === 'sound-hunt' || beat.kind === 'find-in-scene' || beat.kind === 'prediction' || beat.kind === 'word-builder',
+      )
+      .map((beat) => beat.kind as MechanicKind);
+    if (!sequence.length) return;
+    mechanicHistoryRecordedRef.current = true;
+    recordSessionMechanics(user?.uid ?? null, sequence);
+  }, [authLoading, chapter, sessionPlan, user?.uid, phase]);
   const adventureStateAppliedRef = useRef(false);
   useEffect(() => {
     if (process.env.NODE_ENV !== 'development' || adventureStateAppliedRef.current || !chapter || !sessionPlan.length) return;
@@ -646,12 +682,35 @@ export default function ReadPage() {
   }, [chapter, interactionManifest, pageIdx, phase]);
 
   useEffect(() => {
-    if (!activeInteraction) return;
+    if (!activeInteraction) { setInteractionReady(false); setCorrectionSpeaking(false); return; }
+    // A fresh interaction ALWAYS starts inert — the initial tutor model owns
+    // the "you may now choose" gate.
+    setInteractionReady(false);
+    setCorrectionSpeaking(false);
     if (activeInteraction.kind === 'sound-hunt') {
-      audioSession.speakSequence(modelWordThroughSound(activeInteraction.activity.correctTarget ?? '', activeInteraction.activity.literacyTarget ?? ''));
+      audioSession.speakSequence(
+        modelWordThroughSound(activeInteraction.activity.correctTarget ?? '', activeInteraction.activity.literacyTarget ?? ''),
+        () => setInteractionReady(true),
+      );
       return;
     }
-    audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: activeInteraction.kind === 'prediction' ? 'prediction' : activeInteraction.kind === 'find-in-scene' ? 'discovery' : 'instruction' });
+    if (activeInteraction.kind === 'word-builder') {
+      // Say the invitation, then model each chunk with real pauses, then
+      // open the assembly surface for the child to tap the pieces into
+      // place. See wordBuilderChunkModel — chunk audio precedes assembly.
+      audioSession.speak(activeInteraction.activity.spokenInstruction, {
+        purpose: 'instruction',
+        onEnd: () => {
+          const pieces = activeInteraction.activity.interactiveObjects.map((object) => object.label);
+          audioSession.speakSequence(wordBuilderChunkModel(pieces), () => setInteractionReady(true));
+        },
+      });
+      return;
+    }
+    audioSession.speak(activeInteraction.activity.spokenInstruction, {
+      purpose: activeInteraction.kind === 'prediction' ? 'prediction' : activeInteraction.kind === 'find-in-scene' ? 'discovery' : 'instruction',
+      onEnd: () => setInteractionReady(true),
+    });
   }, [activeInteraction]);
 
   if (!profile || !chapter) return <main className="lc-home-v11 lc-home-loading" data-read-state="loading"><div className="lc-loading-sky" /><div className="lc-loading-book"><span /><span /><span /></div><p>Opening today&rsquo;s story…</p></main>;
@@ -1312,6 +1371,10 @@ export default function ReadPage() {
 
   function chooseInteraction(choice: string) {
     if (!activeInteraction || interactionFeedback === 'success') return;
+    // Correction sprint Section 6: choices are inert until the initial
+    // tutor model has finished, and inert again while wrong-word correction
+    // is speaking. The child never answers before hearing the target.
+    if (!interactionReady || correctionSpeaking) return;
     setInteractionChoice(choice);
     if (activeInteraction.kind === 'prediction') {
       setInteractionFeedback('success');
@@ -1329,22 +1392,42 @@ export default function ReadPage() {
     } else if (correct) {
       audioSession.speak(activeInteraction.activity.spokenSuccess, { purpose: 'sound-hunt-success', onEnd: () => setTimeout(continueAfterInteraction, 700) });
     } else {
-      audioSession.speakSequence(correctionModel(activeInteraction.activity.correctTarget ?? choice, pattern), undefined);
+      // Section 8: model correct word → highlight the sound → model again →
+      // invite retry. The choice grid is inert until the whole sequence
+      // finishes (correctionSpeaking gate), then re-opens with feedback
+      // cleared so the child can select the correct tile.
+      setCorrectionSpeaking(true);
+      audioSession.speakSequence(
+        correctionModel(activeInteraction.activity.correctTarget ?? choice, pattern),
+        () => {
+          setCorrectionSpeaking(false);
+          setInteractionFeedback('idle');
+          setInteractionChoice(null);
+        },
+      );
     }
   }
 
   function chooseWordPart(index: number) {
     if (!activeInteraction || activeInteraction.kind !== 'word-builder' || index !== wordBuilderProgress) return;
+    if (!interactionReady) return;
     const part = activeInteraction.activity.interactiveObjects[index];
+    const total = activeInteraction.activity.interactiveObjects.length;
     const next = index + 1;
     setWordBuilderProgress(next);
+    // Play the chunk sound. On the last piece, hold a beat so the join
+    // animation lands before we voice the whole word and let the "story
+    // world reacts" glow settle before the next page turns.
     audioSession.speak(part.spokenLabel, {
       purpose: 'phoneme-model',
-      onEnd: next === activeInteraction.activity.interactiveObjects.length ? () => {
+      onEnd: next === total ? () => {
         setInteractionFeedback('success');
-        audioSession.speak(activeInteraction.activity.spokenSuccess, {
-          purpose: 'word-blend', onEnd: () => setTimeout(continueAfterInteraction, 650),
-        });
+        window.setTimeout(() => {
+          audioSession.speak(activeInteraction.activity.spokenSuccess, {
+            purpose: 'word-blend',
+            onEnd: () => window.setTimeout(continueAfterInteraction, 900),
+          });
+        }, 260);
       } : undefined,
     });
   }
@@ -1482,7 +1565,7 @@ export default function ReadPage() {
     const choices = activeInteraction.activity.interactiveObjects;
     const acknowledged = activeInteraction.kind === 'word-builder' && interactionFeedback === 'success'
       ? activeInteraction.activity.successStoryAction
-      : interactionChoice
+      : activeInteraction.kind !== 'word-builder' && interactionChoice
       ? activeInteraction.kind === 'prediction'
         ? `Let’s see!`
         : interactionFeedback === 'success'
@@ -1490,26 +1573,99 @@ export default function ReadPage() {
           : `Listen again… ${sound?.literacyTarget}.`
       : null;
     if (activeInteraction.kind === 'find-in-scene') {
+      // Correction sprint Sections 3-5: NEVER ask the child to find an
+      // object the generated image does not actually contain. A spatial
+      // hotspot is only rendered when the target entity is VERIFIED VISIBLE
+      // (verificationConfidence >= 0.6) by the image reviewer. Otherwise —
+      // no scene package yet, static fallback in use, reviewer confidence
+      // too low, or the target not in the verified set — the beat falls
+      // through to the deterministic tactile-card render below, so the
+      // interaction still runs, just without a false spatial claim.
       const target = activeInteraction.activity.correctTarget ?? activeInteraction.activity.interactiveObjects[0]?.label ?? 'story clue';
       const generatedScene = scenePackage?.scenes.find((scene) => scene.sceneId === activeInteraction.activity.visualSceneId);
-      const entity = generatedScene?.entities.find((item) => item.label.toLowerCase() === target.toLowerCase()) ?? generatedScene?.entities[0];
-      if (entity) {
-      const region = entity.approximateRegion;
-      return <div className="lc-session-interaction lc-find-scene" data-session-beat="find-in-scene" data-layout-mode="story">
-        <SceneBackground src={sceneBg} focal={sceneFocal} />
-        <button className="lc-prompt-speaker" aria-label="Hear the clue again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction,{purpose:'discovery'})}><img src="/icons/speaker-audio.png" alt="" /></button>
-        <div className="lc-find-scene-clue"><span>Look in the story world</span><strong>Find the {target}</strong></div>
-        <button className={`lc-scene-hotspot${interactionFeedback === 'success' ? ' is-success' : ''}`} style={{left:`${region.x*100}%`,top:`${region.y*100}%`,width:`${region.width*100}%`,height:`${region.height*100}%`}} aria-label={`Found the ${target}`} onClick={() => chooseInteraction(target)}><span>{target}</span></button>
-        <SessionProgress current={sessionPlan.findIndex((beat) => beat.id === activeInteraction.id)} total={sessionPlan.length} />
-      </div>;
+      const entity = generatedScene?.entities.find((item) => item.label.toLowerCase() === target.toLowerCase());
+      const verified = entity && (entity.verificationConfidence ?? 0) >= 0.6;
+      if (entity && verified && !findItFallback) {
+        const region = entity.approximateRegion;
+        return <div className="lc-session-interaction lc-find-scene" data-session-beat="find-in-scene" data-layout-mode="story" data-interaction-mode="scene-region" data-verified-entity={entity.label} data-verification-confidence={String(entity.verificationConfidence ?? 0)}>
+          <SceneBackground src={sceneBg} focal={sceneFocal} />
+          <button className="lc-prompt-speaker" aria-label="Hear the clue again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction,{purpose:'discovery'})}><img src="/icons/speaker-audio.png" alt="" /></button>
+          <div className="lc-find-scene-clue"><span>Look in the story world</span><strong>Find the {target}</strong></div>
+          <button className={`lc-scene-hotspot${interactionFeedback === 'success' ? ' is-success' : ''}`} style={{left:`${region.x*100}%`,top:`${region.y*100}%`,width:`${region.width*100}%`,height:`${region.height*100}%`}} aria-label={`Found the ${target}`} onClick={() => interactionReady && chooseInteraction(target)}><span>{target}</span></button>
+          <SessionProgress current={sessionPlan.findIndex((beat) => beat.id === activeInteraction.id)} total={sessionPlan.length} />
+        </div>;
       }
+      // Fall-through: render the tactile-card layout below so the child is
+      // never punished by a missing scene entity. `findItFallback` is a
+      // sticky flag other beats can use to signal telemetry/debug provenance.
+    }
+    if (activeInteraction.kind === 'word-builder') {
+      // Real assembly (Correction sprint Sections 11-14): an assembly bar
+      // above shows empty slots that fill with pieces as the child taps
+      // them; the tray below shows the pieces (already-placed pieces stay
+      // visible but ghosted so the mapping stays clear). Tap = the piece
+      // flies into the next slot with a snap animation. Completion plays
+      // the joined word and a subtle "world reacts" glow before the story
+      // advances.
+      const pieces = activeInteraction.activity.interactiveObjects;
+      const target = (activeInteraction.activity.literacyTarget ?? pieces.map((piece) => piece.label).join('')).toLowerCase();
+      const built = pieces.slice(0, wordBuilderProgress).map((piece) => piece.label);
+      const complete = wordBuilderProgress === pieces.length;
+      return (
+        <div className="lc-session-interaction" data-session-beat="word-builder" data-layout-mode="focus" data-interaction-ready={String(interactionReady)}>
+          <SceneBackground src={sceneBg} focal={sceneFocal} />
+          <div className={`lc-interaction-card lc-scene-content lc-word-builder${complete ? ' is-complete' : ''}`}>
+            <button className="lc-prompt-speaker" aria-label="Hear the word again" onClick={() => {
+              const chunks = activeInteraction.activity.interactiveObjects.map((object) => object.label);
+              audioSession.speakSequence(wordBuilderChunkModel(chunks));
+            }}><img src="/icons/speaker-audio.png" alt="" /></button>
+            <p className="lc-interaction-kicker">Build the story word</p>
+            <div className={`lc-wb-assembly${complete ? ' is-joined' : ''}`} aria-live="polite" role="group" aria-label="Word being built">
+              {pieces.map((piece, slot) => (
+                <span key={piece.objectId} className={`lc-wb-slot${slot < wordBuilderProgress ? ' is-filled' : ''}${complete ? ' is-joined-piece' : ''}`}>
+                  {slot < wordBuilderProgress ? piece.label.toUpperCase() : <i aria-hidden> </i>}
+                </span>
+              ))}
+            </div>
+            {complete ? (
+              <p className="lc-wb-whole" aria-live="polite">{target.toUpperCase()}</p>
+            ) : (
+              <p className="lc-wb-hint">
+                {interactionReady
+                  ? built.length === 0
+                    ? 'Tap the first piece.'
+                    : `Next: tap the ${['first','next','next','next','next'][Math.min(built.length, 4)]} piece.`
+                  : 'Listen to each piece…'}
+              </p>
+            )}
+            <div className={`lc-choice-grid is-word-builder${complete ? ' is-world-reacting' : ''}`} aria-disabled={!interactionReady || complete ? true : undefined}>
+              {pieces.map((piece, index) => {
+                const placed = index < wordBuilderProgress;
+                return (
+                  <button
+                    key={piece.objectId}
+                    className={`lc-wb-piece${placed ? ' is-built' : ''}${index === wordBuilderProgress ? ' is-next' : ''}`}
+                    onClick={() => interactionReady && !complete && chooseWordPart(index)}
+                    aria-label={`Piece ${piece.spokenLabel}`}
+                    disabled={placed || complete || !interactionReady}
+                  >
+                    <strong>{piece.label}</strong>
+                  </button>
+                );
+              })}
+            </div>
+            {acknowledged && <p role="status" className="lc-wb-story-reaction">{acknowledged}</p>}
+            <SessionProgress current={sessionPlan.findIndex((beat) => beat.id === activeInteraction.id)} total={sessionPlan.length} />
+          </div>
+        </div>
+      );
     }
     return (
-      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind} data-layout-mode={activeInteraction.kind === 'word-builder' ? 'focus' : 'interaction'}>
+      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind} data-layout-mode="interaction" data-interaction-ready={String(interactionReady)} data-interaction-mode={activeInteraction.kind === 'find-in-scene' ? 'tactile-card-fallback' : undefined}>
         <SceneBackground src={sceneBg} focal={sceneFocal} />
         <div className="lc-interaction-card lc-scene-content">
           <button className="lc-prompt-speaker" aria-label="Hear the question again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: 'interaction-prompt-replay' })}><img src="/icons/speaker-audio.png" alt="" /></button>
-          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the word' : activeInteraction.kind === 'word-builder' ? 'Build the story word' : activeInteraction.kind === 'find-in-scene' ? 'Find the story clue' : 'What happens next?'}</p>
+          <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the word' : activeInteraction.kind === 'find-in-scene' ? 'Find the story word' : 'What happens next?'}</p>
           {/* Sound-hunt no longer shows a giant naked phoneme in a pill —
               that read as a worksheet and the phoneme was also spoken
               naked. The prompt is voice-led (real word modelled inside the
@@ -1518,13 +1674,22 @@ export default function ReadPage() {
               The other kinds still surface their target word inline
               because the child needs to see it. */}
           {activeInteraction.kind === 'sound-hunt'
-            ? <p className="lc-sound-hunt-prompt">Which word did you hear?</p>
-            : <h1>{activeInteraction.kind === 'word-builder' ? activeInteraction.activity.literacyTarget?.toUpperCase() : activeInteraction.kind === 'find-in-scene' ? 'Tap the story word' : 'Choose a picture'}</h1>}
-          <div className={`lc-choice-grid is-${activeInteraction.kind}${interactionFeedback === 'success' ? ' is-world-reacting' : ''}`}>
-            {choices.map((choice, index) => <button key={choice.objectId} data-correct={activeInteraction.kind === 'sound-hunt' && choice.label === sound?.correctTarget ? 'true' : undefined} className={`${interactionChoice === choice.label ? 'is-chosen' : ''}${interactionChoice === choice.label && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice.label && interactionFeedback === 'success' ? ' is-success' : ''}${activeInteraction.kind === 'word-builder' && index < wordBuilderProgress ? ' is-built' : ''}`} onClick={() => activeInteraction.kind === 'word-builder' ? chooseWordPart(index) : chooseInteraction(choice.label)} aria-label={choice.spokenLabel}>
-              {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${index + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{index === 0 ? '✦' : ')))'}</i></span>}
-              <strong>{choice.label}</strong>{activeInteraction.kind !== 'word-builder' && <span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>}
-            </button>)}
+            ? <p className="lc-sound-hunt-prompt">{interactionReady ? 'Which word did you hear?' : 'Listen…'}</p>
+            : <h1>{activeInteraction.kind === 'find-in-scene' ? 'Tap the story word' : 'Choose a picture'}</h1>}
+          <div className={`lc-choice-grid is-${activeInteraction.kind}${interactionFeedback === 'success' ? ' is-world-reacting' : ''}`} aria-disabled={!interactionReady || correctionSpeaking ? true : undefined}>
+            {choices.map((choice) => (
+              <button
+                key={choice.objectId}
+                data-correct={activeInteraction.kind === 'sound-hunt' && choice.label === sound?.correctTarget ? 'true' : undefined}
+                className={`${interactionChoice === choice.label ? 'is-chosen' : ''}${interactionChoice === choice.label && interactionFeedback === 'try-again' ? ' is-try-again' : ''}${interactionChoice === choice.label && interactionFeedback === 'success' ? ' is-success' : ''}`}
+                onClick={() => chooseInteraction(choice.label)}
+                aria-label={choice.spokenLabel}
+                disabled={!interactionReady || correctionSpeaking}
+              >
+                {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${activeInteraction.activity.interactiveObjects.indexOf(choice) + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{activeInteraction.activity.interactiveObjects.indexOf(choice) === 0 ? '✦' : ')))'}</i></span>}
+                <strong>{choice.label}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
+              </button>
+            ))}
           </div>
           {acknowledged && <p role="status">{acknowledged}</p>}
           <SessionProgress current={sessionPlan.findIndex((beat) => beat.id === activeInteraction.id)} total={sessionPlan.length} />

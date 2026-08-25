@@ -37,7 +37,10 @@ const secondManifest = resolveStoryInteractionManifest(chapters[0]);
 assert.deepEqual(secondManifest, firstManifest);
 assert.ok(memory.has('little-chapters-interaction-manifest:underwater'));
 
-const mockPackage: ChapterScenePackage = { chapterId:'underwater', visualBibleVersion:1, provider:'mock-provider', generatedAt:'2026-01-01T00:00:00.000Z', generationLatencyMs:1234,
+// Correction sprint Sections 3-5: VISUAL_BIBLE_VERSION bumped to 2 for the
+// verified-visible-entity schema, so this mock lines up with the current
+// loader — a v1 package would be treated as stale and re-fetched.
+const mockPackage: ChapterScenePackage = { chapterId:'underwater', visualBibleVersion:2, provider:'mock-provider', generatedAt:'2026-01-01T00:00:00.000Z', generationLatencyMs:1234,
   scenes:firstManifest.scenes.map((scene)=>({ sceneId:scene.sceneId, assetUrl:`https://storage.test/underwater/${scene.sceneId}.webp`, visualPurpose:scene.visualPurpose, entities:[] })) };
 memory.delete(scenePackageCacheKey('underwater'));
 let gets = 0;

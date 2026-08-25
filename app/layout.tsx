@@ -15,7 +15,19 @@ export const metadata: Metadata = {
   manifest: '/manifest.webmanifest',
   applicationName: 'Little Chapters',
   appleWebApp: { capable: true, title: 'Little Chapters', statusBarStyle: 'black-translucent' },
-  icons: { icon: [{ url: '/pwa/icon-192.png', sizes: '192x192' }, { url: '/pwa/icon-512.png', sizes: '512x512' }], apple: '/pwa/icon-192.png' },
+  // Correction sprint Section 24: permanent Little Chapters identity —
+  // storybook portal, never a child profile image. See public/pwa/icon.svg
+  // (source; renders to icon-192.png / icon-512.png via
+  // scripts/generate-icons.mjs).
+  icons: {
+    icon: [
+      { url: '/pwa/icon.svg', type: 'image/svg+xml' },
+      { url: '/pwa/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/pwa/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: '/pwa/icon-192.png',
+    shortcut: '/favicon.png',
+  },
 };
 
 export const viewport: Viewport = {

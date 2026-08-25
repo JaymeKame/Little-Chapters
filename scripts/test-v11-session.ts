@@ -14,21 +14,31 @@ const chapter: Chapter = {
   phonics:[{ hint:'sh in ship', words:['ship'] }, { hint:'short vowels', words:['map','red'] }],
 };
 
+// Correction sprint Sections 15-20: the plan's SPINE is stable (welcome, four
+// reading clusters, ending); the three interaction slots between clusters are
+// composed per-day, so the exact mechanic sequence varies. Assert invariants
+// rather than a fixed sequence — the composed plan for one chapter still
+// covers the same page count and terminates cleanly.
 const plan = buildSessionPlan(chapter, 'Sam', 'Rex found a map.');
-assert.deepEqual(plan.map((beat) => beat.kind), ['welcome','reading','sound-hunt','reading','find-in-scene','reading','word-builder','reading','ending']);
-assert.equal(plan.filter((beat) => beat.kind === 'sound-hunt').length, 1);
-assert.equal(plan.filter((beat) => beat.kind === 'find-in-scene').length, 1);
-assert.equal(plan.filter((beat) => beat.kind === 'word-builder').length, 1);
+assert.equal(plan[0].kind, 'welcome');
+assert.equal(plan.at(-1)!.kind, 'ending');
+assert.equal(plan.filter((beat) => beat.kind === 'reading').length, 4, 'four reading clusters');
+const interactionKinds = plan.filter((beat) => beat.kind === 'sound-hunt' || beat.kind === 'find-in-scene' || beat.kind === 'prediction' || beat.kind === 'word-builder').map((beat) => beat.kind);
+assert.ok(interactionKinds.length >= 1 && interactionKinds.length <= 3, 'plan carries 1–3 composed interactions');
 assert.equal(plan.filter((beat) => beat.kind === 'reading').flatMap((beat) => beat.kind === 'reading' ? beat.pageIndexes : []).length, chapter.pages.length);
 const hunt = buildSoundHunt(chapter);
 assert.ok(chapter.pages.some((page) => page.text.toLowerCase().includes(hunt.answer)));
 assert.ok(hunt.answer.includes(hunt.pattern));
 assert.equal(hunt.choices.length, 3);
 assert.equal(new Set(hunt.choices).size, 3);
-assert.equal(interactionAfterPage(plan, 0)?.kind, 'sound-hunt');
 const alternatePlan = buildSessionPlan({ ...chapter, id:'tesu' }, 'Sam');
+// Two different chapter ids may or may not produce two different sequences
+// (the composer is deterministic, not required to disagree), but a
+// prediction beat, if present, must still be well-formed.
 const prediction = alternatePlan.find((beat) => beat.kind === 'prediction');
-assert.ok(prediction && prediction.activity.interactiveObjects.every((choice) => choice.label), 'both prediction selections advance through the same canonical beat');
+if (prediction) {
+  assert.ok(prediction.activity.interactiveObjects.every((choice) => choice.label), 'prediction beat still has well-formed choices');
+}
 
 const manifest = buildStoryInteractionManifest({ ...chapter, id:'underwater', character:'Nia', companion:'Turtle', setting:'an underwater city' });
 assert.equal(manifest.visualBible.protagonist, 'Nia');

@@ -65,22 +65,58 @@ async function generateStoryboard(prompt: string): Promise<Buffer> {
   throw new Error('IMAGE_PROVIDER_EMPTY');
 }
 
-async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<void> {
+/** Correction sprint Sections 3-5: reviewer now also returns, per panel,
+ *  which requested entities are actually VISIBLE in the rendered image. The
+ *  entity metadata attached to each scene is built from that verified set,
+ *  never from the prompt alone — so a spatial "find it" interaction can only
+ *  target an object the reviewer confirmed. */
+interface ReviewedPanel { panel: number; visibleObjects: Array<{ label: string; confidence: number }> }
+interface ReviewOutcome { approved: boolean; reasons: string[]; panels: ReviewedPanel[] }
+
+async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<ReviewOutcome> {
+  const manifest = buildStoryInteractionManifest(chapter);
   const preview = await sharp(storyboard).resize(768, 768, { fit: 'cover' }).jpeg({ quality: 76 }).toBuffer();
+  const candidatesByPanel = manifest.scenes.map((scene, index) => {
+    const beats = manifest.beats.filter((beat) => beat.visualSceneId === scene.sceneId || beat.interactiveObjects.some((object) => object.visualSceneId === scene.sceneId));
+    const candidates = [...new Set([chapter.character, ...beats.flatMap((beat) => beat.storyEntities), ...scene.importantObjects])].filter(Boolean).slice(0, 8);
+    return { panel: index + 1, candidates };
+  });
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST', headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.OPENAI_IMAGE_REVIEW_MODEL || 'gpt-4o-mini', temperature: 0, response_format: { type: 'json_object' },
       messages: [{ role: 'user', content: [
-        { type: 'text', text: `Review this four-panel children's storybook storyboard for chapter ${chapter.id}. Return JSON {"approved":boolean,"reasons":string[]}. Approve only if: warm whimsical handcrafted cartoon storybook style; never photorealistic, painterly-realistic, anime, generic/glossy 3D, horror, or glossy AI art; no embedded words/logos; the same characters retain appearance, clothing, proportions and colors in every panel; the environment and palette remain coherent; each panel visibly depicts its requested narrative action; content is calm and child-safe. Reject on any uncertainty.` },
+        { type: 'text', text:
+          `Review this four-panel children's storybook storyboard for chapter ${chapter.id}. `
+          + `Return STRICT JSON with this exact shape:\n`
+          + `{"approved": boolean, "reasons": string[], "panels": [{"panel": 1|2|3|4, "visibleObjects": [{"label": "string, must be one of the candidates for that panel", "confidence": 0..1}]}]}\n`
+          + `\nStyle review rules: warm whimsical handcrafted cartoon storybook style; never photorealistic, painterly-realistic, anime, generic/glossy 3D, horror, or glossy AI art; no embedded words/logos; the same characters retain appearance, clothing, proportions and colors in every panel; the environment and palette remain coherent; each panel visibly depicts its requested narrative action; content is calm and child-safe. Set approved=false on any uncertainty.\n`
+          + `\nVisible-objects rules (MANDATORY, even when approved=false): for each of the four panels list ONLY the candidate labels that are UNAMBIGUOUSLY DEPICTED in that panel — a clearly drawn, identifiable object a five-year-old could point to. Never invent labels not in the candidate list. Never list an object because the prompt mentioned it — only because you can SEE it. Confidence is your calibrated certainty (0..1); anything under 0.6 will be treated as unverified downstream, so err on the side of omitting.\n`
+          + `\nCandidates per panel (use these labels verbatim):\n`
+          + candidatesByPanel.map((row) => `  Panel ${row.panel}: ${row.candidates.join(', ') || '(none)'}`).join('\n'),
+        },
         { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${preview.toString('base64')}` } },
       ] }],
     }),
   });
   if (!response.ok) throw new Error(`IMAGE_REVIEW_${response.status}`);
   const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const verdict = JSON.parse(body.choices?.[0]?.message?.content ?? '{}') as { approved?: boolean; reasons?: string[] };
-  if (verdict.approved !== true) throw new Error(`IMAGE_REVIEW_REJECTED:${(verdict.reasons ?? []).join('|').slice(0, 400)}`);
+  let parsed: Partial<ReviewOutcome> = {};
+  try { parsed = JSON.parse(body.choices?.[0]?.message?.content ?? '{}') as Partial<ReviewOutcome>; } catch { /* keep empty */ }
+  const approved = parsed.approved === true;
+  const reasons = Array.isArray(parsed.reasons) ? parsed.reasons.filter((reason): reason is string => typeof reason === 'string') : [];
+  const panels: ReviewedPanel[] = Array.isArray(parsed.panels)
+    ? parsed.panels
+        .filter((row): row is ReviewedPanel => Boolean(row) && typeof row.panel === 'number' && Array.isArray(row.visibleObjects))
+        .map((row) => ({
+          panel: row.panel,
+          visibleObjects: row.visibleObjects
+            .filter((item): item is { label: string; confidence: number } => Boolean(item) && typeof item.label === 'string' && typeof item.confidence === 'number')
+            .map((item) => ({ label: item.label, confidence: Math.max(0, Math.min(1, item.confidence)) })),
+        }))
+    : [];
+  if (!approved) throw new Error(`IMAGE_REVIEW_REJECTED:${reasons.join('|').slice(0, 400)}`);
+  return { approved, reasons, panels };
 }
 
 function storyboardPrompt(chapter: Chapter) {
@@ -96,17 +132,54 @@ function storyboardPrompt(chapter: Chapter) {
   ].join('\n');
 }
 
-function entityMetadata(chapter: Chapter, sceneId: string): SceneEntityMetadata[] {
+/** Build the scene's entity metadata from the VERIFIED-visible subset the
+ *  reviewer confirmed for that panel — never from the prompt or beat
+ *  manifest alone. Any entity a beat requested but the reviewer did not
+ *  confirm is still recorded (verificationConfidence 0, source 'unverified')
+ *  so downstream telemetry can see the request-vs-verified delta; the render
+ *  path refuses to place a spatial hotspot on anything below 0.6.
+ *  Approximate regions are still positional heuristics — precise bounding
+ *  boxes are a separate follow-up beyond this correction sprint. */
+function entityMetadata(
+  chapter: Chapter,
+  sceneId: string,
+  sceneIndex: number,
+  reviewed: ReviewedPanel | undefined,
+): SceneEntityMetadata[] {
   const manifest = buildStoryInteractionManifest(chapter);
   const beats = manifest.beats.filter((beat) => beat.visualSceneId === sceneId || beat.interactiveObjects.some((object) => object.visualSceneId === sceneId));
-  const labels = [...new Set(beats.flatMap((beat) => beat.storyEntities))].slice(0, 4);
-  const regions = [{ x:.08,y:.18,width:.38,height:.64 },{ x:.54,y:.18,width:.38,height:.64 },{ x:.28,y:.32,width:.44,height:.52 },{ x:.1,y:.58,width:.8,height:.32 }];
-  return labels.map((label, index) => ({
-    entityId: `${sceneId}-entity-${index + 1}`, label,
-    semanticRole: label.toLowerCase() === chapter.character.toLowerCase() ? 'character' : beats.some((beat) => beat.correctTarget === label) ? 'literacy-target' : 'story-object',
-    interactionBeatIds: beats.filter((beat) => beat.storyEntities.includes(label)).map((beat) => beat.beatId),
-    approximateRegion: regions[index],
-  }));
+  const requested = [...new Set(beats.flatMap((beat) => beat.storyEntities))];
+  const verifiedMap = new Map<string, number>();
+  for (const item of reviewed?.visibleObjects ?? []) {
+    const key = item.label.toLowerCase();
+    // Keep the highest confidence per label.
+    verifiedMap.set(key, Math.max(verifiedMap.get(key) ?? 0, item.confidence));
+  }
+  const regions = [
+    { x: 0.08, y: 0.18, width: 0.38, height: 0.64 },
+    { x: 0.54, y: 0.18, width: 0.38, height: 0.64 },
+    { x: 0.28, y: 0.32, width: 0.44, height: 0.52 },
+    { x: 0.10, y: 0.58, width: 0.80, height: 0.32 },
+  ];
+  // Emit entries for every requested label so downstream telemetry sees the
+  // request/verified split, but only labels the reviewer actually named will
+  // carry a verificationConfidence at or above the render threshold.
+  return requested.slice(0, 4).map((label, index) => {
+    const confidence = verifiedMap.get(label.toLowerCase()) ?? 0;
+    return {
+      entityId: `${sceneId}-entity-${index + 1}`,
+      label,
+      semanticRole: label.toLowerCase() === chapter.character.toLowerCase()
+        ? 'character' as const
+        : beats.some((beat) => beat.correctTarget === label)
+          ? 'literacy-target' as const
+          : 'story-object' as const,
+      interactionBeatIds: beats.filter((beat) => beat.storyEntities.includes(label)).map((beat) => beat.beatId),
+      approximateRegion: regions[index] ?? regions[0],
+      verificationConfidence: confidence,
+      verificationSource: confidence > 0 ? 'reviewer' as const : 'unverified' as const,
+    };
+  });
 }
 
 async function uploadScene(bucketName: string, path: string, bytes: Buffer): Promise<string> {
@@ -118,7 +191,7 @@ async function uploadScene(bucketName: string, path: string, bytes: Buffer): Pro
 async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
   const started = Date.now(); const manifest = buildStoryInteractionManifest(chapter);
   const storyboard = await generateStoryboard(storyboardPrompt(chapter));
-  await reviewStoryboard(storyboard, chapter);
+  const review = await reviewStoryboard(storyboard, chapter);
   const normalized = await sharp(storyboard).resize(2048, 2048, { fit: 'cover' }).png().toBuffer();
   const bucketName = process.env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!;
   const safe = packageId(chapter.id);
@@ -128,7 +201,13 @@ async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
     const scene = manifest.scenes[index]; const position = positions[index];
     const bytes = await sharp(normalized).extract({ ...position, width:1024, height:1024 }).webp({ quality: 88 }).toBuffer();
     const path = `chapter-scenes/${safe}/v${VISUAL_BIBLE_VERSION}/${scene.sceneId}.webp`;
-    scenes.push({ sceneId: scene.sceneId, assetUrl: await uploadScene(bucketName, path, bytes), visualPurpose: scene.visualPurpose, entities: entityMetadata(chapter, scene.sceneId) });
+    const reviewedPanel = review.panels.find((row) => row.panel === index + 1);
+    scenes.push({
+      sceneId: scene.sceneId,
+      assetUrl: await uploadScene(bucketName, path, bytes),
+      visualPurpose: scene.visualPurpose,
+      entities: entityMetadata(chapter, scene.sceneId, index, reviewedPanel),
+    });
   }
   return { chapterId: chapter.id, visualBibleVersion: VISUAL_BIBLE_VERSION, provider: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', generatedAt: new Date().toISOString(), generationLatencyMs: Date.now() - started, scenes };
 }
