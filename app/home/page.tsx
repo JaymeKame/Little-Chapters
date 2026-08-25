@@ -53,7 +53,10 @@ export default function ChildHomePage() {
   useEffect(() => {
     if (!profile || authLoading) return;
     let cancelled = false; setChapterSettled(false);
-    void requestTutorChapter(profile, user?.uid ?? null).then((generated) => {
+    void (async () => {
+      const authToken = user ? await user.getIdToken().catch(() => null) : null;
+      return requestTutorChapter(profile, user?.uid ?? null, authToken);
+    })().then((generated) => {
       if (generated && !cancelled) setChapter(generated);
       else if (!cancelled) setChapter((current) => current ? { ...current, provenance: { source: 'fallback', failureReason: latestChapterGenerationFailure() } } : current);
     }).finally(() => { if (!cancelled) setChapterSettled(true); });
@@ -69,10 +72,11 @@ export default function ChildHomePage() {
     return () => { cancelled = true; };
   }, [chapter, user, authLoading, chapterSettled]);
 
-  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage)), [chapter, scenePackage]);
-
   const completedToday = Boolean(chapter && !authLoading && wasChapterCompleted(user?.uid ?? null, chapter.id));
   const entitlement = useEntitlement(chapter?.id ?? null);
+  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, undefined, {
+    childId: profile?.childId, entitlementSource: entitlement.subscribed === true ? 'subscription' : 'free',
+  })), [chapter, scenePackage, profile?.childId, entitlement.subscribed]);
   const forcedState = typeof window !== 'undefined' && process.env.NODE_ENV === 'development'
     ? new URLSearchParams(window.location.search).get('homeState') as DailyStateKind | null : null;
   const forcedOffline = typeof window !== 'undefined' && process.env.NODE_ENV === 'development'

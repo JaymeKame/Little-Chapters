@@ -305,10 +305,6 @@ export default function ReadPage() {
     startedAtRef.current = new Date().toISOString();
     sentenceResultsRef.current = [];
     interventionsRef.current = [];
-    // Unauthenticated early attempt (no uid yet — auth hasn't settled at
-    // mount) — in production this 401s and is swallowed, same as always;
-    // the auth-gated effect below does the real, correctly-staged fetch.
-    void requestTutorChapter(p, null).then((generated) => { if (generated) setChapter(generated); });
     return () => {
       disposedRef.current = true;
       sessionRef.current?.cancel();
@@ -422,7 +418,9 @@ export default function ReadPage() {
     if (phase === 'correction' && lastTelemetryPhaseRef.current !== 'correction') adventureTelemetryRef.current.count('correction');
     lastTelemetryPhaseRef.current = phase;
   }, [activeInteraction, phase]);
-  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, adventureTelemetryRef.current)), [chapter, scenePackage]);
+  useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, adventureTelemetryRef.current, {
+    childId: profile?.childId, entitlementSource: subscribed === true ? 'subscription' : 'free',
+  })), [chapter, scenePackage, profile?.childId, subscribed]);
 
   // Reuse the same flat story theme as Home; the controller prevents duplicate loops.
   // Owns theme for as long as this effect's chapter/profile identity holds —

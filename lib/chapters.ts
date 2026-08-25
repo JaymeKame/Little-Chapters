@@ -42,7 +42,7 @@ export interface Chapter {
 }
 
 export type ChapterSource = 'generated' | 'cached-generated' | 'fallback' | 'demo/static';
-export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string }
+export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string; entitlementSource?: 'free' | 'subscription' }
 
 const SETTINGS: Record<
   InterestId,

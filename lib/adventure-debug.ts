@@ -28,10 +28,12 @@ export class AdventureTelemetry {
   }
 }
 
-export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: ChapterScenePackage | null, session?: AdventureTelemetry) {
+export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: ChapterScenePackage | null, session?: AdventureTelemetry, context?: { childId?: string; entitlementSource?: 'free' | 'subscription' }) {
   const visual = visualProvenance(); const provider = audioSession.providerSnapshot();
   return {
-    chapterId: chapter?.id ?? null, chapterSource: chapter?.provenance?.source ?? 'fallback', generatedAt: chapter?.provenance?.generatedAt ?? null,
+    chapterId: chapter?.id ?? null, childId: context?.childId ?? null,
+    entitlementSource: chapter?.provenance?.entitlementSource ?? context?.entitlementSource ?? null,
+    storySource: chapter?.provenance?.source ?? 'fallback', chapterSource: chapter?.provenance?.source ?? 'fallback', generatedAt: chapter?.provenance?.generatedAt ?? null,
     visualPackageId: scenePackage ? `${scenePackage.chapterId}:v${scenePackage.visualBibleVersion}` : null,
     visualSource: visual.source, scenes: scenePackage?.scenes.map(({ sceneId, assetUrl }) => ({ sceneId, assetUrl })) ?? [],
     staticFallbackUsed: visual.source === 'approved-static-fallback', storyGenerationFailureReason: chapter?.provenance?.failureReason ?? latestChapterGenerationFailure() ?? null,

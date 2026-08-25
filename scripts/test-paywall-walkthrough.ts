@@ -37,6 +37,30 @@ async function main() {
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
+  let storedChapter: any = null;
+  let storedScenePackage: any = null;
+  let storyGenerations = 0;
+  let visualGenerations = 0;
+  let generationRequest: any = null;
+  await page.route('**/api/chapters/story*', async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') return route.fulfill({ status: storedChapter ? 200 : 404, contentType:'application/json', body:JSON.stringify(storedChapter ? { chapter:storedChapter, cache:'hit' } : { error:'CHAPTER_NOT_FOUND' }) });
+    generationRequest = request.postDataJSON(); storyGenerations += 1;
+    const profile = generationRequest.profile;
+    storedChapter = { id:generationRequest.chapterId, title:"Today's Chapter", character:profile.childName, companion:'Pip', setting:'a moonlit dog-friendly observatory', ambience:'space',
+      pages:[{text:`${profile.childName} found a shell.`,focusWords:['shell']},{text:'The shell lit a map.',focusWords:['map']},{text:'A ship came near.',focusWords:['ship']},{text:'The map led to the ship.',focusWords:['ship']},{text:'The ship rose into the stars.',focusWords:['stars']}],
+      cliffhanger:['The stars revealed a secret door.','Tomorrow…'],teaser:'The secret door opens tomorrow.',phonics:[{hint:'sh in shell',words:['shell','ship']}],
+      provenance:{source:'generated',entitlementSource:'free',generatedAt:'2026-08-25T00:00:00.000Z'} };
+    return route.fulfill({status:201,contentType:'application/json',body:JSON.stringify({chapter:storedChapter})});
+  });
+  await page.route('**/api/chapters/visuals*', async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') return route.fulfill({status:storedScenePackage ? 200 : 404,contentType:'application/json',body:JSON.stringify(storedScenePackage ? {scenePackage:storedScenePackage,cache:'hit'}:{error:'SCENE_PACKAGE_NOT_FOUND'})});
+    visualGenerations += 1; const chapter = request.postDataJSON().chapter;
+    storedScenePackage = {chapterId:chapter.id,visualBibleVersion:1,provider:'test-provider',generatedAt:'2026-08-25T00:00:00.000Z',generationLatencyMs:100,
+      scenes:[1,2,3,4].map((number)=>({sceneId:`scene-${number}`,assetUrl:'/images/scenes/bg-meadow-path-sunny-01.jpg',visualPurpose:'story',entities:[]}))};
+    return route.fulfill({status:201,contentType:'application/json',body:JSON.stringify({scenePackage:storedScenePackage,cache:'miss'})});
+  });
 
   page.on('console', (msg: any) => {
     if (msg.type() === 'error') console.log('  [browser console error]', msg.text());
@@ -61,6 +85,10 @@ async function main() {
     await page.goto(`${BASE_URL}/home`);
     await page.waitForSelector('button[aria-label="Play today’s adventure"]', { timeout: 15000 });
     ok('Home renders the unlocked Play action for a brand-new anonymous profile');
+    if (generationRequest?.profile?.childName === 'Robin' && generationRequest.profile.interests.length === 3 && typeof generationRequest.stage === 'number') ok('free chapter reaches personalized story generation with profile, interests, and reading stage');
+    else fail('free chapter did not carry complete personalization into generation');
+    if (storyGenerations === 1) ok('free chapter requests the real generated-story pipeline exactly once');
+    else fail('free chapter did not use the generated-story pipeline exactly once', JSON.stringify({storyGenerations}));
   }
 
   console.log('\n=== Test 2: full Reader regression — Home -> Read -> listening -> scoring -> correction -> success -> page change ===');
@@ -195,6 +223,9 @@ async function main() {
       fail('/unlock did not render expected paywall content', bodyText.slice(0, 200));
     }
   }
+
+  if (storyGenerations === 1 && visualGenerations === 1) ok('free Home → Read flow generated, then reused, the same durable story and visual package without regeneration');
+  else fail('navigation regenerated durable content', JSON.stringify({storyGenerations,visualGenerations}));
 
   await browser.close();
 

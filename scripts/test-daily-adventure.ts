@@ -6,6 +6,7 @@ import { buildSessionPlan } from '../lib/session-plan.ts';
 import { AdventureTelemetry, chapterDebugSnapshot } from '../lib/adventure-debug.ts';
 import { TUTOR_PERFORMANCE, tutorPurposeFor } from '../lib/audio-session.ts';
 import type { ChildProfile } from '../lib/profile.ts';
+import { decideChapterEntitlement } from '../lib/chapter-entitlement-policy.ts';
 
 const memory = new Map<string,string>();
 Object.defineProperty(globalThis, 'localStorage', { value: { getItem:(k:string)=>memory.get(k) ?? null, setItem:(k:string,v:string)=>memory.set(k,v), removeItem:(k:string)=>memory.delete(k), clear:()=>memory.clear() }, configurable:true });
@@ -16,17 +17,22 @@ const generated: Chapter = { ...chapterFor('ocean','Ari'), character:'Nova', com
 
 async function main() {
 const originalFetch = globalThis.fetch;
-let calls:string[] = [];
+let calls:string[] = []; let generationBody: { profile?: ChildProfile; stage?: unknown; recentlyMissedWords?: unknown; storySoFar?: unknown; skeletonId?: unknown } = {};
 globalThis.fetch = (async (_input, init) => { calls.push(init?.method ?? 'GET'); return new Response('{}',{status:503}); }) as typeof fetch;
 assert.equal(await requestTutorChapter(profile,'uid','token'), null, 'transient lookup failure returns graceful fallback without poisoning storage');
 assert.equal(memory.size, 0);
 calls = [];
 globalThis.fetch = (async (_input, init) => {
   calls.push(init?.method ?? 'GET');
+  if (init?.method === 'POST') generationBody = JSON.parse(String(init.body)) as typeof generationBody;
   return init?.method === 'GET' ? new Response('{}',{status:404}) : new Response(JSON.stringify({chapter:generated}),{status:201,headers:{'Content-Type':'application/json'}});
 }) as typeof fetch;
 assert.equal((await requestTutorChapter(profile,'uid','token'))?.character, 'Nova');
 assert.deepEqual(calls,['GET','POST']);
+assert.equal(generationBody.profile?.childName,'Ari');
+assert.deepEqual(generationBody.profile?.interests,['ocean']);
+assert.equal(typeof generationBody.stage,'number');
+assert.ok('recentlyMissedWords' in generationBody && 'storySoFar' in generationBody && 'skeletonId' in generationBody);
 calls = [];
 assert.equal((await requestTutorChapter(profile,'uid','token'))?.provenance?.source, 'cached-generated');
 assert.deepEqual(calls,[], 'refresh reuses the successful generated chapter');
@@ -40,6 +46,10 @@ assert.ok(builder.interactiveObjects.length >= 2);
 assert.equal(builder.interactiveObjects.map((part)=>part.label).join(''), builder.correctTarget);
 assert.equal(JSON.stringify(manifest).match(/Chug|Rex|Momo/g), null, 'daily engine has no fixed-character assumptions');
 assert.deepEqual(buildSessionPlan(generated,'Ari').map((beat)=>beat.kind), ['welcome','reading','sound-hunt','reading','prediction','reading','word-builder','reading','ending']);
+assert.equal(decideChapterEntitlement({chapterId:'today',subscribed:false,consumedFreeChapterId:null}),'free');
+assert.equal(decideChapterEntitlement({chapterId:'today',subscribed:true,consumedFreeChapterId:null}),'subscription');
+assert.equal(decideChapterEntitlement({chapterId:'tomorrow',subscribed:false,consumedFreeChapterId:'today'}),null);
+assert.equal(decideChapterEntitlement({chapterId:'today',existingSource:'free',subscribed:false,consumedFreeChapterId:'today'}),'free');
 
 assert.equal(tutorPurposeFor('sound-hunt-retry'),'phoneme-model');
 assert.equal(tutorPurposeFor('chapter-ending'),'cliffhanger');
@@ -54,7 +64,16 @@ assert.ok(chapterDebugSnapshot(generated,null,telemetry).chapterSource === 'gene
 
 const read = readFileSync('app/read/page.tsx','utf8');
 const storyRoute = readFileSync('app/api/chapters/story/route.ts','utf8');
+const completionRoute = readFileSync('app/api/progress/complete-session/route.ts','utf8');
+const visualRoute = readFileSync('app/api/chapters/visuals/route.ts','utf8');
 assert.doesNotMatch(storyRoute,/petName: ['"]Momo['"]/);
+assert.doesNotMatch(storyRoute,/SUBSCRIPTION_REQUIRED/);
+assert.match(storyRoute,/resolveChapterEntitlement/);
+assert.match(read,/appendChapterHistoryEntry/);
+assert.match(read,/grownupHandoff=1/);
+assert.match(completionRoute,/consumeFreeChapterIfApplicable\(auth\.uid, body\.sessionInput\.chapterId\)/);
+assert.match(visualRoute,/ownedDailyChapter/);
+assert.doesNotMatch(visualRoute,/hasActiveSubscription/);
 assert.doesNotMatch(read,/Keep the story going/);
 assert.doesNotMatch(read,/Correct!/);
 assert.match(read,/setTimeout\(continueAfterInteraction/);

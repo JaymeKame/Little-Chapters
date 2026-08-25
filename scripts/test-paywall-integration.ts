@@ -139,12 +139,12 @@ async function main() {
     check('a chapter the child already completed is never re-locked, regardless of subscription state', /alreadyOwned/.test(useEntitlement) && /wasChapterCompleted/.test(useEntitlement));
   }
 
-  console.log('\n=== Static source checks: paid AI generation enforces server-side (fails CLOSED) ===');
+  console.log('\n=== Static source checks: entitled free and paid chapters share generation ===');
   {
     const storyRoute = src('app/api/chapters/story/route.ts');
-    check('imports hasActiveSubscription from lib/entitlement-server', storyRoute.includes("from '@/lib/entitlement-server'"));
-    check('returns 402 SUBSCRIPTION_REQUIRED for a non-anonymous, unsubscribed uid', /SUBSCRIPTION_REQUIRED/.test(storyRoute) && /status:\s*402/.test(storyRoute));
-    check('exempts the anonymous stand-in uid from the subscription check (demo arc has no server generation to gate)', /auth\.uid !== 'anonymous'/.test(storyRoute));
+    check('story generation resolves a chapter entitlement rather than requiring a subscription', /resolveChapterEntitlement/.test(storyRoute) && !/SUBSCRIPTION_REQUIRED/.test(storyRoute));
+    check('a caller with neither free nor subscription entitlement is still rejected server-side', /CHAPTER_ENTITLEMENT_REQUIRED/.test(storyRoute) && /status:\s*402/.test(storyRoute));
+    check('the stored chapter records which entitlement admitted the same generation pipeline', /entitlementSource/.test(storyRoute));
   }
 
   console.log('\n=== Static source checks: Stripe ownership verification is not bypassable ===');
