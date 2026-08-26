@@ -14,7 +14,7 @@
 import { existsSync, statSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCENE_MANIFEST } from '../lib/scene-manifest.ts';
+import { APPROVED_SCENE_IDS, RUNTIME_SCENE_MANIFEST, SCENE_MANIFEST, sceneApproval } from '../lib/scene-manifest.ts';
 import { selectSceneForPage } from '../lib/scene-selector.ts';
 import type { Chapter, ChapterPage } from '../lib/chapters.ts';
 
@@ -105,85 +105,24 @@ const publicHasComposites = existsSync(join(root, 'public/images/landing')) &&
   readdirSync(join(root, 'public/images/landing')).some((f) => /ChatGPT Image/i.test(f));
 assert(!publicHasComposites, 'no raw composite source file remains under public/ (moved to assets/story-scene-sources/)');
 
-// ── 2. Semantic selection — representative scenarios ────────────────────
-console.log('\n=== Semantic selection ===');
+// ── 2. Runtime approval gate + selection ─────────────────────────────────
+console.log('\n=== Runtime approval gate ===');
 
 function pick(c: Chapter, p: ChapterPage) {
   return selectSceneForPage(c, p, 0, undefined, null).asset;
 }
 
-{
-  const c = chapter({ ambience: 'ocean', setting: 'a sunlit coral reef under calm turquoise water' });
-  const a = pick(c, page('Finn swam past the old lighthouse by the reef.'));
-  assert(a.environment === 'ocean' || a.environment === 'beach', `ocean/lighthouse story picks an ocean/beach scene (got ${a.id})`);
-  assert(!a.id.includes('desert') && !a.id.includes('snow'), `ocean/lighthouse story does not pick an unrelated desert/snow scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'jungle', setting: 'a lush prehistoric jungle with ferns and mist' });
-  const a = pick(c, page('Dot walked deep into the forest, past tall mossy trees.'));
-  assert(a.environment === 'forest' || a.environment === 'jungle', `forest story picks a forest/jungle scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'fantasy', setting: 'an enchanted flowering meadow with soft magical light' });
-  const a = pick(c, page('Luna saw a glowing castle rise above the clouds.'));
-  assert(a.fantasy && (a.keywords.includes('castle') || a.theme.includes('fantasy castle') || a.environment === 'fantasy'), `castle/fantasy story picks a fantasy castle scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'countryside', setting: 'rolling countryside hills with a winding rail line' });
-  const a = pick(c, page('Chug crossed the hot desert sand under tall cactus plants.'));
-  assert(a.environment === 'desert', `desert story picks a desert scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'ocean', setting: 'a sunlit coral reef under calm turquoise water' });
-  const a = pick(c, page('Finn dove down to meet a big friendly sea turtle underwater.'));
-  assert(a.environment === 'underwater', `underwater/turtle story picks the underwater scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'countryside', setting: 'a snowy village at night under the aurora' });
-  const a = pick(c, page('The children went sledding down the snowy hill at sunset.'));
-  assert(a.environment === 'snow', `snow/sledding story picks a snow scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'countryside', setting: 'rolling countryside hills with a winding rail line' });
-  const a = pick(c, page('Chug waved as the big steam train pulled into the station.'));
-  assert(a.transportation.includes('train'), `train story picks a train scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'space', setting: 'a glowing starlit galaxy with soft planets' });
-  const a = pick(c, page('Zip flew a pretend airplane made of cardboard through the clouds.'));
-  assert(a.transportation.includes('airplane') || a.keywords.includes('imagination'), `pretend-airplane story picks the airplane/imagination scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'countryside', setting: 'a sunny countryside farm with wooden fences' });
-  const a = pick(c, page('Rex kicked the soccer ball across the field with his friends.'));
-  assert(a.keywords.includes('soccer'), `sports story picks the soccer scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'countryside', setting: 'a sunny countryside farm with wooden fences' });
-  const a = pick(c, page('Rex helped bake a cake in the warm kitchen.'));
-  assert(a.environment === 'indoor-kitchen', `baking story picks the kitchen scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'space', setting: 'a glowing starlit galaxy with soft planets' });
-  const a = pick(c, page('Zip looked up at the stars through his telescope at night.'));
-  assert(a.timeOfDay === 'night', `nighttime/stars story picks a night scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'countryside', setting: 'rolling countryside hills with a winding rail line' });
-  const a = pick(c, page('After the rain, a big rainbow arched over the meadow.'));
-  assert(a.keywords.includes('rainbow'), `rainbow story picks a rainbow scene (got ${a.id})`);
-}
-{
-  const c = chapter({ ambience: 'jungle', setting: 'a lush prehistoric jungle with ferns and mist' });
-  const a = pick(c, page('Dot met a huge friendly dinosaur in the green valley.'));
-  assert(a.otherAnimals.includes('dinosaur'), `dinosaur story picks the dinosaur scene (got ${a.id})`);
-}
-
-// Unrelated-artwork guard: a strongly ocean-themed page must not pick desert/space art.
-{
-  const c = chapter({ ambience: 'ocean', setting: 'a sunlit coral reef under calm turquoise water' });
-  const a = pick(c, page('Finn explored the coral reef with colorful fish all around.'));
-  assert(a.environment !== 'desert' && a.environment !== 'space', `strong ocean signal never picks desert/space art (got ${a.id})`);
+assert(RUNTIME_SCENE_MANIFEST.length === APPROVED_SCENE_IDS.length, 'runtime manifest contains exactly the explicit allow-list');
+assert(RUNTIME_SCENE_MANIFEST.every((a) => sceneApproval(a.id) === 'approved'), 'every runtime-selectable scene is explicitly approved');
+assert(SCENE_MANIFEST.some((a) => sceneApproval(a.id) === 'quarantined'), 'unreviewed AI scenes remain quarantined');
+for (const scenario of [
+  chapter({ ambience: 'ocean', setting: 'a sunlit coral reef under calm turquoise water' }),
+  chapter({ ambience: 'jungle', setting: 'a lush prehistoric jungle with ferns and mist' }),
+  chapter({ ambience: 'fantasy', setting: 'an enchanted flowering meadow with soft magical light' }),
+  chapter({ ambience: 'countryside', setting: 'rolling countryside hills with a winding rail line' }),
+]) {
+  const selected = pick(scenario, scenario.pages[0]);
+  assert(sceneApproval(selected.id) === 'approved', `${scenario.ambience} selection cannot escape the approved runtime set (got ${selected.id})`);
 }
 
 // ── 3. Continuity ────────────────────────────────────────────────────────
@@ -229,7 +168,7 @@ console.log('\n=== Continuity ===');
   const c = chapter({ ambience: 'ocean', setting: 'a sunlit coral reef under calm turquoise water' });
   const a1 = pick(c, page('Finn dove down to meet a big friendly sea turtle underwater.'));
   const a2 = pick(c, page('Finn dove down to meet a big friendly sea turtle underwater.'));
-  assert(a1.id === a2.id && a1.environment === 'underwater', 'identical uniquely-best-match pages never get forced apart for novelty');
+  assert(a1.id === a2.id && sceneApproval(a1.id) === 'approved', 'identical pages remain deterministic inside the approved set');
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

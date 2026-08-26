@@ -5,6 +5,8 @@ import { assignSlots } from '@/reading-tutor/src/slots';
 import { requireReadingUser } from '@/lib/route-auth';
 import { hasActiveSubscription } from '@/lib/entitlement-server';
 import { type ChildProfile } from '@/lib/profile';
+import { adminDb } from '@/lib/firebase-admin';
+import { adaptTutorDraft, type Chapter } from '@/lib/chapters';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,6 +17,25 @@ export const dynamic = 'force-dynamic';
 const GENERATIONS_PER_HOUR = 10;
 const WINDOW_MS = 60 * 60 * 1000;
 const grants = new Map<string, { windowStart: number; count: number }>();
+
+function storyRef(chapterId: string) {
+  return adminDb().collection('dailyChapters').doc(Buffer.from(chapterId).toString('base64url'));
+}
+
+const STORY_COMPANION_NAMES = ['Pip','Nori','Tavi','Bram','Kiko','Sula','Ollie','Zia'];
+function companionFor(chapterId: string): string {
+  let hash = 0; for (const char of chapterId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return STORY_COMPANION_NAMES[hash % STORY_COMPANION_NAMES.length];
+}
+
+export async function GET(request: NextRequest) {
+  const auth = await requireReadingUser(request); if (!auth.ok) return auth.response;
+  const chapterId = request.nextUrl.searchParams.get('chapterId');
+  if (!chapterId || chapterId.length > 220) return NextResponse.json({ error: 'INVALID_CHAPTER_ID' }, { status: 400 });
+  const stored = await storyRef(chapterId).get();
+  if (!stored.exists || stored.data()?.ownerUid !== auth.uid) return NextResponse.json({ error: 'CHAPTER_NOT_FOUND' }, { status: 404 });
+  return NextResponse.json({ chapter: stored.data()?.chapter as Chapter, cache: 'hit' });
+}
 
 function overLimit(key: string): boolean {
   const now = Date.now();
@@ -52,6 +73,7 @@ export async function POST(request: NextRequest) {
   }
   try {
     const body = await request.json() as {
+      chapterId?: string;
       profile?: ChildProfile;
       stage?: number;
       skeletonId?: string;
@@ -59,7 +81,7 @@ export async function POST(request: NextRequest) {
       storySoFar?: string;
     };
     const profile = body.profile;
-    if (!profile?.childName || !Array.isArray(profile.interests)) {
+    if (!profile?.childName || !Array.isArray(profile.interests) || !body.chapterId || body.chapterId.length > 220) {
       return NextResponse.json({ error: 'Invalid profile' }, { status: 400 });
     }
     const stage = Math.min(10, Math.max(1, Math.round(body.stage || 1)));
@@ -86,9 +108,10 @@ export async function POST(request: NextRequest) {
         return json.choices?.[0]?.message?.content ?? '';
       },
     };
+    const companionName = companionFor(body.chapterId);
     const result = await generateChapter({
       stage,
-      cast: { childName: profile.childName, petName: 'Momo' }, // Momo the reading pet, not the child twice
+      cast: { childName: profile.childName, petName: companionName },
       interests: profile.interests,
       storySoFar,
       recentlyMissedWords,
@@ -101,7 +124,12 @@ export async function POST(request: NextRequest) {
     }
     // slots go back too: the client's parent report must name the words the
     // story was actually generated with, not a fresh re-roll.
-    return NextResponse.json({ draft: result.draft, skeleton, slots });
+    const adapted = adaptTutorDraft(profile, result.draft, skeleton, slots, stage);
+    if (!adapted) return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
+    const chapter = { ...adapted, character: profile.childName, companion: companionName };
+    const payload = { draft: result.draft, skeleton, slots, chapter };
+    await storyRef(body.chapterId).set({ chapter, ownerUid: auth.uid, generatedAt: new Date().toISOString() });
+    return NextResponse.json(payload, { status: 201 });
   } catch (error) {
     console.error('Tutor story generation failed:', error);
     return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
