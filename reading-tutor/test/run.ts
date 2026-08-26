@@ -15,7 +15,14 @@ import {
 } from '../src/slots.js';
 import { allowedWordsForStage, CONTENT_BLOCKLIST, HUMAN_NOUNS } from '../content/stages.js';
 import type { ChildProgress, SentenceResult, SessionInput, WordSignal } from '../src/types.js';
-import { adaptTutorDraft, resolveGenerationStage, resolveGenerationContext, stageForAge, chapterIdFor } from '../../lib/chapters.ts';
+import { adaptTutorDraft, resolveGenerationStage, resolveGenerationContext, stageForAge, chapterIdFor, chapterFor, requestTutorChapter, chapterDebugInfo } from '../../lib/chapters.ts';
+import { chapterIdForDay, todayLocal, isValidDay } from '../../lib/chapter-id.ts';
+import { appendChapterHistoryEntry, wasChapterCompleted, loadChapterHistoryLocal } from '../../lib/chapter-history.ts';
+import { freeChapterSpent, chaptersCompleted } from '../../lib/entitlement.ts';
+import { fetchRemoteProfile, mirrorProfileRemote } from '../../lib/profile.ts';
+import { generateStoryDraft, isStoryGenerationConfigured } from '../../lib/story-generator.server.ts';
+import { isAuthoritativeChapterRecord, type PersistedChapterRecord } from '../../lib/chapter-store-admin.ts';
+import { resolveRootEntry } from '../../lib/root-entry.ts';
 import { toWordSignals, toSentenceResult } from '../../lib/reading-signal-adapter.ts';
 import { interpretSessionWithIntervention, type SessionIntervention } from '../../lib/reading-session-interpreter.ts';
 import { HELP_LADDER, rungLine, graphemeCueFor, segmentWord } from '../../lib/help-ladder.ts';
@@ -48,6 +55,17 @@ if (typeof (globalThis as unknown as { localStorage?: unknown }).localStorage ==
     key: (i: number) => [...store.keys()][i] ?? null,
     get length() { return store.size; },
   } as Storage;
+}
+
+// lib/entitlement.ts's chaptersCompleted()/freeChapterSpent() guard on
+// `typeof window === 'undefined'` for SSR safety — a real browser always has
+// `window`, but bare Node/tsx does not, so without this every call here
+// silently short-circuits to 0/false regardless of what localStorage holds.
+// Aliasing to globalThis (not a full DOM shim — nothing here needs more than
+// the truthy `typeof window !== 'undefined'` check to pass) exercises the
+// real functions' actual logic instead of their SSR fallback.
+if (typeof (globalThis as unknown as { window?: unknown }).window === 'undefined') {
+  (globalThis as unknown as { window: unknown }).window = globalThis;
 }
 
 let pass = 0, fail = 0;
@@ -1145,12 +1163,294 @@ section('Adaptive loop - API route forwards personalization inputs (static check
   // Mirrors the previous task's "ownership derived from verified token"
   // static check: the live route 503s immediately without an API key, so
   // this proves the WIRING exists in source rather than invoking it.
+  //
+  // The route itself now delegates the actual OpenAI call to
+  // lib/story-generator.server.ts's generateStoryDraft() — shared with the
+  // new persisted app/api/chapters/today/route.ts so the two routes cannot
+  // silently drift on prompt construction — so this checks two hops: the
+  // route forwards recentlyMissedWords/storySoFar into generateStoryDraft(),
+  // and generateStoryDraft() itself forwards them into generateChapter().
   const fs = await import('node:fs');
   const routeSrc = fs.readFileSync(new URL('../../app/api/chapters/story/route.ts', import.meta.url), 'utf8');
   ok(routeSrc.includes('body.recentlyMissedWords'), 'the route reads recentlyMissedWords from the request body');
   ok(routeSrc.includes('body.storySoFar'), 'and storySoFar');
-  ok(/recentlyMissedWords,?\s*\n?\s*(slots|skeleton)|recentlyMissedWords\s*,/.test(routeSrc) && routeSrc.includes('recentlyMissedWords') && routeSrc.includes('generateChapter'),
-     'and forwards them into generateChapter(), not just parses and discards them');
+  ok(
+    routeSrc.includes('generateStoryDraft') && routeSrc.includes('recentlyMissedWords,') && routeSrc.includes('storySoFar,'),
+    'and forwards them into generateStoryDraft(), not just parses and discards them',
+  );
+  const generatorSrc = fs.readFileSync(new URL('../../lib/story-generator.server.ts', import.meta.url), 'utf8');
+  ok(
+    generatorSrc.includes('recentlyMissedWords') && generatorSrc.includes('storySoFar') && generatorSrc.includes('generateChapter('),
+    'and generateStoryDraft() itself forwards them into the real generateChapter(), not just parses and discards them',
+  );
+}
+
+section('Chapter lifecycle - identity, idempotency, generation-source observability (the "returning subscriber" task)');
+{
+  const profile: ChildProfile = { childId: 'lifecycle-child-1', childName: 'Ava', age: 6, interests: ['dogs'], avatar: 'girl', createdAt: Date.now() };
+
+  // --- Acceptance 1: first visit gets a free chapter -----------------------
+  ok(loadChapterHistoryLocal('lifecycle-acc-1').length === 0, 'a brand-new uid has no chapter history yet');
+  ok(!freeChapterSpent('lifecycle-acc-1'), 'the free chapter is not yet spent');
+  const firstChapter = chapterFor(profile.interests[0], profile.childName);
+  ok(Array.isArray(firstChapter.pages) && firstChapter.pages.length > 0, 'chapterFor() returns a real, page-bearing chapter with no account/subscription needed');
+
+  // --- Acceptance 4: same child + same day -> same actual chapter ----------
+  const chapterA = chapterFor(profile.interests[0], profile.childName);
+  const chapterB = chapterFor(profile.interests[0], profile.childName);
+  ok(JSON.stringify(chapterA) === JSON.stringify(chapterB), 'two independent chapterFor() calls for the same child today are identical (deep equal)');
+  ok(chapterIdFor(profile.interests[0], profile.childName) === chapterIdFor(profile.interests[0], profile.childName), 'chapterIdFor() is stable across calls today');
+
+  // --- Acceptance 5/7: completing/rereading/refreshing never regenerates ---
+  const uid5 = 'lifecycle-acc-5';
+  const chapter5 = chapterFor(profile.interests[0], profile.childName);
+  ok(!wasChapterCompleted(uid5, chapter5.id), 'not yet completed');
+  appendChapterHistoryEntry(uid5, { date: todayLocal(), chapterId: chapter5.id, childName: profile.childName, newWords: ['dog'], practiced: [], teaser: 'more tomorrow' });
+  ok(wasChapterCompleted(uid5, chapter5.id), 'completion is recorded');
+  ok(chapterIdFor(profile.interests[0], profile.childName) === chapter5.id, 'completing the chapter does not change what "today\'s chapter" resolves to (a reread gets the SAME chapter)');
+  appendChapterHistoryEntry(uid5, { date: todayLocal(), chapterId: chapter5.id, childName: profile.childName, newWords: ['dog'], practiced: [], teaser: 'more tomorrow' });
+  ok(loadChapterHistoryLocal(uid5).filter((e) => e.chapterId === chapter5.id).length === 1, 'a duplicate completion of the SAME chapter does not create a second history entry');
+
+  // --- Acceptance 6/7: a new calendar day creates a new chapter; the SAME
+  // new day is stable across repeated reads ---------------------------------
+  const day1Id = chapterIdForDay('dogs', 'Ava', '2026-08-22');
+  const day2Id = chapterIdForDay('dogs', 'Ava', '2026-08-23');
+  ok(day1Id !== day2Id, 'two different calendar days produce two different chapter ids for the same child');
+  ok(chapterIdForDay('dogs', 'Ava', '2026-08-23') === day2Id, 'the SAME day produces the SAME id (multiple refreshes next day read the same persisted chapter)');
+  ok(isValidDay('2026-08-22'), 'a real YYYY-MM-DD string validates');
+  ok(!isValidDay('20260822'), 'a bare date-ish string with no dashes is rejected');
+  ok(!isValidDay(undefined), 'a non-string is rejected');
+  ok(isValidDay(todayLocal()), 'todayLocal() matches the YYYY-MM-DD shape isValidDay() itself requires');
+
+  // --- Acceptance 8: generation source is diagnosable -----------------------
+  ok(chapterDebugInfo() === null, 'chapterDebugInfo() starts with nothing recorded');
+  // No server reachable in this sandbox (relative fetch URL, no Next.js
+  // runtime) — requestTutorChapter's fetch fails, is caught, and the caller
+  // correctly falls back to null, exactly as a real deployment does when
+  // OPENAI_API_KEY is unset or the model call fails. The point under test is
+  // that the OUTCOME is recorded, not silently swallowed.
+  const generated = await requestTutorChapter(profile, null, null);
+  ok(generated === null, 'requestTutorChapter() resolves to null (never throws) when generation is unreachable/unconfigured');
+  const diag = chapterDebugInfo();
+  ok(diag?.source === 'fallback', 'chapterDebugInfo() now reports source: fallback for the just-attempted chapter', JSON.stringify(diag));
+  ok(typeof diag?.chapterId === 'string' && typeof diag?.stage === 'number', 'the diagnostic carries only id/stage/source facts, nothing prompt- or credential-shaped');
+
+  ok(!process.env.OPENAI_API_KEY, 'OPENAI_API_KEY is unset in this sandbox (precondition)');
+  ok(!isStoryGenerationConfigured(), 'isStoryGenerationConfigured() correctly reports false');
+  const draft = await generateStoryDraft({ childName: 'Ava', interests: ['dogs'], stage: 3 });
+  ok(draft === null, 'generateStoryDraft() resolves to null rather than throwing when OPENAI_API_KEY is unset');
+
+  // --- Acceptance 9: inactive-entitlement subscriber keeps history/profile,
+  // gets gated only on the NEXT unread chapter -------------------------------
+  const uid9 = 'lifecycle-acc-9';
+  const ownedChapter = chapterFor(profile.interests[0], profile.childName);
+  appendChapterHistoryEntry(uid9, { date: todayLocal(), chapterId: ownedChapter.id, childName: profile.childName, newWords: [], practiced: [], teaser: '' });
+  const spent9 = freeChapterSpent(uid9);
+  const lockedForOwnedChapter = spent9 && !wasChapterCompleted(uid9, ownedChapter.id); // subscribed === false, per use-entitlement.ts's `locked` formula
+  ok(chaptersCompleted(uid9) > 0, 'history/profile survive an inactive subscription (never cleared by this gate)');
+  ok(!lockedForOwnedChapter, 'a chapter the child already finished stays free/unlocked even without an active subscription');
+  const unreadChapterId = 'dogs-ava-2099-01-01'; // a chapter this uid has never completed
+  const lockedForNextChapter = spent9 && !wasChapterCompleted(uid9, unreadChapterId);
+  ok(lockedForNextChapter, 'the NEXT, unread chapter is correctly gated for an inactive subscriber');
+
+  // --- Remote profile mirror: never throws when unreachable -----------------
+  let profileFetchThrew = false;
+  let remoteProfile: unknown;
+  try {
+    remoteProfile = await fetchRemoteProfile('fake-token');
+  } catch {
+    profileFetchThrew = true;
+  }
+  ok(!profileFetchThrew && remoteProfile === null, 'fetchRemoteProfile() resolves to null rather than throwing when /api/profile is unreachable');
+  let mirrorThrew = false;
+  try {
+    mirrorProfileRemote('fake-token', profile);
+  } catch {
+    mirrorThrew = true;
+  }
+  ok(!mirrorThrew, 'mirrorProfileRemote() is fire-and-forget — never throws synchronously even when unreachable');
+}
+
+section('Chapter lifecycle - static checks (returning-user boot flow, persisted chapter store, /api/profile) — no OPENAI_API_KEY/FIREBASE_SERVICE_ACCOUNT in this environment');
+{
+  const fs = await import('node:fs');
+  const read = (path: string) => fs.readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
+
+  for (const page of ['app/home/page.tsx', 'app/read/page.tsx']) {
+    const s = read(page);
+    ok(/if \(authLoading\) return;/.test(s), `${page}: the profile-boot effect is gated on authLoading (no longer bounces to '/' before auth settles)`);
+    ok(s.includes('fetchRemoteProfile') && s.includes('!user.isAnonymous'), `${page}: attempts a remote profile restore for a real signed-in, non-anonymous uid before giving up`);
+    ok(s.includes('saveProfile(remote)'), `${page}: a restored remote profile is adopted locally so the next load is instant`);
+    ok(s.includes("router.replace('/')"), `${page}: only falls back to '/' after both local and remote checks — never unconditionally on mount`);
+    ok(s.includes("/unlock'"), `${page}: routes a locked chapter to /unlock`);
+    ok(
+      !s.includes("push('/register')") && !s.includes("push('/setup')") && !s.includes("replace('/register')") && !s.includes("replace('/setup')"),
+      `${page}: never routes a locked/returning-subscriber path to /register or /setup`,
+    );
+  }
+
+  const homeSrc = read('app/home/page.tsx');
+  ok(
+    /const authToken = user \? await user\.getIdToken\(\)/.test(homeSrc) && /requestTutorChapter\(profile, uid, authToken\)/.test(homeSrc),
+    'Home awaits an ID token before calling requestTutorChapter (previously called with no token at all, so it always 401d server-side in production)',
+  );
+  ok(homeSrc.includes('__chapterDebug') && homeSrc.includes('chapterDebugInfo'), 'Home wires window.__chapterDebug for live generation-source observability');
+
+  const storeSrc = read('lib/chapter-store-admin.ts');
+  ok(
+    /collection\('children'\)\.doc\(childId\)/.test(storeSrc) && /collection\('chapters'\)\.doc\(day\)/.test(storeSrc),
+    'lib/chapter-store-admin.ts partitions by uid -> children/{childId} -> chapters/{day}, matching the requested uid+childId+day key',
+  );
+  ok(storeSrc.indexOf('existing.exists') < storeSrc.indexOf('await generate()'), 'get-or-create checks for an existing record BEFORE ever calling generate()');
+  ok(
+    /runTransaction/.test(storeSrc) && /tx\.get\(ref\)/.test(storeSrc) && storeSrc.indexOf('tx.get(ref)') < storeSrc.indexOf('tx.set(ref'),
+    're-checks existence INSIDE the transaction right before writing (a losing racer never overwrites the winner)',
+  );
+
+  const todaySrc = read('app/api/chapters/today/route.ts');
+  ok(todaySrc.includes('resolveChapterEntitlement'), '/api/chapters/today resolves the shared free-or-subscription chapter entitlement');
+  ok(
+    /if \(!entitlementSource\)/.test(todaySrc) && todaySrc.includes('CHAPTER_ENTITLEMENT_REQUIRED'),
+    '/api/chapters/today refuses generation only when neither the free chapter nor a subscription admits the caller',
+  );
+  ok(todaySrc.includes('loadOrCreateProgress') && todaySrc.includes('progress.stage'), 'stage is resolved from the SERVER-persisted ChildProgress, not trusted from the client body');
+  ok(todaySrc.includes('isValidDay'), 'day is validated before being used as a Firestore document id');
+  ok(todaySrc.includes('overLimit') && todaySrc.includes('RATE_LIMITED'), 'rate-limited the same way /api/chapters/story is');
+
+  const profileRouteSrc = read('app/api/profile/route.ts');
+  ok((profileRouteSrc.match(/requireReadingUser\(request\)/g) ?? []).length === 2, '/api/profile uses requireReadingUser (verified Firebase ID token) for both GET and POST');
+  ok(!/body\??\.uid/.test(profileRouteSrc), '/api/profile never reads a uid out of the request body');
+}
+
+section('commercial-v1 fix A — a fallback chapter is never persisted as the permanent daily chapter');
+{
+  const day = '2026-08-24';
+  const base = { day, chapterId: 'dogs-ava-2026-08-24', stage: 3, createdAt: new Date().toISOString() };
+  const noRecord: PersistedChapterRecord | null = null;
+  const fallbackRecord: PersistedChapterRecord = { ...base, source: 'fallback' };
+  const generatedRecord: PersistedChapterRecord = { ...base, source: 'generated', draft: { title: 't', character: 'c', setting: 's', pages: [] } as never };
+
+  ok(!isAuthoritativeChapterRecord(noRecord), 'no record yet is NOT authoritative — get-or-create must attempt generation');
+  ok(!isAuthoritativeChapterRecord(undefined), 'undefined is NOT authoritative either (same as no record)');
+  ok(!isAuthoritativeChapterRecord(fallbackRecord), "a persisted 'fallback' record is NOT authoritative — a later request must retry generation, not accept the fallback as final");
+  ok(isAuthoritativeChapterRecord(generatedRecord), "a persisted 'generated' record IS authoritative — a later request must NOT regenerate");
+
+  const fs = await import('node:fs');
+  const storeSrc = fs.readFileSync(new URL('../../lib/chapter-store-admin.ts', import.meta.url), 'utf8');
+  ok(
+    storeSrc.includes("generated.source !== 'generated'") && /return\s*\{[\s\S]{0,120}created:\s*false/.test(storeSrc.slice(storeSrc.indexOf("generated.source !== 'generated'"))),
+    'a fallback generation result is returned to the caller WITHOUT ever reaching tx.set (never persisted)',
+  );
+  ok(
+    storeSrc.indexOf("generated.source !== 'generated'") < storeSrc.indexOf('runTransaction'),
+    'the fallback short-circuit happens BEFORE the transaction that would persist a record — a fallback can never reach tx.set',
+  );
+  ok(
+    (storeSrc.match(/if \(isAuthoritativeChapterRecord\(/g) ?? []).length === 2,
+    'both the fast-path existence check AND the in-transaction re-check gate on isAuthoritativeChapterRecord — no path short-circuits on a stale fallback record',
+  );
+}
+
+section('commercial-v1 fix B — anonymous returning-user lifecycle (resolveRootEntry)');
+{
+  async function resolve(options: { authenticated: boolean; local?: object | null; remote?: object | null }) {
+    let saved: object | null = null;
+    let remoteCalls = 0;
+    const destination = await resolveRootEntry({
+      isAuthenticated: options.authenticated,
+      loadLocalProfile: () => options.local ?? null,
+      fetchRemoteProfile: async () => {
+        remoteCalls++;
+        return options.remote ?? null;
+      },
+      saveLocalProfile: (profile) => {
+        saved = profile;
+      },
+    });
+    return { destination, saved, remoteCalls };
+  }
+
+  const brandNew = await resolve({ authenticated: false });
+  ok(brandNew.destination === 'landing', 'a truly brand-new anonymous visitor (no local profile) still sees the acquisition landing page');
+  ok(brandNew.remoteCalls === 0, 'a brand-new visitor never attempts a remote profile fetch');
+
+  const returningAnonymous = await resolve({ authenticated: false, local: { childId: 'anon-child' } });
+  ok(
+    returningAnonymous.destination === '/home',
+    'FIX B: an anonymous parent who already completed Setup goes straight to /home on return — not the acquisition landing page, merely because isAuthenticated is false',
+  );
+  ok(returningAnonymous.remoteCalls === 0, 'the anonymous-with-local-profile path never attempts (or needs) a remote fetch — no cross-device anonymous identity recovery is manufactured');
+
+  const registeredWithLocal = await resolve({ authenticated: true, local: { childId: 'registered-child' } });
+  ok(registeredWithLocal.destination === '/home', 'existing behavior preserved: a registered user with a local profile still goes to /home');
+
+  const remoteProfile = { childId: 'remote-child' };
+  const registeredRemoteOnly = await resolve({ authenticated: true, remote: remoteProfile });
+  ok(registeredRemoteOnly.destination === '/home', 'existing behavior preserved: registered-user remote-profile restoration still works');
+  ok(registeredRemoteOnly.saved === remoteProfile, 'existing behavior preserved: a restored remote profile is still adopted locally');
+
+  const registeredNoProfile = await resolve({ authenticated: true });
+  ok(registeredNoProfile.destination === '/setup', 'existing behavior preserved: a registered user with truly no profile anywhere still goes to /setup');
+
+  const anonymousNoProfileEver = await resolve({ authenticated: false, remote: { childId: 'should-never-be-fetched' } });
+  ok(
+    anonymousNoProfileEver.destination === 'landing' && anonymousNoProfileEver.remoteCalls === 0,
+    'an unauthenticated visitor never triggers a remote fetch even if one would hypothetically return something — no cross-device anonymous recovery, by construction',
+  );
+}
+
+section('commercial-v1 fix B — /setup can never silently overwrite an existing valid profile (static check, no DOM harness in this environment)');
+{
+  const fs = await import('node:fs');
+  const setupSrc = fs.readFileSync(new URL('../../app/setup/page.tsx', import.meta.url), 'utf8');
+  ok(setupSrc.includes('loadProfile'), '/setup imports loadProfile to check for an existing profile');
+  ok(
+    /useEffect\(\(\) => \{\s*if \(loadProfile\(\)\)/.test(setupSrc.replace(/\s+/g, ' ')),
+    '/setup checks loadProfile() in a mount effect, before the form can be interacted with',
+  );
+  ok(
+    setupSrc.includes("router.replace('/home')"),
+    "/setup redirects an existing-profile visitor straight to /home instead of rendering onboarding over their profile",
+  );
+  ok(
+    /if \(checkingExisting\) return <div className="screen" \/>;/.test(setupSrc),
+    '/setup renders a neutral loading state (not the form) while the existing-profile check is still in flight',
+  );
+  ok(
+    setupSrc.indexOf('useEffect') < setupSrc.indexOf('if (checkingExisting)'),
+    'the existing-profile guard (useEffect) runs before the loading-state short-circuit it controls',
+  );
+}
+
+section('commercial-v1 fix C — registration-time profile mirror (static check: no Firebase web config in this environment)');
+{
+  const fs = await import('node:fs');
+  const authSrc = fs.readFileSync(new URL('../../components/AuthProvider.tsx', import.meta.url), 'utf8');
+  ok(authSrc.includes('function mirrorLocalProfile'), 'AuthProvider defines a helper that mirrors the local profile immediately on a successful auth transition');
+  ok(
+    /function mirrorLocalProfile\(user: User\): void \{\s*const profile = loadProfile\(\);/.test(authSrc.replace(/\s+/g, ' ')),
+    'mirrorLocalProfile() reads the SAME loadProfile() the anonymous session already had — it mirrors the existing child, never creates a new one',
+  );
+  ok(authSrc.includes('mirrorProfileRemote(token, profile)'), 'mirrorLocalProfile() calls mirrorProfileRemote() rather than writing a fresh profile');
+  const callSites = (authSrc.match(/mirrorLocalProfile\((cred\.user|current)\)/g) ?? []).length;
+  ok(
+    callSites === 4,
+    `mirrorLocalProfile() is called from all four sign-in success paths (linkWithPopup, credential-recovery, its signInWithPopup fallback, and the direct sign-in branch) — found ${callSites}`,
+  );
+  ok(
+    authSrc.indexOf('function mirrorLocalProfile') < authSrc.indexOf('async function recoverExistingAccount'),
+    'mirrorLocalProfile is defined before it is used — no forward-reference relying on hoisting quirks',
+  );
+  // The linkWithPopup success path must mirror the profile BEFORE publish(),
+  // not deferred to a later /home or /read visit — bound the slice to just
+  // that branch (up to its own catch block) so this doesn't accidentally
+  // match a later, unrelated section of the file.
+  const linkStart = authSrc.indexOf("recordAuthOp('link-popup')");
+  const linkSection = authSrc.slice(linkStart, authSrc.indexOf('} catch (err) {', linkStart));
+  ok(
+    linkSection.includes('mirrorLocalProfile(current)') && linkSection.indexOf('mirrorLocalProfile(current)') < linkSection.indexOf('publish()'),
+    'the linkWithPopup success path mirrors the profile BEFORE publish() — not deferred to a later page visit',
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

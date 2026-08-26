@@ -15,7 +15,6 @@
  *   node --experimental-strip-types scripts/test-voice-acceptance.ts
  */
 
-// @ts-expect-error - playwright has no local type declarations; see scripts/test-audio-lifecycle.ts
 import { chromium } from 'playwright';
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';
@@ -60,7 +59,7 @@ async function seedProfile(page: any) {
 }
 
 async function main() {
-  const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+  const browser = await chromium.launch();
 
   // Success-mode context: every /api/speech/model call succeeds (fake mpeg).
   const successCtx = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -75,8 +74,8 @@ async function main() {
   console.log('\n=== Item 1: Home/welcome speech uses ElevenLabs ===');
   {
     await page.goto(`${BASE_URL}/home`);
-    await page.waitForSelector('button[aria-label="Replay welcome message"]', { timeout: 15000 });
-    await page.click('button[aria-label="Replay welcome message"]');
+    await page.waitForSelector('button[aria-label="Hear this message"]', { timeout: 15000 });
+    await page.click('button[aria-label="Hear this message"]');
     await page.waitForFunction(
       () => ((window as any).__voiceDebug?.().recent ?? []).some((e: any) => e.provider === 'elevenlabs'),
       { timeout: 8000 },
@@ -89,8 +88,9 @@ async function main() {
 
   console.log('\n=== Item 3: Modeled sentence (header "Read aloud") uses ElevenLabs ===');
   {
-    await page.click('button[aria-label="Start today\'s chapter"]');
+    await page.click('button[aria-label="Play today’s adventure"]');
     await page.waitForURL('**/read', { timeout: 10000 });
+    await page.getByRole('button', { name: 'Open the story' }).click();
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
     await page.click('button[aria-label="Read aloud"]');
     await page.waitForTimeout(500);
@@ -141,7 +141,7 @@ async function main() {
   {
     const page2 = await successCtx.newPage();
     await seedProfile(page2);
-    await page2.goto(`${BASE_URL}/read?slideDemo=1`);
+    await page2.goto(`${BASE_URL}/read?slideDemo=1&skipWelcome=1&disableLookahead=1`);
     await page2.waitForSelector('input[type="range"]', { timeout: 15000 });
     const mark = await page2.evaluate(() => (window as any).__voiceDebug?.().recent.length ?? 0);
     const slider = page2.locator('input[type="range"]');
@@ -172,7 +172,7 @@ async function main() {
   {
     const page3 = await successCtx.newPage();
     await seedProfile(page3);
-    await page3.goto(`${BASE_URL}/read`);
+    await page3.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page3.waitForSelector('button[aria-label="Start reading"]', { timeout: 15000 });
     const pageText: string = await page3.evaluate(() => {
       const el = document.querySelector('.lc-page-text');
@@ -184,7 +184,7 @@ async function main() {
     } else {
       const fixtureTake = words.map((w) => `${w}:25`).join(',');
       const mark0 = await page3.evaluate(() => (window as any).__voiceDebug?.().recent.length ?? 0);
-      await page3.goto(`${BASE_URL}/read?fixtureTake=${encodeURIComponent(fixtureTake)}`);
+      await page3.goto(`${BASE_URL}/read?fixtureTake=${encodeURIComponent(fixtureTake)}&skipWelcome=1&disableLookahead=1`);
       await page3.waitForTimeout(1000);
       const debug = await page3.evaluate(() => (window as any).__voiceDebug?.());
       // Navigation reset module state, so read from the start of this page's history.
@@ -229,8 +229,8 @@ async function main() {
         return real(u);
       };
     });
-    await failPage.waitForSelector('button[aria-label="Replay welcome message"]', { timeout: 15000 });
-    await failPage.click('button[aria-label="Replay welcome message"]');
+    await failPage.waitForSelector('button[aria-label="Hear this message"]', { timeout: 15000 });
+    await failPage.click('button[aria-label="Hear this message"]');
     await failPage.waitForFunction(
       () => ((window as any).__voiceDebug?.().recent ?? []).some((e: any) => 'fallback' in e),
       { timeout: 10000 },
@@ -262,10 +262,16 @@ async function main() {
       });
       const vpPage = await vpCtx.newPage();
       await seedProfile(vpPage);
-      await vpPage.goto(`${BASE_URL}/read`);
+      await vpPage.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
       await vpPage.waitForSelector('button:has-text("sim: good")', { timeout: 15000 });
       await vpPage.click('button:has-text("sim: good")');
-      const star = vpPage.locator('img[src="/icons/success-star.png"]');
+      // Star is now the inline-SVG <SuccessStar> component (deterministic
+      // 100×100 viewBox — see components/SuccessStar.tsx for why the PNG
+      // was retired) rather than an <img>. Its wrapper always carries
+      // .lc-success-star. The mid-chapter praise instance is wrapped by
+      // .lc-success-pop; scope to that so the ending row's three stars
+      // never satisfy this check.
+      const star = vpPage.locator('.lc-success-pop .lc-success-star').first();
       try {
         await star.waitFor({ state: 'visible', timeout: 3000 });
         const box = await star.boundingBox();
