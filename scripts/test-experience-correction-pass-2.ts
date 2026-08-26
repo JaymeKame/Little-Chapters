@@ -23,6 +23,7 @@ import { readFileSync, existsSync } from 'node:fs';
 
 import {
   modelWordThroughSound,
+  successSoundModel,
   correctionModel,
   wordBuilderChunkModel,
   referenceWordsForFamily,
@@ -48,7 +49,7 @@ function pass(label: string) { passed++; console.log(`  ✓ ${label}`); }
   assert.ok(via.some((word) => word.startsWith('sh')), '"sh in ship" hint maps to the sh family');
   pass('Reference words: age-5 real words, correct for each family');
 
-  const modelSh = modelWordThroughSound('ship', 'sh');
+  const modelSh = modelWordThroughSound('shell', 'sh');
   // The naked phoneme "sh" NEVER appears as an isolated segment on its own.
   assert.ok(modelSh.every((segment) => segment.text.trim().toLowerCase() !== 'sh'), 'no naked /sh/ phoneme');
   // The sequence opens with a real spoken instruction line.
@@ -56,8 +57,8 @@ function pass(label: string) { passed++; console.log(`  ✓ ${label}`); }
   // Reference words are present as full utterances.
   const referenceSegments = modelSh.filter((segment) => segment.purpose === 'reference-word');
   assert.ok(referenceSegments.length >= 2, 'at least two reference words spoken');
-  // Target word is present.
-  assert.ok(modelSh.some((segment) => segment.text.includes('ship')), 'target word ship is voiced');
+  assert.deepEqual(referenceSegments.map((segment) => segment.text.replace(/\W/g, '')), ['ship', 'shoe', 'shut']);
+  assert.ok(!modelSh.some((segment) => /shell/i.test(segment.text)), 'initial model does not give away the target');
   // Every segment has a hold so the child has time to perceive it.
   assert.ok(modelSh.every((segment) => (segment.holdMs ?? 0) >= 200), 'every segment holds ≥200 ms');
   pass('Find the Sound: reference-word pedagogy replaces naked-phoneme pedagogy');
@@ -65,6 +66,13 @@ function pass(label: string) { passed++; console.log(`  ✓ ${label}`); }
   const modelTh = modelWordThroughSound('thump', 'th');
   assert.ok(modelTh.some((segment) => /^thumb|three|think/.test(segment.text)), 'th sequence uses at least one of thumb/three/think');
   pass('Find the Sound: /th/ example words');
+
+  const success = successSoundModel('shell', 'sh');
+  assert.match(success[0].text, /shell/);
+  assert.match(success[1].text, /shell starts with shhhh/);
+  assert.match(success[2].text, /shhhh.*shell/);
+  assert.ok(success.every((segment) => !/\/[a-z]+\//i.test(segment.text)), 'success model has no slash notation');
+  pass('Find the Sound: sound-letter relationship appears only after success');
 }
 
 /* ── Section 3: wrong-answer correction ──────────────────────────── */

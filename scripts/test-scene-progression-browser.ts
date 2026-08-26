@@ -4,13 +4,6 @@ import { chromium, type Page } from 'playwright';
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';
 const sandboxChromium = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-const sceneUrls = [
-  '/images/scenes/bg-river-valley-sunset-01.jpg',
-  '/images/scenes/bg-meadow-path-sunny-01.jpg',
-  '/images/scenes/bg-coastal-cliff-sunset-01.jpg',
-  '/images/scenes/bg-forest-bridge-stream-01.jpg',
-];
-
 interface SceneSnapshot {
   pageIdx: number;
   activeInteractionId: string | null;
@@ -60,14 +53,9 @@ async function main() {
     phonics: [{ hint: 'sh in shell', words: ['shell', 'ship'] }],
     provenance: { source: 'generated', entitlementSource: 'free', generatedAt: '2026-08-25T00:00:00.000Z' },
   };
-  const scenePackage = {
-    chapterId: chapter.id, visualBibleVersion: 2, provider: 'browser-fixture', generatedAt: '2026-08-25T00:00:00.000Z', generationLatencyMs: 1,
-    scenes: sceneUrls.map((assetUrl, index) => ({ sceneId: `scene-${index + 1}`, assetUrl, visualPurpose: ['opening', 'discovery', 'choice', 'payoff'][index], entities: [] })),
-  };
-
   await page.route('**/api/chapters/today', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ chapter }) }));
   await page.route('**/api/chapters/story*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ chapter }) }));
-  await page.route('**/api/chapters/visuals*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenePackage, cache: 'hit' }) }));
+  await page.route('**/api/chapters/visuals*', (route) => route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"fixture verifies approved static fallback"}' }));
   await page.route('**/api/speech/**', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"muted fixture"}' }));
 
   await page.goto(BASE_URL);
@@ -103,7 +91,9 @@ async function main() {
   assert.equal(byPage.get(2)?.requestedSceneId, 'scene-2');
   assert.notEqual(byPage.get(0)?.renderedImgCurrentSrc, byPage.get(2)?.renderedImgCurrentSrc, 'actual currentSrc must progress between authored reading scenes');
   assert.notEqual(byPage.get(0)?.hash, byPage.get(2)?.hash, 'rendered bytes must progress between authored reading scenes');
-  assert.equal(new Set(scenePackage.scenes.map((scene) => scene.assetUrl)).size, 4);
+  const sources = await page.evaluate(() => (window as any).__chapterDebug().scene.sceneSources);
+  assert.ok(Object.values(sources).every((source) => source === 'approved-static-fallback'));
+  assert.equal(new Set(Object.values(await page.evaluate(() => (window as any).__chapterDebug().scene.sceneAssetUrls))).size, 4, 'fallback session must not collapse to one wallpaper');
   console.log(`Scene progression browser regression: ${states.length} sequential states passed without reload`);
   await browser.close();
 }

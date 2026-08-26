@@ -15,6 +15,7 @@ export interface ChapterSceneDebugContext {
   requestedSceneId: string | null;
   resolvedSceneUrl: string | null;
   sceneAssetUrls: Record<string, string>;
+  sceneAssetSources: Record<string, 'generated' | 'approved-static-fallback'>;
 }
 
 /** Diagnostic mapping for scene progression (correction pass 2, Section 5).
@@ -82,8 +83,11 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
     scene: context?.scene ? {
       ...context.scene,
       sceneAssetUrls: sceneUrls,
-      sceneSources: Object.fromEntries(Object.keys(sceneUrls).map((sceneId) => [sceneId, scenePackage?.scenes.some((scene) => scene.sceneId === sceneId) ? 'generated' : 'approved-static-fallback'])),
+      sceneSources: context.scene.sceneAssetSources,
       duplicateSceneUrls,
+      singleVisualFallback: Object.values(context.scene.sceneAssetSources).length > 0
+        && Object.values(context.scene.sceneAssetSources).every((source) => source === 'approved-static-fallback')
+        && new Set(Object.values(sceneUrls)).size <= 1,
       renderedImgSrc: renderedImage?.getAttribute('src') ?? null,
       renderedImgCurrentSrc: renderedImage?.currentSrc || null,
       packageProvenance: visual.packageProvenance,

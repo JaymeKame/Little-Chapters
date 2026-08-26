@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { modelWordThroughSound, correctionModel, wordBuilderChunkModel } from '../lib/phonics-model.ts';
+import { modelWordThroughSound, correctionModel, successSoundModel, wordBuilderChunkModel } from '../lib/phonics-model.ts';
 import { wordBuilderPieces, buildStoryInteractionManifest } from '../lib/story-interactions.ts';
 import { buildSessionPlan } from '../lib/session-plan.ts';
 import { composeSession, CANDIDATE_SEQUENCES, distinctSequencesAcross, type MechanicKind } from '../lib/session-composer.ts';
@@ -28,15 +28,15 @@ function pass(label: string) { passed++; console.log(`  ✓ ${label}`); }
 
 /* ── Section 6-8: Find the Sound modeling ─────────────────────────── */
 {
-  const ship = modelWordThroughSound('ship', 'sh');
+  const ship = modelWordThroughSound('shell', 'sh');
   // Correction pass 2, Section 1: pedagogy replaced — /sh/ is no longer
   // stretched. See test-experience-correction-pass-2.ts for the current
   // reference-word contract. This block validates the shape/holds only.
   const referenceSegments = ship.filter((segment) => segment.purpose === 'reference-word');
-  const whole = ship.find((segment) => segment.purpose === 'word-blend');
   assert.ok(referenceSegments.length >= 2, 'at least two reference words spoken');
-  assert.ok(whole && /ship/.test(whole.text), 'target story word is the acoustic anchor');
+  assert.ok(!ship.some((segment) => /shell/.test(segment.text)), 'target story word is not given away before matching');
   assert.ok(ship.every((segment) => (segment.holdMs ?? 0) >= 200), 'every segment holds ≥200 ms');
+  assert.deepEqual(successSoundModel('shell', 'sh').map((segment) => segment.purpose), ['instruction','phoneme-model','word-blend']);
   pass('Find the Sound: reference-word pedagogy replaces onset stretching');
 }
 

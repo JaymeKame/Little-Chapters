@@ -23,7 +23,7 @@ import { MicIcon } from '@/components/icons/MicIcon';
 import { QuietCheckIcon } from '@/components/icons/QuietCheckIcon';
 import { SuccessStar } from '@/components/SuccessStar';
 import { chapterFor, latestChapterGenerationFailure, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
-import { selectSceneForPage } from '@/lib/scene-selector';
+import { selectSceneForPage, selectStaticSceneSequence, type SceneSelectionResult } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
 import { createLiveProgress, type LiveProgress } from '@/lib/live-progress';
@@ -52,7 +52,7 @@ import { loadPreferences } from '@/lib/preferences';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
 import { loadChapterScenePackage, requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
-import { correctionModel, modelWordThroughSound, wordBuilderChunkModel, estimateSequenceDurationMs } from '@/lib/phonics-model';
+import { correctionModel, modelWordThroughSound, successSoundModel, wordBuilderChunkModel, estimateSequenceDurationMs } from '@/lib/phonics-model';
 import { confidentTrackerWords } from '@/lib/reading-tracker';
 import { TutorPhraseSession } from '@/lib/tutor-intents';
 
@@ -213,6 +213,7 @@ export default function ReadPage() {
   // while wrong-word correction is speaking.
   const [interactionReady, setInteractionReady] = useState(false);
   const [correctionSpeaking, setCorrectionSpeaking] = useState(false);
+  const [loadedSceneUrl, setLoadedSceneUrl] = useState<string | null>(null);
   // Verified-visible-entity fallback (Correction sprint Sections 3-5). Set
   // true to force the "find it in scene" beat to the tactile-card fallback
   // even when the reviewer verified the target — used only by the debug
@@ -646,13 +647,23 @@ export default function ReadPage() {
     }
     return interactionAfterPage(sessionPlan, pageIdx)?.activity ?? null;
   }, [interactionManifest, activeInteraction, sessionPlan, pageIdx]);
-  const sceneAssetUrls = useMemo(() => {
-    if (!chapter || !interactionManifest) return {} as Record<string, string>;
-    return Object.fromEntries(interactionManifest.scenes.map((scene) => {
+  const staticSceneSelections = useMemo<Record<string, SceneSelectionResult>>(() => {
+    if (!chapter || !interactionManifest) return {};
+    return selectStaticSceneSequence(chapter, interactionManifest.scenes.map((scene) => {
       const index = scene.pageIndexes[0] ?? 0;
-      return [scene.sceneId, sceneUrl(scenePackage, scene.sceneId) ?? selectSceneForPage(chapter, chapter.pages[index], index, profile?.avatar, user?.uid ?? null).asset.src];
-    }));
-  }, [chapter, interactionManifest, scenePackage, profile?.avatar, user?.uid]);
+      return { sceneId: scene.sceneId, page: chapter.pages[index], pageIndex: index };
+    }), profile?.avatar, user?.uid ?? null);
+  }, [chapter, interactionManifest, profile?.avatar, user?.uid]);
+  const sceneAssetUrls = useMemo(() => {
+    if (!interactionManifest) return {} as Record<string, string>;
+    return Object.fromEntries(interactionManifest.scenes.map((scene) => [
+      scene.sceneId,
+      sceneUrl(scenePackage, scene.sceneId) ?? staticSceneSelections[scene.sceneId]?.asset.src,
+    ]).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  }, [interactionManifest, scenePackage, staticSceneSelections]);
+  const sceneAssetSources = useMemo(() => Object.fromEntries(
+    Object.keys(sceneAssetUrls).map((sceneId) => [sceneId, sceneUrl(scenePackage, sceneId) ? 'generated' : 'approved-static-fallback']),
+  ) as Record<string, 'generated' | 'approved-static-fallback'>, [sceneAssetUrls, scenePackage]);
   const pageAuthoredSceneId = interactionManifest?.scenes.find((scene) => scene.pageIndexes.includes(pageIdx))?.sceneId ?? null;
   const requestedSceneId = activeInteraction?.activity.visualSceneId ?? pageAuthoredSceneId;
   const resolvedSceneUrl = requestedSceneId ? sceneAssetUrls[requestedSceneId] ?? null : null;
@@ -663,16 +674,19 @@ export default function ReadPage() {
     const target = window as typeof window & { __sceneProgressionTestState?: (next: { pageIdx: number; beatId?: string }) => void };
     target.__sceneProgressionTestState = ({ pageIdx: nextPageIdx, beatId }) => {
       setPageIdx(nextPageIdx);
-      if (!beatId) { setActiveInteraction(null); return; }
+      if (!beatId) { setPendingNextPage(null); setActiveInteraction(null); return; }
       const activity = interactionManifest.beats.find((beat) => beat.beatId === beatId);
       const kind = activity?.mechanicType === 'find-sound' ? 'sound-hunt'
         : activity?.mechanicType === 'find-it-in-scene' ? 'find-in-scene'
         : activity?.mechanicType === 'what-happens-next' ? 'prediction'
         : activity?.mechanicType === 'word-builder' ? 'word-builder' : null;
-      if (activity && kind) setActiveInteraction({ id: kind, kind, afterPage: nextPageIdx, activity } as Extract<SessionBeat, { kind: MechanicKind }>);
+      if (activity && kind) {
+        setPendingNextPage(Math.min(nextPageIdx + 1, chapter!.pages.length - 1));
+        setActiveInteraction({ id: kind, kind, afterPage: nextPageIdx, activity } as Extract<SessionBeat, { kind: MechanicKind }>);
+      }
     };
     return () => { delete target.__sceneProgressionTestState; };
-  }, [interactionManifest]);
+  }, [chapter, interactionManifest]);
 
   useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, adventureTelemetryRef.current, {
     entitlementSource: subscribed === true ? 'subscription' : 'free',
@@ -681,9 +695,9 @@ export default function ReadPage() {
       activeInteractionId: activeInteraction?.id ?? null,
       activeInteractionKind: activeInteraction?.kind ?? null,
       activeInteractionVisualSceneId: activeInteraction?.activity.visualSceneId ?? null,
-      pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls,
+      pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources,
     },
-  })), [chapter, scenePackage, subscribed, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls]);
+  })), [chapter, scenePackage, subscribed, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources]);
 
   useEffect(() => {
     if (!chapter || !interactionManifest || authLoading) return;
@@ -734,7 +748,11 @@ export default function ReadPage() {
         activeInteraction.activity.literacyTarget ?? '',
       );
       armWatchdog(estimateSequenceDurationMs(sequence) + 3500);
-      audioSession.speakSequence(sequence, () => { if (watchdog !== null) window.clearTimeout(watchdog); openGate(); });
+      audioSession.speakSequence(sequence, undefined, (status) => {
+        if (status !== 'ended') return;
+        if (watchdog !== null) window.clearTimeout(watchdog);
+        openGate();
+      });
       return () => { if (watchdog !== null) window.clearTimeout(watchdog); };
     }
     if (activeInteraction.kind === 'word-builder') {
@@ -771,7 +789,9 @@ export default function ReadPage() {
   // background while active. Outside an interaction, the page-authored scene
   // owns it. sceneAssetUrls retains generated-first/static-fallback resolution.
   const sceneBg = resolvedSceneUrl ?? sceneSelection?.asset.src ?? null;
-  const sceneFocal = sceneSelection?.asset.focal;
+  const sceneFocal = requestedSceneId && sceneAssetSources[requestedSceneId] === 'approved-static-fallback'
+    ? staticSceneSelections[requestedSceneId]?.asset.focal
+    : sceneSelection?.asset.focal;
   // Computed for the current tricky word at ANY rung < 3, not just rung 2:
   // with the escalation remap below, a segmentable word now shows the slide
   // interaction at rung 1 (the first stumble) and never actually visits
@@ -1423,6 +1443,23 @@ export default function ReadPage() {
     setPhase('ready');
   }
 
+  function replayInteractionInstruction() {
+    if (!activeInteraction) return;
+    if (activeInteraction.kind !== 'sound-hunt') {
+      audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: 'interaction-prompt-replay' });
+      return;
+    }
+    const sequence = modelWordThroughSound(activeInteraction.activity.correctTarget ?? '', activeInteraction.activity.literacyTarget ?? '');
+    setInteractionReady(false);
+    const release = () => setInteractionReady(true);
+    const watchdog = window.setTimeout(release, estimateSequenceDurationMs(sequence) + 3500);
+    audioSession.speakSequence(sequence, undefined, (status) => {
+      if (status !== 'ended') return;
+      window.clearTimeout(watchdog);
+      release();
+    });
+  }
+
   function chooseInteraction(choice: string) {
     if (!activeInteraction || interactionFeedback === 'success') return;
     // Correction sprint Section 6: choices are inert until the initial
@@ -1452,7 +1489,10 @@ export default function ReadPage() {
     if (activeInteraction.kind === 'find-in-scene') {
       audioSession.speak(activeInteraction.activity.spokenSuccess, { purpose: 'discovery', onEnd: () => setTimeout(continueAfterInteraction, 700) });
     } else if (correct) {
-      audioSession.speak(activeInteraction.activity.spokenSuccess, { purpose: 'sound-hunt-success', onEnd: () => setTimeout(continueAfterInteraction, 700) });
+      audioSession.speakSequence(
+        successSoundModel(activeInteraction.activity.correctTarget ?? choice, pattern),
+        () => setTimeout(continueAfterInteraction, 700),
+      );
     } else {
       // Correction pass 2, Section 3: model the child's choice, model a
       // reference word, model the target, compare, invite retry. The choice
@@ -1487,8 +1527,8 @@ export default function ReadPage() {
     const next = index + 1;
     setWordBuilderProgress(next);
     // Play the chunk sound. On the last piece, hold a beat so the join
-    // animation lands before we voice the whole word and let the "story
-    // world reacts" glow settle before the next page turns.
+    // animation lands before we voice the whole word and let the visible
+    // completion glow settle before the next page turns.
     audioSession.speak(part.spokenLabel, {
       purpose: 'phoneme-model',
       onEnd: next === total ? () => {
@@ -1640,8 +1680,8 @@ export default function ReadPage() {
       ? activeInteraction.kind === 'prediction'
         ? `Let’s see!`
         : interactionFeedback === 'success'
-          ? `You found ${sound?.literacyTarget}!`
-          : `Listen again… ${sound?.literacyTarget}.`
+          ? `You found ${sound?.correctTarget ?? interactionChoice}!`
+          : 'Listen again, then try another word.'
       : null;
     if (activeInteraction.kind === 'find-in-scene') {
       // Correction sprint Sections 3-5: NEVER ask the child to find an
@@ -1655,8 +1695,13 @@ export default function ReadPage() {
       const target = activeInteraction.activity.correctTarget ?? activeInteraction.activity.interactiveObjects[0]?.label ?? 'story clue';
       const generatedScene = scenePackage?.scenes.find((scene) => scene.sceneId === activeInteraction.activity.visualSceneId);
       const entity = generatedScene?.entities.find((item) => item.label.toLowerCase() === target.toLowerCase());
+      const region = entity?.approximateRegion;
+      const usableRegion = Boolean(region && [region.x, region.y, region.width, region.height].every(Number.isFinite)
+        && region!.x >= 0 && region!.y >= 0 && region!.width > 0 && region!.height > 0
+        && region!.x + region!.width <= 1 && region!.y + region!.height <= 1);
+      const generatedSceneIsDisplayed = Boolean(generatedScene?.assetUrl && resolvedSceneUrl === generatedScene.assetUrl && loadedSceneUrl === resolvedSceneUrl);
       const verified = entity && (entity.verificationConfidence ?? 0) >= 0.6;
-      if (entity && verified && !findItFallback) {
+      if (entity && verified && usableRegion && generatedSceneIsDisplayed && !findItFallback) {
         const region = entity.approximateRegion;
         return <div className="lc-session-interaction lc-find-scene" data-session-beat="find-in-scene" data-layout-mode="story" data-interaction-mode="scene-region" data-verified-entity={entity.label} data-verification-confidence={String(entity.verificationConfidence ?? 0)}>
           <SceneBackground src={sceneBg} focal={sceneFocal} />
@@ -1676,7 +1721,7 @@ export default function ReadPage() {
       // them; the tray below shows the pieces (already-placed pieces stay
       // visible but ghosted so the mapping stays clear). Tap = the piece
       // flies into the next slot with a snap animation. Completion plays
-      // the joined word and a subtle "world reacts" glow before the story
+      // the joined word and a subtle completion glow before the story
       // advances.
       const pieces = activeInteraction.activity.interactiveObjects;
       const target = (activeInteraction.activity.literacyTarget ?? pieces.map((piece) => piece.label).join('')).toLowerCase();
@@ -1732,10 +1777,10 @@ export default function ReadPage() {
       );
     }
     return (
-      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind} data-layout-mode="interaction" data-interaction-ready={String(interactionReady)} data-interaction-mode={activeInteraction.kind === 'find-in-scene' ? 'tactile-card-fallback' : undefined}>
-        <SceneBackground src={sceneBg} focal={sceneFocal} />
+      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind} data-layout-mode="interaction" data-interaction-ready={String(interactionReady)} data-instruction-status={interactionReady ? 'complete' : 'playing'} data-interaction-mode={activeInteraction.kind === 'find-in-scene' ? 'tactile-card-fallback' : undefined}>
+        <SceneBackground src={sceneBg} focal={sceneFocal} onLoadState={(state, url) => setLoadedSceneUrl(state === 'loaded' ? url : null)} />
         <div className="lc-interaction-card lc-scene-content">
-          <button className="lc-prompt-speaker" aria-label="Hear the question again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction, { purpose: 'interaction-prompt-replay' })}><img src="/icons/speaker-audio.png" alt="" /></button>
+          <button className="lc-prompt-speaker" aria-label="Hear the example words again" onClick={replayInteractionInstruction}><img src="/icons/speaker-audio.png" alt="" /></button>
           <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the word' : activeInteraction.kind === 'find-in-scene' ? 'Find the story word' : 'What happens next?'}</p>
           {/* Sound-hunt no longer shows a giant naked phoneme in a pill —
               that read as a worksheet and the phoneme was also spoken
@@ -1745,7 +1790,7 @@ export default function ReadPage() {
               The other kinds still surface their target word inline
               because the child needs to see it. */}
           {activeInteraction.kind === 'sound-hunt'
-            ? <p className="lc-sound-hunt-prompt">{interactionReady ? 'Which word did you hear?' : 'Listen…'}</p>
+            ? <p className="lc-sound-hunt-prompt">{interactionReady ? 'Which story word starts the same way?' : 'Listen to the example words…'}</p>
             : <h1>{activeInteraction.kind === 'find-in-scene' ? 'Tap the story word' : 'Choose a picture'}</h1>}
           <div className={`lc-choice-grid is-${activeInteraction.kind}${interactionFeedback === 'success' ? ' is-world-reacting' : ''}`} aria-disabled={!interactionReady || correctionSpeaking ? true : undefined}>
             {choices.map((choice) => (
