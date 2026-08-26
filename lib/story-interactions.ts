@@ -57,6 +57,7 @@ export interface StoryInteractionBeat {
 
 export interface StoryInteractionManifest {
   version: 2;
+  contentRevision: 3;
   chapterId: string;
   visualBible: ChapterVisualBible;
   scenes: StoryScene[];
@@ -272,20 +273,20 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
       // teaching, not a giveaway, because the child still has to MATCH the
       // heard word to one of the visible tiles. Success line likewise
       // never voices the phoneme in isolation.
-      spokenInstruction: `Listen to ${soundAnswer}. I’ll stretch the ${sound} sound inside the word. Then find the word that starts the same way.`,
+      spokenInstruction: 'Listen to these words, then choose the story word that starts the same way.',
       storyEntities: soundChoices,
       visualSceneId: sceneForPage(scenes, Math.max(0, Math.floor(chapter.pages.length / 3) - 1)),
       interactiveObjects: soundChoices.map((label, index) => ({ objectId: `sound-${index}`, label, spokenLabel: label, visualSceneId: sceneForPage(scenes, 1), visualCue: 'word-object' })),
-      correctTarget: soundAnswer, successStoryAction: `The ${soundAnswer} clue responds and the story moves on.`,
-      spokenSuccess: `You found it — ${soundAnswer}.`, transitionTarget: 'reading-2',
+      correctTarget: soundAnswer, successStoryAction: `You matched ${soundAnswer} by its beginning sound.`,
+      spokenSuccess: `Yes — ${soundAnswer}.`, transitionTarget: 'reading-2',
     },
     {
       beatId: 'find-in-scene', mechanicType: 'find-it-in-scene', literacyTarget: visualEntities[0] ?? soundAnswer,
-      spokenInstruction: `Can you find the ${visualEntities[0] ?? soundAnswer} in our story world?`,
+      spokenInstruction: `Can you find ${visualEntities[0] ?? soundAnswer}?`,
       storyEntities: [visualEntities[0] ?? soundAnswer], visualSceneId: sceneForPage(scenes, Math.max(1, Math.floor(chapter.pages.length / 2))),
       interactiveObjects: [{ objectId: 'scene-target', label: visualEntities[0] ?? soundAnswer, spokenLabel: visualEntities[0] ?? soundAnswer, visualSceneId: sceneForPage(scenes, Math.max(1, Math.floor(chapter.pages.length / 2))), visualCue: 'scene-crop' }],
-      correctTarget: visualEntities[0] ?? soundAnswer, successStoryAction: `The ${visualEntities[0] ?? soundAnswer} glows and reveals the next part of the story.`,
-      spokenSuccess: `You found the ${visualEntities[0] ?? soundAnswer}. Look—something changed!`, transitionTarget: 'reading-3',
+      correctTarget: visualEntities[0] ?? soundAnswer, successStoryAction: `You found ${visualEntities[0] ?? soundAnswer}.`,
+      spokenSuccess: `You found it. Now let’s see what happens next.`, transitionTarget: 'reading-3',
     },
     {
       beatId: 'prediction', mechanicType: 'what-happens-next', literacyTarget: null,
@@ -299,7 +300,7 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
         visualCue: 'scene-crop',
         caption: row.caption,
       })),
-      correctTarget: null, successStoryAction: 'The selected possibility glows, then the canonical story continues.',
+      correctTarget: null, successStoryAction: 'You chose what might happen next.',
       spokenSuccess: 'Ooh, maybe! Let’s see.', transitionTarget: 'reading-3',
     },
     {
@@ -307,8 +308,8 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
       spokenInstruction: `Let’s build ${builderTarget} to move the story.`, storyEntities: [builderTarget],
       visualSceneId: sceneForPage(scenes, Math.max(1, lastPage - 1)),
       interactiveObjects: builderPieces.map((label, index) => ({ objectId: `word-part-${index}`, label, spokenLabel: label, visualSceneId: sceneForPage(scenes, lastPage - 1), visualCue: 'word-object' })),
-      correctTarget: builderTarget, successStoryAction: `The ${builderTarget} makes the story world respond.`,
-      spokenSuccess: `${builderTarget}! You built it.`, transitionTarget: 'final-unlock',
+      correctTarget: builderTarget, successStoryAction: `You completed ${builderTarget}.`,
+      spokenSuccess: `${builderTarget}! You built the word. Back to the story.`, transitionTarget: 'final-unlock',
     },
     {
       beatId: 'final-unlock', mechanicType: 'final-story-unlock', literacyTarget: finalTarget,
@@ -320,14 +321,14 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
     },
   ];
   for (const scene of scenes) scene.interactionBeatIds = beats.filter((beat) => beat.visualSceneId === scene.sceneId).map((beat) => beat.beatId);
-  return { version: 2, chapterId: chapter.id, visualBible: bible, scenes, beats };
+  return { version: 2, contentRevision: 3, chapterId: chapter.id, visualBible: bible, scenes, beats };
 }
 
 export function resolveStoryInteractionManifest(chapter: Chapter): StoryInteractionManifest {
   if (typeof localStorage !== 'undefined') {
     try {
       const cached = JSON.parse(localStorage.getItem(CACHE_PREFIX + chapter.id) ?? 'null') as StoryInteractionManifest | null;
-      if (cached?.version === 2 && cached.chapterId === chapter.id) return cached;
+      if (cached?.version === 2 && cached.contentRevision === 3 && cached.chapterId === chapter.id) return cached;
     } catch { /* regenerate a malformed local record */ }
   }
   const manifest = buildStoryInteractionManifest(chapter);

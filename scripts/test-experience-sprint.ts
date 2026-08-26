@@ -1,23 +1,24 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { modelWordThroughSound, correctionModel } from '../lib/phonics-model.ts';
+import { modelWordThroughSound, correctionModel, successSoundModel } from '../lib/phonics-model.ts';
 import { confidentTrackerWords, TRACKER_CONFIDENCE_MIN } from '../lib/reading-tracker.ts';
 import { TutorPhraseSession, deterministicTutorLine } from '../lib/tutor-intents.ts';
 import { buildStoryInteractionManifest } from '../lib/story-interactions.ts';
 import { buildSessionPlan } from '../lib/session-plan.ts';
 import { chapterFor, type Chapter } from '../lib/chapters.ts';
 
-const ship = modelWordThroughSound('ship', 'sh');
+const ship = modelWordThroughSound('shell', 'sh');
 assert.equal(ship.some((segment) => segment.text === 'sh'), false, 'sound hunt never depends on a naked synthetic phoneme');
 // Correction pass 2, Section 1: pedagogy now leans on REAL reference WORDS
 // instead of a stretched isolated phoneme — physical testing showed a
 // five-year-old cannot reliably decode "shhhh" from a small speaker, but
-// "ship... shoe... shell" is unambiguous. See scripts/test-experience-correction-pass-2.ts
+// "ship... shoe... shut" is unambiguous. See scripts/test-experience-correction-pass-2.ts
 // for the full reference-word contract.
-assert.ok(ship.some((segment) => segment.purpose === 'reference-word' && /^ship|^shoe|^shell/.test(segment.text)), 'target sound is taught via real reference words');
+assert.ok(ship.some((segment) => segment.purpose === 'reference-word' && /^ship|^shoe|^shut/.test(segment.text)), 'target sound is taught via real reference words');
 assert.ok(ship.filter((segment) => segment.purpose === 'reference-word').length >= 2, 'at least two reference words are spoken');
-assert.ok(ship.some((segment) => segment.purpose === 'word-blend' && /ship/.test(segment.text)), 'the target story word is voiced as the acoustic anchor');
+assert.ok(!ship.some((segment) => /shell/.test(segment.text)), 'the target story word is not given away during the initial model');
 assert.ok(ship.every((segment) => typeof segment.holdMs !== 'number' || segment.holdMs >= 200), 'every segment holds ≥200 ms');
+assert.deepEqual(successSoundModel('shell', 'sh').map((segment) => segment.purpose), ['instruction','phoneme-model','word-blend']);
 
 const correction = correctionModel('shut', 'sh');
 // New wrong-word sequence: identify child choice (optional) → invite listen →

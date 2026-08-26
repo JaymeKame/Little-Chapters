@@ -19,7 +19,7 @@ export interface PhonicsModelSegment {
  *  non-curated family degrades gracefully. */
 const REFERENCE_WORDS: Record<string, readonly string[]> = {
   // digraphs
-  sh: ['ship', 'shoe', 'shell'],
+  sh: ['ship', 'shoe', 'shut', 'shop'],
   ch: ['chair', 'cheese', 'chip'],
   th: ['thumb', 'three', 'think'],
   wh: ['whale', 'wheel', 'whisper'],
@@ -46,6 +46,8 @@ const REFERENCE_WORDS: Record<string, readonly string[]> = {
   j: ['jump', 'juice', 'jam'],
   y: ['yellow', 'yak', 'yes'],
   w: ['wind', 'water', 'wagon'],
+  q: ['queen', 'quick', 'quilt'],
+  x: ['box', 'fox', 'six'],
   // short vowels
   a: ['apple', 'ant', 'ax'],
   e: ['egg', 'elbow', 'elephant'],
@@ -125,10 +127,8 @@ export function referenceWordsForFamily(rawTarget: string, exclude: readonly str
  *    2. reference word 1
  *    3. reference word 2
  *    4. reference word 3 (optional)
- *    5. "Did you hear the same sound at the beginning?"
- *    6. target story word
- *    7. reference word + target word paired
- *    8. "Which story word starts the same way?"
+ *    5. "Listen to how they begin."
+ *    6. "Which story word starts the same way?"
  *
  *  Every segment carries a real hold so the child has time to perceive the
  *  onset (see speakSequence in lib/audio-session.ts). The target word is
@@ -148,14 +148,24 @@ export function modelWordThroughSound(word: string, target: string): PhonicsMode
   for (const reference of references) {
     segments.push({ text: `${reference}...`, purpose: 'reference-word', holdMs: 460 });
   }
-  segments.push({ text: 'Did you hear the same sound at the beginning?', purpose: 'instruction', holdMs: 340 });
-  if (clean) {
-    const anchor = references[0];
-    if (anchor) segments.push({ text: `${anchor}... ${clean}.`, purpose: 'word-blend', holdMs: 520 });
-    else segments.push({ text: `${clean}.`, purpose: 'word-blend', holdMs: 480 });
-  }
+  segments.push({ text: 'Listen to how they begin.', purpose: 'instruction', holdMs: 340 });
   segments.push({ text: 'Which story word starts the same way?', purpose: 'instruction', holdMs: 220 });
   return segments;
+}
+
+/** Post-success reinforcement: only after the child has matched the shared
+ * beginning do we name/model the sound, always anchored by the whole word and
+ * never rendered or spoken with slash notation. */
+export function successSoundModel(word: string, target: string): PhonicsModelSegment[] {
+  const clean = (word || '').toLowerCase().replace(/[^a-z']/g, '');
+  const family = normalizeFamilyKey(target);
+  if (!clean) return [{ text: 'Yes. You matched the beginning.', purpose: 'instruction', holdMs: 240 }];
+  const modeled = elongatedSound(family);
+  return [
+    { text: `Yes — ${clean}.`, purpose: 'instruction', holdMs: 320 },
+    { text: `${clean} starts with ${modeled}.`, purpose: 'phoneme-model', holdMs: 420 },
+    { text: `${modeled}... ${clean}.`, purpose: 'word-blend', holdMs: 420 },
+  ];
 }
 
 /** Wrong-word correction (Correction pass 2, Section 3).

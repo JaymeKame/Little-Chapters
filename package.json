@@ -15,6 +15,8 @@
     "test:v11": "node --experimental-strip-types scripts/test-v11-session.ts",
     "test:v11-browser": "node --experimental-strip-types scripts/test-v11-browser.ts",
     "test:chapter-scenes": "node --experimental-strip-types scripts/test-chapter-scene-generation.ts",
+    "test:scene-progression-browser": "tsx scripts/test-scene-progression-browser.ts",
+    "test:find-sound-browser": "tsx scripts/test-find-sound-browser.ts",
     "test:daily-adventure": "tsx scripts/test-daily-adventure.ts",
     "test:experience": "tsx scripts/test-experience-sprint.ts",
     "test:correction": "tsx scripts/test-experience-correction.ts",

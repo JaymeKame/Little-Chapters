@@ -46,6 +46,12 @@ export interface SceneSelectionResult {
   reason: string;
 }
 
+export interface AuthoredScenePage {
+  sceneId: string;
+  page: ChapterPage;
+  pageIndex: number;
+}
+
 /* ── Recent-image history (per uid, small + bounded) ─────────────────────
  * Same design/localStorage convention as lib/pet.ts and lib/chapter-history.ts
  * (per-uid keys so siblings on one device don't share history). Tracks
@@ -231,4 +237,37 @@ export function selectSceneForPage(
     score: winner.score,
     reason: `page="${page.text.slice(0, 40)}${page.text.length > 40 ? '…' : ''}" ambience=${chapter.ambience} avatar=${avatar ?? 'none'} -> ${winner.asset.id} (score ${winner.score}, top ${top})`,
   };
+}
+
+/** Select one approved static asset per AUTHORED scene, preserving semantic
+ * ranking while avoiding duplicate wallpaper whenever the approved library
+ * has enough assets. Generated packages bypass this map entirely. */
+export function selectStaticSceneSequence(
+  chapter: Chapter,
+  scenes: readonly AuthoredScenePage[],
+  avatar: AvatarId | undefined,
+  uid: string | null,
+): Record<string, SceneSelectionResult> {
+  const used = new Set<string>();
+  const result: Record<string, SceneSelectionResult> = {};
+  const chapterQuery = [...tokenize(chapter.setting), ...tokenize(chapter.character)];
+  const dogBias = chapter.ambience === 'farm';
+
+  for (const scene of scenes) {
+    const pageQuery = [...tokenize(scene.page.text), ...scene.page.focusWords.map((word) => word.toLowerCase())];
+    const ranked = RUNTIME_SCENE_MANIFEST.map((asset) => ({
+      asset,
+      score: scoreAsset(asset, pageQuery, chapterQuery, chapter, avatar, dogBias),
+    })).sort((a, b) => b.score - a.score
+      || stableHash(`${chapter.id}:${scene.pageIndex}:${a.asset.id}`) - stableHash(`${chapter.id}:${scene.pageIndex}:${b.asset.id}`));
+    const winner = ranked.find(({ asset }) => !used.has(asset.id)) ?? ranked[0];
+    used.add(winner.asset.id);
+    recordRecentHistory(uid, winner.asset.id);
+    result[scene.sceneId] = {
+      asset: winner.asset,
+      score: winner.score,
+      reason: `authored-scene=${scene.sceneId} page=${scene.pageIndex} -> ${winner.asset.id} (distinct approved fallback)`,
+    };
+  }
+  return result;
 }

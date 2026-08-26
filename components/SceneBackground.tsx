@@ -18,6 +18,7 @@ export function SceneBackground({
   cliff = false,
   priority = false,
   focal,
+  onLoadState,
 }: {
   src: string | null;
   cliff?: boolean;
@@ -33,6 +34,7 @@ export function SceneBackground({
    *  around the image's geometric center — most story-scene art has its
    *  child/subject well left- or right-of-center, not centered. */
   focal?: { x: number; y: number };
+  onLoadState?: (state: 'loaded' | 'failed', src: string) => void;
 }) {
   const [failed, setFailed] = useState(false);
   const [visibleSrc, setVisibleSrc] = useState<string | null>(src);
@@ -49,12 +51,14 @@ export function SceneBackground({
       if (preloadRef.current !== preload) return; // superseded by a newer src change
       setVisibleSrc(src);
       setIncomingSrc(null);
+      onLoadState?.('loaded', src);
     };
     preload.onerror = () => {
       if (preloadRef.current !== preload) return;
       // Failure — keep the current visible frame; caller may fall back to gradient.
       setIncomingSrc(null);
       if (!visibleSrc) setFailed(true);
+      onLoadState?.('failed', src);
     };
     setIncomingSrc(src);
     preload.src = src;
@@ -68,7 +72,8 @@ export function SceneBackground({
           className="lc-scene-bg__layer lc-scene-bg__layer--visible"
           src={visibleSrc}
           alt=""
-          onError={() => { if (!incomingSrc) setFailed(true); }}
+          onLoad={() => onLoadState?.('loaded', visibleSrc)}
+          onError={() => { if (!incomingSrc) setFailed(true); onLoadState?.('failed', visibleSrc); }}
           fetchPriority={priority ? 'high' : undefined}
           style={focal ? { objectPosition: `${focal.x * 100}% ${focal.y * 100}%` } : undefined}
         />

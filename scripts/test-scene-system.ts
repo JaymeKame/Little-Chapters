@@ -15,7 +15,7 @@ import { existsSync, statSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { APPROVED_SCENE_IDS, RUNTIME_SCENE_MANIFEST, SCENE_MANIFEST, sceneApproval } from '../lib/scene-manifest.ts';
-import { selectSceneForPage } from '../lib/scene-selector.ts';
+import { selectSceneForPage, selectStaticSceneSequence } from '../lib/scene-selector.ts';
 import type { Chapter, ChapterPage } from '../lib/chapters.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -169,6 +169,16 @@ console.log('\n=== Continuity ===');
   const a1 = pick(c, page('Finn dove down to meet a big friendly sea turtle underwater.'));
   const a2 = pick(c, page('Finn dove down to meet a big friendly sea turtle underwater.'));
   assert(a1.id === a2.id && sceneApproval(a1.id) === 'approved', 'identical pages remain deterministic inside the approved set');
+}
+{
+  const c = chapter({ ambience: 'ocean', setting: 'a sunlit coral reef under calm turquoise water' });
+  c.pages = [
+    page('A shell rested near the water.'), page('The tide moved softly.'),
+    page('A hidden path appeared.'), page('The map pointed onward.'), page('The doorway opened at last.'),
+  ];
+  const sequence = selectStaticSceneSequence(c, [0, 2, 3, 4].map((pageIndex, index) => ({ sceneId: `scene-${index + 1}`, page: c.pages[pageIndex], pageIndex })), 'girl', null);
+  const selected = Object.values(sequence).map(({ asset }) => asset.src);
+  assert(new Set(selected).size === 4, 'four authored scenes receive four distinct approved fallbacks when generation is unavailable');
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

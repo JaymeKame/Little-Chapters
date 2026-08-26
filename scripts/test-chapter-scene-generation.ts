@@ -93,12 +93,7 @@ assert.doesNotMatch(home, /!scenePackageResolved/);
 assert.match(home, /sceneUrl\(scenePackage, 'scene-1'\) \?\? scene\?\.asset\.src/);
 const read = readFileSync('app/read/page.tsx','utf8');
 assert.doesNotMatch(read, /return <div className="screen" \/>/);
-// Correction pass 2, Section 5: sceneBg now also falls through to
-// sceneAssetUrls[interaction.visualSceneId] before the static fallback so
-// interaction beats show their own scene. The invariant checked here is
-// that the generated scene package is still primary and the static
-// selector remains the ultimate fallback.
-assert.match(read, /sceneUrl\(scenePackage, currentSceneId\)/, 'read still resolves via sceneUrl');
-assert.match(read, /sceneSelection\?\.asset\.src/, 'read still falls back to the approved-static scene selector');
+assert.match(read, /requestedSceneId = activeInteraction\?\.activity\.visualSceneId \?\? pageAuthoredSceneId/);
+assert.match(read, /sceneBg = resolvedSceneUrl \?\? sceneSelection\?\.asset\.src/);
 
 console.log('Chapter scene generation contract: 32 passed, 0 failed');

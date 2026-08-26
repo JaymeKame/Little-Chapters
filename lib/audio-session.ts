@@ -172,7 +172,11 @@ export class AudioSessionController {
    * Per-segment `holdMs` (correction sprint Section 7) is used when present —
    * phoneme modeling / onset+rime need real listening time. Otherwise a
    * purpose-based default keeps the older callers behaving as before. */
-  speakSequence(segments: Array<{ text: string; purpose: string; holdMs?: number }>, onEnd?: () => void): void {
+  speakSequence(
+    segments: Array<{ text: string; purpose: string; holdMs?: number }>,
+    onEnd?: () => void,
+    onSettle?: (status: 'ended' | 'cancelled') => void,
+  ): void {
     this.cancelSpeech();
     const sequenceToken = this.speechToken;
     // Outer onEnd MUST fire exactly once — either after the last segment,
@@ -180,16 +184,15 @@ export class AudioSessionController {
     // it to release UI gates (interactionReady, correctionSpeaking) and must
     // never be starved of it. See the audio-session speak() comment above.
     let settled = false;
-    const settleOuter = () => { if (settled) return; settled = true; onEnd?.(); };
+    const settleOuter = (status: 'ended' | 'cancelled') => { if (settled) return; settled = true; onEnd?.(); onSettle?.(status); };
     const play = (index: number, expectedToken: number) => {
-      if (expectedToken !== this.speechToken) { settleOuter(); return; }
+      if (expectedToken !== this.speechToken) { settleOuter('cancelled'); return; }
       const segment = segments[index];
-      if (!segment) { settleOuter(); return; }
+      if (!segment) { settleOuter('ended'); return; }
       this.speak(segment.text, {
         purpose: segment.purpose,
         onSettle: (status) => {
-          if (status === 'cancelled') { settleOuter(); return; }
-          if (sequenceToken + index + 1 !== this.speechToken) { settleOuter(); return; }
+          if (status === 'cancelled') { settleOuter('cancelled'); return; }
           const nextToken = this.speechToken;
           const purposeHold = segment.purpose === 'phoneme-model'
             ? 440
