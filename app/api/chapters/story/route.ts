@@ -87,16 +87,17 @@ export async function POST(request: NextRequest) {
       storySoFar,
       recentlyMissedWords,
       skeletonId: body.skeletonId,
+      childContext: profile.childContext,
     });
     if (!result) return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
-    const { draft, skeleton, slots } = result;
+    const { draft, skeleton, slots, blueprint } = result;
     // slots go back too: the client's parent report must name the words the
     // story was actually generated with, not a fresh re-roll.
-    const adapted = adaptTutorDraft(profile, draft, skeleton, slots, stage);
+    const adapted = adaptTutorDraft(profile, draft, skeleton, slots, stage, blueprint);
     if (!adapted) return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
     const chapter = { ...adapted, id: body.chapterId, character: profile.childName, companion: companionName,
       provenance: { ...adapted.provenance, entitlementSource } };
-    const payload = { draft, skeleton, slots, chapter };
+    const payload = { draft, skeleton, slots, blueprint, chapter };
     await dailyChapterRef(body.chapterId).set({ chapter, ownerUid: auth.uid, entitlementSource, generatedAt: new Date().toISOString() });
     return NextResponse.json(payload, { status: 201 });
   } catch (error) {

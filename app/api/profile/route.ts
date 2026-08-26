@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
     age: typeof p.age === 'number' && Number.isFinite(p.age) ? Math.min(12, Math.max(3, Math.round(p.age))) : 6,
     interests: p.interests.slice(0, 3),
     avatar: AVATARS.some((a) => a.id === p.avatar) ? p.avatar : undefined,
+    childContext: typeof p.childContext === 'string' ? p.childContext.trim().slice(0, 2000) : undefined,
     createdAt: typeof p.createdAt === 'number' ? p.createdAt : Date.now(),
   };
 

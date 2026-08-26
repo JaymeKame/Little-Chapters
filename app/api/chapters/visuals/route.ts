@@ -70,7 +70,15 @@ async function generateStoryboard(prompt: string): Promise<Buffer> {
  *  entity metadata attached to each scene is built from that verified set,
  *  never from the prompt alone — so a spatial "find it" interaction can only
  *  target an object the reviewer confirmed. */
-interface ReviewedPanel { panel: number; visibleObjects: Array<{ label: string; confidence: number }> }
+interface ReviewedPanel {
+  panel: number;
+  visibleObjects: Array<{ label: string; confidence: number }>;
+  storyBeatRelevance: {
+    settingMatches: boolean; characterMatches: boolean; actionMatches: boolean;
+    noContradiction: boolean; meaningfullyDifferent: boolean; continuityMatches: boolean;
+    confidence: number;
+  };
+}
 interface ReviewOutcome { approved: boolean; reasons: string[]; panels: ReviewedPanel[] }
 
 async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<ReviewOutcome> {
@@ -89,8 +97,9 @@ async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<R
         { type: 'text', text:
           `Review this four-panel children's storybook storyboard for chapter ${chapter.id}. `
           + `Return STRICT JSON with this exact shape:\n`
-          + `{"approved": boolean, "reasons": string[], "panels": [{"panel": 1|2|3|4, "visibleObjects": [{"label": "string, must be one of the candidates for that panel", "confidence": 0..1}]}]}\n`
+          + `{"approved": boolean, "reasons": string[], "panels": [{"panel": 1|2|3|4, "visibleObjects": [{"label": "string, must be one of the candidates for that panel", "confidence": 0..1}], "storyBeatRelevance": {"settingMatches": boolean, "characterMatches": boolean, "actionMatches": boolean, "noContradiction": boolean, "meaningfullyDifferent": boolean, "continuityMatches": boolean, "confidence": 0..1}}]}\n`
           + `\nStyle review rules: warm whimsical handcrafted cartoon storybook style; never photorealistic, painterly-realistic, anime, generic/glossy 3D, horror, or glossy AI art; no embedded words/logos; the same characters retain appearance, clothing, proportions and colors in every panel; the environment and palette remain coherent; each panel visibly depicts its requested narrative action; content is calm and child-safe. Set approved=false on any uncertainty.\n`
+          + `\nStory-beat relevance is mandatory: compare each panel with its requested panel prompt. settingMatches, required character, approximate action, no contradiction, meaningful change from the prior panel, and continuity must all be true with confidence >=0.7 or approved MUST be false.\n`
           + `\nVisible-objects rules (MANDATORY, even when approved=false): for each of the four panels list ONLY the candidate labels that are UNAMBIGUOUSLY DEPICTED in that panel — a clearly drawn, identifiable object a five-year-old could point to. Never invent labels not in the candidate list. Never list an object because the prompt mentioned it — only because you can SEE it. Confidence is your calibrated certainty (0..1); anything under 0.6 will be treated as unverified downstream, so err on the side of omitting.\n`
           + `\nCandidates per panel (use these labels verbatim):\n`
           + candidatesByPanel.map((row) => `  Panel ${row.panel}: ${row.candidates.join(', ') || '(none)'}`).join('\n'),
@@ -113,9 +122,20 @@ async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<R
           visibleObjects: row.visibleObjects
             .filter((item): item is { label: string; confidence: number } => Boolean(item) && typeof item.label === 'string' && typeof item.confidence === 'number')
             .map((item) => ({ label: item.label, confidence: Math.max(0, Math.min(1, item.confidence)) })),
+          storyBeatRelevance: {
+            settingMatches: row.storyBeatRelevance?.settingMatches === true,
+            characterMatches: row.storyBeatRelevance?.characterMatches === true,
+            actionMatches: row.storyBeatRelevance?.actionMatches === true,
+            noContradiction: row.storyBeatRelevance?.noContradiction === true,
+            meaningfullyDifferent: row.storyBeatRelevance?.meaningfullyDifferent === true,
+            continuityMatches: row.storyBeatRelevance?.continuityMatches === true,
+            confidence: Math.max(0, Math.min(1, row.storyBeatRelevance?.confidence ?? 0)),
+          },
         }))
     : [];
-  if (!approved) throw new Error(`IMAGE_REVIEW_REJECTED:${reasons.join('|').slice(0, 400)}`);
+  const relevant = panels.length === manifest.scenes.length && panels.every((panel) =>
+    Object.entries(panel.storyBeatRelevance).every(([key, value]) => key === 'confidence' ? Number(value) >= 0.7 : value === true));
+  if (!approved || !relevant) throw new Error(`IMAGE_REVIEW_REJECTED:${reasons.join('|').slice(0, 400) || 'story-beat relevance failed'}`);
   return { approved, reasons, panels };
 }
 

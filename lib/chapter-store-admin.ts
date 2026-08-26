@@ -22,6 +22,7 @@
 
 import { adminDb } from './firebase-admin';
 import type { StoryDraft } from '../reading-tutor/src/validators';
+import type { StoryBlueprint } from './story-blueprint.ts';
 
 export interface PersistedChapterRecord {
   day: string; // YYYY-MM-DD, child-local (see lib/chapter-id.ts)
@@ -32,6 +33,7 @@ export interface PersistedChapterRecord {
   draft?: StoryDraft;
   skeletonId?: string;
   slots?: Record<string, string>;
+  blueprint?: StoryBlueprint;
   createdAt: string;
 }
 

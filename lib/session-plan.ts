@@ -9,6 +9,7 @@ export type SessionBeat =
   | { id: 'find-in-scene'; kind: 'find-in-scene'; afterPage: number; activity: StoryInteractionBeat }
   | { id: 'prediction'; kind: 'prediction'; afterPage: number; activity: StoryInteractionBeat }
   | { id: 'word-builder'; kind: 'word-builder'; afterPage: number; activity: StoryInteractionBeat }
+  | { id: 'story-order'; kind: 'story-order'; afterPage: number; activity: StoryInteractionBeat }
   | { id: 'ending'; kind: 'ending' };
 
 export interface SoundHunt { pattern: string; prompt: string; choices: [string, string, string]; answer: string }
@@ -80,6 +81,8 @@ export function buildSessionPlan(
       ? `Welcome back, ${childName}. Last time, ${previousTeaser} Let’s see what happens now.`
       : `Welcome, ${childName}. Today, ${chapter.character} has a new mystery for us.`,
   }];
+  const storyOrder = interactionManifest.beats.find((beat) => beat.mechanicType === 'story-order');
+  if (storyOrder) beats.push({ id: 'story-order', kind: 'story-order', afterPage: Math.min(1, count - 2), activity: storyOrder });
 
   // We render each interaction after the reading cluster that ends at the
   // corresponding anchor page. `clusters` already produces up to four
@@ -101,9 +104,9 @@ export function buildSessionPlan(
   return beats;
 }
 
-export function interactionAfterPage(plan: SessionBeat[], pageIndex: number): Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' }> | null {
-  return plan.find((beat): beat is Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' }> =>
-    (beat.kind === 'sound-hunt' || beat.kind === 'find-in-scene' || beat.kind === 'prediction' || beat.kind === 'word-builder') && beat.afterPage === pageIndex,
+export function interactionAfterPage(plan: SessionBeat[], pageIndex: number): Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' | 'story-order' }> | null {
+  return plan.find((beat): beat is Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' | 'story-order' }> =>
+    (beat.kind === 'sound-hunt' || beat.kind === 'find-in-scene' || beat.kind === 'prediction' || beat.kind === 'word-builder' || beat.kind === 'story-order') && beat.afterPage === pageIndex,
   ) ?? null;
 }
 

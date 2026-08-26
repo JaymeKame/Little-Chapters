@@ -16,6 +16,7 @@ import { initialStage } from '../reading-tutor/src/progression';
 import { pickSkeleton, SKELETONS, type Skeleton } from '../reading-tutor/src/skeletons';
 import { assignSlots } from '../reading-tutor/src/slots';
 import type { StoryDraft } from '../reading-tutor/src/validators';
+import { fallbackBlueprintForChapter, type StoryBlueprint } from './story-blueprint.ts';
 import { chapterIdForDay, todayLocal } from './chapter-id';
 
 export interface ChapterPage {
@@ -39,6 +40,8 @@ export interface Chapter {
   cliffhanger: [string, string];
   teaser: string;
   phonics: { hint: string; words: string[] }[];
+  /** Complete, validated causal plan authored before the session starts. */
+  storyBlueprint?: StoryBlueprint;
   provenance?: ChapterProvenance;
 }
 
@@ -238,7 +241,7 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
     focusWords: page.focus.map((word) => fillTemplate(word, vars)),
   }));
 
-  return {
+  const chapter: Chapter = {
     id,
     title: "Today's Chapter",
     character: childName,
@@ -251,6 +254,8 @@ export function chapterFor(interest: InterestId | undefined, childName = 'reader
     phonics: derivePhonics(pages, [childName]),
     provenance: { source: 'demo/static' },
   };
+  chapter.storyBlueprint = fallbackBlueprintForChapter({ protagonist: chapter.character, companion: chapter.companion, setting: chapter.setting, pages: chapter.pages });
+  return chapter;
 }
 
 /* ── Story scenes (client side) ──────────────────────────────────────────
@@ -375,6 +380,7 @@ export function adaptTutorDraft(
    *  age-derived value only for callers that don't have it yet (e.g. this
    *  function's own existing unit tests). */
   stage: number = stageForAge(profile.age),
+  blueprint?: StoryBlueprint,
 ): Chapter | null {
   if (!Array.isArray(draft.sentences) || draft.sentences.length === 0) return null; // a page-less chapter would crash the reader
   rememberSkeleton(profile, skeleton.id);
@@ -405,6 +411,7 @@ export function adaptTutorDraft(
     cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
     teaser: draft.summaryLine || `${profile.childName} has more to discover tomorrow...`,
     phonics: [{ hint: `Stage ${stage} practice`, words: practiceWords }],
+    storyBlueprint: blueprint,
     provenance: { source: 'generated', generatedAt: new Date().toISOString() },
   };
 }
@@ -581,7 +588,7 @@ async function generateTutorChapterPersisted(
     if (!response.ok) return null; // 402 (not subscribed) / 503 / etc — caller stays on the demo arc
     const data = (await response.json()) as {
       chapter?: Chapter | null;
-      record?: { source: 'generated' | 'fallback'; stage: number; draft?: StoryDraft; skeletonId?: string; slots?: Record<string, string> };
+      record?: { source: 'generated' | 'fallback'; stage: number; draft?: StoryDraft; blueprint?: StoryBlueprint; skeletonId?: string; slots?: Record<string, string> };
     };
     if (data.chapter?.pages?.length) {
       try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(data.chapter)); } catch { /* accelerator only */ }
@@ -590,7 +597,7 @@ async function generateTutorChapterPersisted(
     const rec = data.record;
     if (!rec || rec.source !== 'generated' || !rec.draft) return null;
     const skeleton = SKELETONS.find((s) => s.id === rec.skeletonId) ?? context.skeleton;
-    const chapter = adaptTutorDraft(profile, rec.draft, skeleton, rec.slots, rec.stage);
+    const chapter = adaptTutorDraft(profile, rec.draft, skeleton, rec.slots, rec.stage, rec.blueprint);
     if (!chapter) return null;
     try {
       localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));
@@ -640,7 +647,7 @@ async function generateTutorChapter(
       }),
     });
     if (!response.ok) { generationFailures.set(id, `story-generation-${response.status}`); latestGenerationFailure = `story-generation-${response.status}`; return null; }
-    const data = await response.json() as { chapter?: Chapter; draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string> };
+    const data = await response.json() as { chapter?: Chapter; draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string>; blueprint?: StoryBlueprint };
     if (data.chapter?.pages?.length) {
       generationFailures.delete(id);
       latestGenerationFailure = undefined;
@@ -648,7 +655,7 @@ async function generateTutorChapter(
       return data.chapter;
     }
     if (!data.draft || !data.skeleton) { generationFailures.set(id, 'story-generation-invalid-response'); return null; }
-    const chapter = adaptTutorDraft(profile, data.draft, data.skeleton, data.slots, context.stage);
+    const chapter = adaptTutorDraft(profile, data.draft, data.skeleton, data.slots, context.stage, data.blueprint);
     if (!chapter) { generationFailures.set(id, 'story-generation-invalid-draft'); return null; }
     generationFailures.delete(id);
     latestGenerationFailure = undefined;

@@ -10,6 +10,13 @@ export interface PhonicsModelSegment {
   holdMs?: number;
 }
 
+/** One semantic tutor turn is synthesized once. Segment arrays remain useful
+ * for pedagogical structure tests, while this preserves punctuation/prosody
+ * and prevents a network fetch plus music duck cycle between every word. */
+export function semanticTurnText(segments: readonly PhonicsModelSegment[]): string {
+  return segments.map((segment) => segment.text.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+
 /** Correction pass 2, Section 1: two-to-three developmentally appropriate
  *  example words per phonics family, chosen for recognizability at age ~5 and
  *  for unambiguous shared beginning sounds. Never asks the LLM to improvise;

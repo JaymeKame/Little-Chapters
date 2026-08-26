@@ -55,6 +55,8 @@ export interface ChildProfile {
   age: number;
   interests: InterestId[];
   avatar?: AvatarId;
+  /** Optional parent-provided context used only to personalize safe story blueprints. */
+  childContext?: string;
   createdAt: number;
 }
 
@@ -83,6 +85,7 @@ export function loadProfile(): ChildProfile | null {
       age: typeof raw.age === 'number' && Number.isFinite(raw.age) ? Math.min(12, Math.max(3, Math.round(raw.age))) : 6,
       interests: raw.interests.filter((i): i is InterestId => INTERESTS.some((x) => x.id === i)).slice(0, 3),
       avatar: AVATARS.some((a) => a.id === raw.avatar) ? (raw.avatar as AvatarId) : undefined,
+      childContext: typeof raw.childContext === 'string' ? raw.childContext.slice(0, 2000) : undefined,
       createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
     };
     if (childId !== raw.childId) saveProfile(profile);

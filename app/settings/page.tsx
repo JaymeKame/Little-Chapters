@@ -64,6 +64,7 @@ export default function SettingsPage() {
 
   async function managePlan() {
     if (!user || user.isAnonymous) { router.push('/unlock'); return; }
+    if (subscription !== 'active') { router.push('/payment'); return; }
     const response = await fetch('/api/payments/portal', { method: 'POST', headers: { Authorization: `Bearer ${await user.getIdToken()}` } });
     const data = await response.json().catch(() => ({})) as { url?: string };
     if (response.ok && data.url) window.location.href = data.url;
@@ -89,6 +90,10 @@ export default function SettingsPage() {
         <fieldset><legend>Favorite themes <small>Choose up to three</small></legend><div className="lc-settings-chips">
           {INTERESTS.map((interest) => <button type="button" key={interest.id} className={profile.interests.includes(interest.id) ? 'is-selected' : ''} onClick={() => toggleTheme(interest.id)}>{interest.label}</button>)}
         </div></fieldset>
+        <label>Tell us anything that helps us know your child <small>Optional</small>
+          <textarea rows={6} maxLength={2000} value={profile.childContext ?? ''} onChange={(e) => setProfile({ ...profile, childContext: e.target.value })} placeholder="Their interests, favorite things, personality, routines, humor, or topics they love." />
+        </label>
+        <p className="lc-settings-note">We only use this to make their Little Chapters reading experience more relevant to their unique interests and personality. You do not need to share anything sensitive.</p>
         <Segmented<DifficultyObservation> label="How has the reading felt lately?" value={prefs.difficultyObservation} onChange={(value) => patchPreferences('difficultyObservation', value)} options={[['too-easy','Too easy'],['about-right','About right'],['too-hard','Too hard']]} />
         <p className="lc-settings-note">This is guidance for the adaptive system. It never directly replaces validated reading progress.</p>
       </section>

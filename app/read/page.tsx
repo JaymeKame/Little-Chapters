@@ -52,9 +52,10 @@ import { loadPreferences } from '@/lib/preferences';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
 import { loadChapterScenePackage, requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
-import { correctionModel, modelWordThroughSound, successSoundModel, wordBuilderChunkModel, estimateSequenceDurationMs } from '@/lib/phonics-model';
+import { correctionModel, modelWordThroughSound, successSoundModel, wordBuilderChunkModel, estimateSequenceDurationMs, semanticTurnText } from '@/lib/phonics-model';
 import { confidentTrackerWords } from '@/lib/reading-tracker';
 import { TutorPhraseSession } from '@/lib/tutor-intents';
+import { materializeStoryPages } from '@/lib/story-blueprint';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
@@ -203,7 +204,7 @@ export default function ReadPage() {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [scenePackage, setScenePackage] = useState<ChapterScenePackage | null>(null);
   const [introOpen, setIntroOpen] = useState(() => typeof window === 'undefined' || new URLSearchParams(window.location.search).get('skipWelcome') !== '1');
-  const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' }> | null>(null);
+  const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' | 'story-order' }> | null>(null);
   const [interactionChoice, setInteractionChoice] = useState<string | null>(null);
   const [interactionFeedback, setInteractionFeedback] = useState<'idle' | 'try-again' | 'success'>('idle');
   const [wordBuilderProgress, setWordBuilderProgress] = useState(0);
@@ -637,7 +638,7 @@ export default function ReadPage() {
     const planned = sessionPlan.find((beat) => beat.kind === requested);
     const manifestBeat = requested === 'find-in-scene' ? interactionManifest?.beats.find((beat) => beat.mechanicType === 'find-it-in-scene') : null;
     const interaction = planned ?? (manifestBeat ? { id:'find-in-scene', kind:'find-in-scene', afterPage:pageIdx, activity:manifestBeat } as const : null);
-    if (interaction && (interaction.kind === 'sound-hunt' || interaction.kind === 'find-in-scene' || interaction.kind === 'prediction' || interaction.kind === 'word-builder')) setActiveInteraction(interaction);
+    if (interaction && (interaction.kind === 'sound-hunt' || interaction.kind === 'find-in-scene' || interaction.kind === 'prediction' || interaction.kind === 'word-builder' || interaction.kind === 'story-order')) setActiveInteraction(interaction);
   }, [chapter, sessionPlan]);
   const lookaheadBeat = useMemo(() => {
     if (!interactionManifest) return null;
@@ -679,7 +680,8 @@ export default function ReadPage() {
       const kind = activity?.mechanicType === 'find-sound' ? 'sound-hunt'
         : activity?.mechanicType === 'find-it-in-scene' ? 'find-in-scene'
         : activity?.mechanicType === 'what-happens-next' ? 'prediction'
-        : activity?.mechanicType === 'word-builder' ? 'word-builder' : null;
+        : activity?.mechanicType === 'word-builder' ? 'word-builder'
+        : activity?.mechanicType === 'story-order' ? 'story-order' : null;
       if (activity && kind) {
         setPendingNextPage(Math.min(nextPageIdx + 1, chapter!.pages.length - 1));
         setActiveInteraction({ id: kind, kind, afterPage: nextPageIdx, activity } as Extract<SessionBeat, { kind: MechanicKind }>);
@@ -748,11 +750,10 @@ export default function ReadPage() {
         activeInteraction.activity.literacyTarget ?? '',
       );
       armWatchdog(estimateSequenceDurationMs(sequence) + 3500);
-      audioSession.speakSequence(sequence, undefined, (status) => {
-        if (status !== 'ended') return;
+      audioSession.speak(semanticTurnText(sequence), { purpose: 'interaction-prompt', onEnd: () => {
         if (watchdog !== null) window.clearTimeout(watchdog);
         openGate();
-      });
+      } });
       return () => { if (watchdog !== null) window.clearTimeout(watchdog); };
     }
     if (activeInteraction.kind === 'word-builder') {
@@ -1453,11 +1454,10 @@ export default function ReadPage() {
     setInteractionReady(false);
     const release = () => setInteractionReady(true);
     const watchdog = window.setTimeout(release, estimateSequenceDurationMs(sequence) + 3500);
-    audioSession.speakSequence(sequence, undefined, (status) => {
-      if (status !== 'ended') return;
+    audioSession.speak(semanticTurnText(sequence), { purpose: 'interaction-prompt-replay', onEnd: () => {
       window.clearTimeout(watchdog);
       release();
-    });
+    } });
   }
 
   function chooseInteraction(choice: string) {
@@ -1474,13 +1474,24 @@ export default function ReadPage() {
       // happen" on the physical device), then a warm acknowledgment.
       const picked = activeInteraction.activity.interactiveObjects.find((option) => option.label === choice);
       const spokenChoice = picked?.caption ?? picked?.spokenLabel ?? choice;
-      audioSession.speakSequence(
-        [
-          { text: spokenChoice, purpose: 'prediction' },
-          { text: tutorPhrasesRef.current.line('PREDICTION_RESPONSE'), purpose: 'prediction-acknowledgment' },
-        ],
-        () => setTimeout(continueAfterInteraction, 350),
-      );
+      // The branch was authored as part of the complete blueprint before the
+      // session. Clicking selects that already-written consequence page; no
+      // story generation occurs in response to the child.
+      setChapter((current) => current?.storyBlueprint
+        ? { ...current, pages: materializeStoryPages(current.storyBlueprint, choice) }
+        : current);
+      audioSession.speak(`${spokenChoice} ${tutorPhrasesRef.current.line('PREDICTION_RESPONSE')}`, {
+        purpose: 'prediction', onEnd: () => setTimeout(continueAfterInteraction, 350),
+      });
+      return;
+    }
+    if (activeInteraction.kind === 'story-order') {
+      const correct = choice === activeInteraction.activity.correctTarget;
+      setInteractionFeedback(correct ? 'success' : 'try-again');
+      const line = correct ? activeInteraction.activity.spokenSuccess : 'That happened later. Think back and try once more.';
+      audioSession.speak(line, { purpose: 'instruction', onEnd: correct
+        ? () => setTimeout(continueAfterInteraction, 500)
+        : () => { setInteractionFeedback('idle'); setInteractionChoice(null); } });
       return;
     }
     const correct = choice === activeInteraction.activity.correctTarget;
@@ -1489,10 +1500,9 @@ export default function ReadPage() {
     if (activeInteraction.kind === 'find-in-scene') {
       audioSession.speak(activeInteraction.activity.spokenSuccess, { purpose: 'discovery', onEnd: () => setTimeout(continueAfterInteraction, 700) });
     } else if (correct) {
-      audioSession.speakSequence(
-        successSoundModel(activeInteraction.activity.correctTarget ?? choice, pattern),
-        () => setTimeout(continueAfterInteraction, 700),
-      );
+      audioSession.speak(semanticTurnText(successSoundModel(activeInteraction.activity.correctTarget ?? choice, pattern)), {
+        purpose: 'phoneme-model', onEnd: () => setTimeout(continueAfterInteraction, 700),
+      });
     } else {
       // Correction pass 2, Section 3: model the child's choice, model a
       // reference word, model the target, compare, invite retry. The choice
@@ -1512,10 +1522,10 @@ export default function ReadPage() {
         if (disposedRef.current) return;
         releaseCorrection();
       }, estimateSequenceDurationMs(correctionSeq) + 3500);
-      audioSession.speakSequence(correctionSeq, () => {
+      audioSession.speak(semanticTurnText(correctionSeq), { purpose: 'phoneme-model', onEnd: () => {
         window.clearTimeout(correctionWatchdog);
         releaseCorrection();
-      });
+      } });
     }
   }
 

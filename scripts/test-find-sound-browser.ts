@@ -20,7 +20,7 @@ async function openGame(browser: Browser, completeSpeech: boolean): Promise<{ pa
   const spoken: string[] = [];
   await page.addInitScript((complete) => {
     Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
-      speak(utterance: SpeechSynthesisUtterance) { if (complete) window.setTimeout(() => utterance.onend?.({} as SpeechSynthesisEvent), 0); },
+      speak(utterance: SpeechSynthesisUtterance) { if (complete) window.setTimeout(() => utterance.onend?.({} as SpeechSynthesisEvent), 250); },
       cancel() {}, pause() {}, resume() {}, getVoices() { return []; }, speaking: false, pending: false, paused: false,
       addEventListener() {}, removeEventListener() {}, dispatchEvent() { return true; },
     } });
@@ -53,16 +53,16 @@ async function main() {
   const normal = await openGame(browser, true);
   const game = normal.page.locator('[data-session-beat="sound-hunt"]');
   await normal.page.waitForFunction(() => document.querySelector('[data-session-beat="sound-hunt"]')?.getAttribute('data-interaction-ready') === 'true');
-  assert.deepEqual(normal.spoken.slice(0, 6).map((text) => text.replace(/\s+/g, ' ').trim()), [
-    'listen to these words.', 'ship...', 'shoe...', 'shut...', 'listen to how they begin.', 'which story word starts the same way?',
-  ]);
+  assert.equal(normal.spoken.length, 1, 'one semantic tutor turn makes one TTS request');
+  assert.equal(normal.spoken[0].replace(/\s+/g, ' ').trim(),
+    'listen to these words. ship... shoe... shut... listen to how they begin. which story word starts the same way?');
   assert.ok(!normal.spoken.some((text) => /\/(sh|th|ch)\//.test(text)), 'automatic model never sends slash notation to speech');
   assert.equal(await normal.page.locator('.lc-prompt-speaker').getAttribute('aria-label'), 'Hear the example words again');
 
   const wrong = game.locator('.lc-choice-grid button:not([data-correct="true"])').first();
   const wrongLabel = await wrong.getAttribute('aria-label');
   await wrong.click();
-  await wrong.waitFor({ state: 'visible' });
+  await normal.page.waitForFunction(() => document.querySelector('[data-session-beat="sound-hunt"] .lc-choice-grid button.is-try-again'));
   assert.ok((await wrong.getAttribute('class'))?.includes('is-try-again'), 'wrong tap receives immediate visible feedback');
   assert.equal(await wrong.isDisabled(), true, 'choices become visibly inert during correction');
   await normal.page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-session-beat="sound-hunt"] .lc-choice-grid button')?.disabled, null, { timeout: 15000 });

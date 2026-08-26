@@ -260,13 +260,17 @@ export function selectStaticSceneSequence(
       score: scoreAsset(asset, pageQuery, chapterQuery, chapter, avatar, dogBias),
     })).sort((a, b) => b.score - a.score
       || stableHash(`${chapter.id}:${scene.pageIndex}:${a.asset.id}`) - stableHash(`${chapter.id}:${scene.pageIndex}:${b.asset.id}`));
-    const winner = ranked.find(({ asset }) => !used.has(asset.id)) ?? ranked[0];
+    // Narrative relevance wins. Avoid repetition only among candidates close
+    // enough to the best semantic score; never trade a matching bridge/forest
+    // beat for an unrelated landscape merely to make the URL different.
+    const topScore = ranked[0].score;
+    const winner = ranked.find(({ asset, score }) => topScore - score <= RECENCY_TIEBREAK_BAND && !used.has(asset.id)) ?? ranked[0];
     used.add(winner.asset.id);
     recordRecentHistory(uid, winner.asset.id);
     result[scene.sceneId] = {
       asset: winner.asset,
       score: winner.score,
-      reason: `authored-scene=${scene.sceneId} page=${scene.pageIndex} -> ${winner.asset.id} (distinct approved fallback)`,
+      reason: `authored-scene=${scene.sceneId} page=${scene.pageIndex} -> ${winner.asset.id} (semantic score ${winner.score}; uniqueness only within relevance band)`,
     };
   }
   return result;

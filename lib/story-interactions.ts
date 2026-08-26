@@ -1,6 +1,7 @@
 import type { Chapter } from './chapters';
+import { predictionCaptionIssues, storyBeatVisualPrompt } from './story-blueprint.ts';
 
-export type StoryMechanicType = 'find-sound' | 'find-it-in-scene' | 'what-happens-next' | 'word-builder' | 'final-story-unlock';
+export type StoryMechanicType = 'find-sound' | 'find-it-in-scene' | 'what-happens-next' | 'word-builder' | 'story-order' | 'final-story-unlock';
 
 export interface ChapterVisualBible {
   style: string;
@@ -57,7 +58,7 @@ export interface StoryInteractionBeat {
 
 export interface StoryInteractionManifest {
   version: 2;
-  contentRevision: 3;
+  contentRevision: 4;
   chapterId: string;
   visualBible: ChapterVisualBible;
   scenes: StoryScene[];
@@ -134,7 +135,7 @@ export function isValidPredictionCaption(text: string): boolean {
   // Ends with a full stop or exclamation (never a question — the tutor asks
   // the question; the tiles are answers).
   if (!/[.!]$/.test(trimmed)) return false;
-  return true;
+  return predictionCaptionIssues(trimmed).length === 0;
 }
 
 function capitalize(text: string): string {
@@ -227,6 +228,7 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
   const scenes: StoryScene[] = groups.map((pageIndexes, index) => {
     const narrativeBeat = pageIndexes.map((page) => chapter.pages[page].text).join(' ');
     const importantObjects = storyWords({ ...chapter, pages: pageIndexes.map((page) => chapter.pages[page]) }).slice(0, 5);
+    const blueprintBeat = chapter.storyBlueprint?.beats[Math.min(index, chapter.storyBlueprint.beats.length - 1)];
     return {
     sceneId: `scene-${index + 1}`,
     pageIndexes,
@@ -239,7 +241,9 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
     emotionalTone: index === groups.length - 1 ? 'wonder and satisfying discovery' : index === 0 ? 'curious anticipation' : 'playful discovery',
     previousSceneContinuity: index ? `Continue directly from scene-${index}; preserve every character, object, clothing detail, light direction, and environment.` : null,
     interactionBeatIds: [],
-    visualPrompt: `${bible.style}. CURRENT NARRATIVE BEAT: ${narrativeBeat} Characters present: ${chapter.character}${bible.companion ? ` and ${bible.companion}` : ''}. Important action now: ${narrativeBeat}. Important objects: ${importantObjects.join(', ')}. Location: ${chapter.setting}. Emotional tone: ${index === groups.length - 1 ? 'wonder and satisfying discovery' : 'playful curiosity'}. Palette: ${bible.palette.join(', ')}. ${index ? `Continue directly from the preceding panel with identical characters, clothing, objects, environment and lighting.` : ''} Continuity: ${bible.continuityRules.join(' ')} Avoid: ${bible.forbiddenStyles.join(', ')}.`,
+    visualPrompt: blueprintBeat && chapter.storyBlueprint
+      ? `${bible.style}. ${storyBeatVisualPrompt(chapter.storyBlueprint, blueprintBeat)} Palette: ${bible.palette.join(', ')}. Avoid: ${bible.forbiddenStyles.join(', ')}.`
+      : `${bible.style}. CURRENT NARRATIVE BEAT: ${narrativeBeat} Characters present: ${chapter.character}${bible.companion ? ` and ${bible.companion}` : ''}. Important action now: ${narrativeBeat}. Important objects: ${importantObjects.join(', ')}. Location: ${chapter.setting}. Emotional tone: ${index === groups.length - 1 ? 'wonder and satisfying discovery' : 'playful curiosity'}. Palette: ${bible.palette.join(', ')}. ${index ? `Continue directly from the preceding panel with identical characters, clothing, objects, environment and lighting.` : ''} Continuity: ${bible.continuityRules.join(' ')} Avoid: ${bible.forbiddenStyles.join(', ')}.`,
   }; });
 
   const soundGroup = chapter.phonics.find((group) => group.words.some((word) => entities.includes(word.toLowerCase())));
@@ -254,7 +258,12 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
   // Correction pass 2, Section 4: prediction choices are FULL SENTENCES —
   // grammatical, plausible next-story actions — not bare-noun tokens. See
   // buildPredictionCaptions below.
-  const predictionCaptions = buildPredictionCaptions(chapter, visualEntities, settingEntities, soundAnswer);
+  const authoredBranches = chapter.storyBlueprint
+    ? [chapter.storyBlueprint.prediction.optionA, chapter.storyBlueprint.prediction.optionB]
+        .filter((branch) => predictionCaptionIssues(branch.caption, chapter.character).length === 0)
+        .map((branch) => ({ tokenLabel: branch.id, caption: branch.caption }))
+    : [];
+  const predictionCaptions = authoredBranches.length === 2 ? authoredBranches : buildPredictionCaptions(chapter, visualEntities, settingEntities, soundAnswer);
   const predictionEntities = predictionCaptions.map((row) => row.tokenLabel);
   const lastPage = chapter.pages.length - 1;
   const finalTarget = chapter.pages[lastPage]?.focusWords.at(-1)?.toLowerCase() ?? entities.at(-1) ?? soundAnswer;
@@ -312,6 +321,19 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
       spokenSuccess: `${builderTarget}! You built the word. Back to the story.`, transitionTarget: 'final-unlock',
     },
     {
+      beatId: 'story-order', mechanicType: 'story-order', literacyTarget: null,
+      spokenInstruction: 'Think back. What happened first?',
+      storyEntities: chapter.pages.slice(0, Math.min(chapter.pages.length, 4)).map((page) => page.text),
+      visualSceneId: sceneForPage(scenes, Math.min(1, lastPage)),
+      interactiveObjects: chapter.pages.slice(0, Math.min(chapter.pages.length, stageEventCount(chapter))).map((page, index) => ({
+        objectId: `story-event-${index}`, label: index === 0 ? 'first' : `event-${index + 1}`,
+        spokenLabel: shortEventCaption(page.text), caption: shortEventCaption(page.text),
+        visualSceneId: sceneForPage(scenes, Math.min(index, lastPage)), visualCue: 'word-object' as const,
+      })).reverse(),
+      correctTarget: 'first', successStoryAction: 'You remembered what happened first.',
+      spokenSuccess: 'Yes. That happened first. Now back to the story.', transitionTarget: 'reading-3',
+    },
+    {
       beatId: 'final-unlock', mechanicType: 'final-story-unlock', literacyTarget: finalTarget,
       spokenInstruction: 'This last word unlocks what happens next.', storyEntities: [finalTarget],
       visualSceneId: scenes.at(-1)!.sceneId,
@@ -321,14 +343,25 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
     },
   ];
   for (const scene of scenes) scene.interactionBeatIds = beats.filter((beat) => beat.visualSceneId === scene.sceneId).map((beat) => beat.beatId);
-  return { version: 2, contentRevision: 3, chapterId: chapter.id, visualBible: bible, scenes, beats };
+  return { version: 2, contentRevision: 4, chapterId: chapter.id, visualBible: bible, scenes, beats };
+}
+
+function stageEventCount(chapter: Chapter): number {
+  const average = chapter.pages.reduce((sum, page) => sum + page.text.split(/\s+/).length, 0) / chapter.pages.length;
+  return average <= 7 ? 2 : average <= 12 ? 3 : 4;
+}
+
+function shortEventCaption(text: string): string {
+  const first = text.split(/(?<=[.!?])\s+/)[0]?.trim() ?? text.trim();
+  const words = first.split(/\s+/).slice(0, 10).join(' ');
+  return /[.!?]$/.test(words) ? words : `${words}.`;
 }
 
 export function resolveStoryInteractionManifest(chapter: Chapter): StoryInteractionManifest {
   if (typeof localStorage !== 'undefined') {
     try {
       const cached = JSON.parse(localStorage.getItem(CACHE_PREFIX + chapter.id) ?? 'null') as StoryInteractionManifest | null;
-      if (cached?.version === 2 && cached.contentRevision === 3 && cached.chapterId === chapter.id) return cached;
+      if (cached?.version === 2 && cached.contentRevision === 4 && cached.chapterId === chapter.id) return cached;
     } catch { /* regenerate a malformed local record */ }
   }
   const manifest = buildStoryInteractionManifest(chapter);

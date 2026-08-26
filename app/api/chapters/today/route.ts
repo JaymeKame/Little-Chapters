@@ -78,9 +78,10 @@ async function tryGenerate(
     skeletonId: body.skeletonId,
     recentlyMissedWords: body.recentlyMissedWords,
     storySoFar: body.storySoFar,
+    childContext: profile.childContext,
   });
   if (!result) return { source: 'fallback' };
-  return { source: 'generated', entitlementSource, draft: result.draft, skeletonId: result.skeleton.id, slots: result.slots };
+  return { source: 'generated', entitlementSource, draft: result.draft, blueprint: result.blueprint, skeletonId: result.skeleton.id, slots: result.slots };
 }
 
 const COMPANIONS = ['Pip', 'Nori', 'Tavi', 'Bram', 'Kiko', 'Sula', 'Ollie', 'Zia'];
@@ -155,7 +156,7 @@ export async function POST(request: NextRequest) {
     if (record.source === 'generated' && record.draft) {
       const skeleton = SKELETONS.find((candidate) => candidate.id === record.skeletonId);
       if (skeleton) {
-        const adapted = adaptTutorDraft(profile, record.draft, skeleton, record.slots, record.stage);
+        const adapted = adaptTutorDraft(profile, record.draft, skeleton, record.slots, record.stage, record.blueprint);
         if (adapted) {
           chapter = { ...adapted, id: chapterId, character: profile.childName, companion: companionName,
             provenance: { ...adapted.provenance, source: 'generated', entitlementSource: record.entitlementSource ?? entitlementSource } };

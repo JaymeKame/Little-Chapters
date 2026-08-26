@@ -1169,7 +1169,8 @@ section('Adaptive loop - API route forwards personalization inputs (static check
   // new persisted app/api/chapters/today/route.ts so the two routes cannot
   // silently drift on prompt construction — so this checks two hops: the
   // route forwards recentlyMissedWords/storySoFar into generateStoryDraft(),
-  // and generateStoryDraft() itself forwards them into generateChapter().
+  // and generateStoryDraft() itself forwards them into the plan-first
+  // StoryBlueprint prompt before any child-facing prose is accepted.
   const fs = await import('node:fs');
   const routeSrc = fs.readFileSync(new URL('../../app/api/chapters/story/route.ts', import.meta.url), 'utf8');
   ok(routeSrc.includes('body.recentlyMissedWords'), 'the route reads recentlyMissedWords from the request body');
@@ -1180,8 +1181,8 @@ section('Adaptive loop - API route forwards personalization inputs (static check
   );
   const generatorSrc = fs.readFileSync(new URL('../../lib/story-generator.server.ts', import.meta.url), 'utf8');
   ok(
-    generatorSrc.includes('recentlyMissedWords') && generatorSrc.includes('storySoFar') && generatorSrc.includes('generateChapter('),
-    'and generateStoryDraft() itself forwards them into the real generateChapter(), not just parses and discards them',
+    generatorSrc.includes('recentlyMissedWords') && generatorSrc.includes('storySoFar') && generatorSrc.includes('blueprintGenerationPrompt'),
+    'and generateStoryDraft() itself forwards them into the complete StoryBlueprint prompt, not just parses and discards them',
   );
 }
 
