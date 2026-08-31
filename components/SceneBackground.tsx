@@ -1,19 +1,24 @@
 'use client';
 
 /* Full-bleed story-scene background layer for Screens 3-5. Renders a real
- * <img> from `src` (curated local scene or, if re-enabled later,
- * chapter.visuals.*SceneUrl) behind the interactive UI. If the asset is
- * missing (no story-scene files shipped yet), it fails silently and lets the
- * ancestor's .lc-scenic/.lc-cliff CSS gradient show through instead of a
- * broken image — never falls back to a small interest icon. */
+ * <img> from `src` (curated local scene or generated chapter-scene package)
+ * behind the interactive UI. If the asset is missing, it fails silently and
+ * lets the ancestor's .lc-scenic/.lc-cliff CSS gradient show through — never
+ * falls back to a small interest icon.
+ *
+ * Correction pass 2, Section 5: when `src` changes, the new image cross-fades
+ * over the previous one instead of popping — the incoming layer is preloaded
+ * (a hidden <img> with the new src) and only replaces the current layer once
+ * it has loaded, so the child never sees a blank frame between scenes. */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function SceneBackground({
   src,
   cliff = false,
   priority = false,
   focal,
+  onLoadState,
 }: {
   src: string | null;
   cliff?: boolean;
@@ -27,22 +32,48 @@ export function SceneBackground({
    *  lib/scene-manifest.ts) so `object-fit: cover`'s crop keeps the actual
    *  subject in frame on tall/narrow viewports instead of always cropping
    *  around the image's geometric center — most story-scene art has its
-   *  child/subject well left- or right-of-center, not centered. Omit (or
-   *  leave undefined) to keep the existing centered crop — every caller
-   *  that hasn't been updated to pass one keeps its exact current framing. */
+   *  child/subject well left- or right-of-center, not centered. */
   focal?: { x: number; y: number };
+  onLoadState?: (state: 'loaded' | 'failed', src: string) => void;
 }) {
   const [failed, setFailed] = useState(false);
+  const [visibleSrc, setVisibleSrc] = useState<string | null>(src);
+  const [incomingSrc, setIncomingSrc] = useState<string | null>(null);
+  const preloadRef = useRef<HTMLImageElement | null>(null);
 
-  useEffect(() => setFailed(false), [src]); // new chapter/scene — give the new src a fresh try
+  useEffect(() => {
+    setFailed(false);
+    if (!src || src === visibleSrc) { setIncomingSrc(null); return; }
+    // Preload the incoming asset; only swap it in once it's actually ready.
+    const preload = new Image();
+    preloadRef.current = preload;
+    preload.onload = () => {
+      if (preloadRef.current !== preload) return; // superseded by a newer src change
+      setVisibleSrc(src);
+      setIncomingSrc(null);
+      onLoadState?.('loaded', src);
+    };
+    preload.onerror = () => {
+      if (preloadRef.current !== preload) return;
+      // Failure — keep the current visible frame; caller may fall back to gradient.
+      setIncomingSrc(null);
+      if (!visibleSrc) setFailed(true);
+      onLoadState?.('failed', src);
+    };
+    setIncomingSrc(src);
+    preload.src = src;
+    return () => { if (preloadRef.current === preload) preloadRef.current = null; };
+  }, [src, visibleSrc]);
 
   return (
-    <div className={`lc-scene-bg${cliff ? ' lc-scene-bg--cliff' : ''}`} aria-hidden>
-      {src && !failed && (
+    <div className={`lc-scene-bg${cliff ? ' lc-scene-bg--cliff' : ''}`} aria-hidden data-effective-scene-url={visibleSrc ?? ''}>
+      {visibleSrc && !failed && (
         <img
-          src={src}
+          className="lc-scene-bg__layer lc-scene-bg__layer--visible"
+          src={visibleSrc}
           alt=""
-          onError={() => setFailed(true)}
+          onLoad={() => onLoadState?.('loaded', visibleSrc)}
+          onError={() => { if (!incomingSrc) setFailed(true); onLoadState?.('failed', visibleSrc); }}
           fetchPriority={priority ? 'high' : undefined}
           style={focal ? { objectPosition: `${focal.x * 100}% ${focal.y * 100}%` } : undefined}
         />

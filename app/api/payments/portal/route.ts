@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
 import { adminUnconfiguredResponse } from '@/lib/route-auth';
 import { createPortalSession, customerBelongsTo } from '@/lib/stripe';
+import { billingPortalConfigurationId, billingPortalReturnUrl } from '@/lib/billing-portal';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,9 +50,13 @@ export async function POST(request: NextRequest) {
 
     // Create portal session
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || request.headers.get('origin') || 'http://localhost:3000';
-    const returnUrl = `${baseUrl}/payment`;
+    // Returning to Settings remounts its subscription-status effect, so the
+    // plan shown in Little Chapters reflects portal upgrades/cancellation.
+    // Returning to /payment previously showed checkout cards and did not
+    // reliably refresh the current subscription.
+    const returnUrl = billingPortalReturnUrl(baseUrl);
 
-    const session = await createPortalSession(customerId, returnUrl);
+    const session = await createPortalSession(customerId, returnUrl, billingPortalConfigurationId());
 
     if (!session) {
       return NextResponse.json({ error: 'Failed to create portal session' }, { status: 500 });

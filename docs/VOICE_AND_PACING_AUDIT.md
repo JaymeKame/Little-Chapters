@@ -73,15 +73,26 @@ Alternatives auditioned:
 
 ### Model selection
 
-Default: **eleven_turbo_v2** — lowest latency among current v2 models
-(< 400 ms server-side) while retaining natural prosody.
+**2026-08-22 update**: Default switched from `eleven_turbo_v2` to
+**`eleven_multilingual_v2`** after a live production report that the voice
+"still sounds mechanical" with ElevenLabs already confirmed as the active
+provider (routing was not the problem — see the runtime diagnostics section
+below). turbo_v2 is ElevenLabs' own documented latency-optimized model,
+built for real-time conversational agents; multilingual_v2 is their
+documented quality/expressiveness-optimized model, and their own
+recommendation for narration/audiobook-style content — which is what this
+app's reading-tutor prompts actually are, not a live conversation. The extra
+~300-400ms is immaterial against ELEVENLABS_TIMEOUT_MS's 8s budget and the
+existing per-text cache. This is a pure model-ID swap (`ELEVENLABS_MODEL_ID`
+env override, or the new `DEFAULT_MODEL_ID` in `lib/elevenlabs.server.ts`)
+— voice_settings and every callsite are unchanged.
 
 | Model | Latency | Notes |
 |---|---|---|
-| `eleven_turbo_v2` | ~350 ms | **Default** — best balance |
-| `eleven_turbo_v2_5` | ~300 ms | Marginally faster, slightly less expressive |
-| `eleven_multilingual_v2` | ~700 ms | Only needed for non-English localisation |
-| `eleven_monolingual_v1` | ~500 ms | Legacy; prefer turbo_v2 |
+| `eleven_multilingual_v2` | ~700 ms | **Default (2026-08-22)** — ElevenLabs' quality/expressiveness-optimized model |
+| `eleven_turbo_v2` | ~350 ms | Previous default — latency-optimized, read as flatter/more clipped on short prompts |
+| `eleven_turbo_v2_5` | ~300 ms | Marginally faster than turbo_v2, similarly latency-optimized |
+| `eleven_monolingual_v1` | ~500 ms | Legacy; prefer multilingual_v2 |
 
 ### Voice settings rationale
 
@@ -97,15 +108,18 @@ in response to a live-tested "sounds mechanical" report. 0.00 style is
 ElevenLabs' fully-neutral setting, which on this voice reads closer to flat
 than warm; a small style lift plus a slightly higher stability floor targets
 "expressive but not theatrical" without the instability that low-stability +
-high-style tends to produce on v2 models. Not verified by ear against a live
-ElevenLabs account in the environment this change was made in — re-run
-`npm run test:voice -- --speak "..."` with real credentials and compare.
+high-style tends to produce on v2 models.
 
-If a listen-through says these two knobs aren't enough, the model/voice
-themselves are the bigger lever — try `eleven_multilingual_v2`
-(`ELEVENLABS_MODEL_ID=eleven_multilingual_v2`) for materially more natural
-prosody at ~700ms latency instead of ~350ms; no code change needed, it's
-already an env-var override.
+**2026-08-22 update**: the two knobs above were not enough — the same
+"sounds mechanical" report recurred in production with ElevenLabs confirmed
+active (not a Web Speech fallback). Moved the bigger lever: the model itself
+is now `eleven_multilingual_v2` instead of `eleven_turbo_v2` (see "Model
+selection" above). Neither change has been verified by ear against a live
+ElevenLabs account from this environment — re-run
+`npm run test:voice -- --speak "..."` with real credentials and compare, or
+use the new `window.__voiceDebug().lastUtterance` / `serverConfig` fields
+(see "Runtime diagnostics" below) to confirm which provider/model actually
+served a given utterance directly from the deployed browser.
 
 ---
 
@@ -151,7 +165,7 @@ ELEVENLABS_API_KEY=sk_...
 
 # Optional overrides
 ELEVENLABS_VOICE_ID=EXAVITQu4vr4xnSDxMaL
-ELEVENLABS_MODEL_ID=eleven_turbo_v2
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2
 ```
 
 That's the whole activation — no separate client-side flag needed (see
@@ -169,6 +183,50 @@ npm run test:voice -- --speak "Ready to see what happens today?"
 
 The `test:voice` script probes `GET /api/speech/model` (provider metadata) and,
 with `--speak "…"`, POSTs a sample phrase and saves the result as `output.mp3`.
+
+---
+
+## Runtime diagnostics (2026-08-22)
+
+`window.__voiceDebug()` — callable from ANY real browser's DevTools console,
+on any deployment including production (unlike `__audioDebug()`, this is
+deliberately not gated on `NODE_ENV === 'development'`; see the comment
+above it in `lib/audio.ts`). Never includes the synthesized text or any
+credential. After making the app speak once (tap the welcome pill, header
+replay button, etc.), run:
+
+```js
+window.__voiceDebug()
+```
+
+Two fields answer "what actually just happened" directly, without reading
+through the whole log:
+
+- **`serverConfig`** — `{ checked, provider, voiceId, modelId, error }`,
+  fetched once from `GET /api/speech/model` and cached. `provider` here is
+  the SERVER's truth (is `ELEVENLABS_API_KEY` actually set on this
+  deployment), independent of whether any call has succeeded yet.
+  `checked: false` means no utterance has fired yet this page load.
+- **`lastUtterance`** — `{ requestedProvider, playedProvider, httpStatus,
+  fallbackOccurred, fallbackReason, retried, voiceId, modelId, ts }` for the
+  MOST RECENT `speakPrompt()` call. `requestedProvider` is what the app tried
+  first; `playedProvider` is what actually produced the audio the child
+  heard — the two differ exactly when `fallbackOccurred` is true, and
+  `fallbackReason` says why (e.g. `"model route 503"` = not configured,
+  `"model route 500"` = ElevenLabs/network error, `"timeout (8000ms)"` =
+  hung request).
+
+If `serverConfig.provider` is `"elevenlabs"` and `lastUtterance.playedProvider`
+is also `"elevenlabs"` with no `fallbackOccurred`, ElevenLabs is genuinely
+serving the audio — a mechanical-sounding result at that point is a voice/
+model quality question, not a routing failure. If `serverConfig.provider` is
+`"web-speech"` (or `.error` is set), `ELEVENLABS_API_KEY` is not visible to
+this deployment at all and every utterance falls back deterministically —
+that is a configuration issue, not a code bug.
+
+The full bounded history (`recent`, last 20 events) and the `_voiceHistory`-
+backed console.debug (`'[Voice]', {...}`) both still work as before, now
+also carrying `httpStatus` on every entry.
 
 ---
 

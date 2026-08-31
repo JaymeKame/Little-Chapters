@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
+import { checkoutReturnUrl } from '@/lib/checkout-url';
 import { adminUnconfiguredResponse } from '@/lib/route-auth';
 import {
   createCheckoutSession,
@@ -107,9 +108,8 @@ export async function POST(request: NextRequest) {
     );
 
     // Create checkout session
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || request.headers.get('origin') || 'http://localhost:3000';
-    const successUrl = `${baseUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = `${baseUrl}/payment/cancel`;
+    const successUrl = checkoutReturnUrl(request, '/payment/success?session_id={CHECKOUT_SESSION_ID}');
+    const cancelUrl = checkoutReturnUrl(request, '/payment/cancel');
 
     const session = await createCheckoutSession(customerId, priceId, successUrl, cancelUrl, { firebaseUid: uid });
 

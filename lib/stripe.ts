@@ -240,6 +240,7 @@ export async function cancelSubscription(subscriptionId: string): Promise<void> 
 export async function createPortalSession(
   customerId: string,
   returnUrl: string,
+  configurationId?: string,
 ): Promise<{ url: string } | null> {
   if (!stripe) {
     throw new Error('Stripe is not configured');
@@ -249,6 +250,7 @@ export async function createPortalSession(
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
       return_url: returnUrl,
+      ...(configurationId ? { configuration: configurationId } : {}),
     });
 
     return { url: session.url };
