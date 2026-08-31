@@ -80,6 +80,13 @@ export async function GET() {
     {
       status,
       missing,
+      release: {
+        // Vercel supplies these system variables for each immutable
+        // deployment. They identify code, not a customer or a credential.
+        commitSha: process.env.VERCEL_GIT_COMMIT_SHA || null,
+        gitRef: process.env.VERCEL_GIT_COMMIT_REF || null,
+        environment: process.env.VERCEL_ENV || process.env.NODE_ENV || null,
+      },
       capabilities,
       generatedAt: new Date().toISOString(),
     },

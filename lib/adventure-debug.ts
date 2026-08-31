@@ -103,8 +103,16 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
   };
 }
 
+export function chapterDebugEnabled(search: string, environment: string | undefined): boolean {
+  return environment === 'development' || new URLSearchParams(search).get('debug') === '1';
+}
+
 export function installChapterDebug(getSnapshot: () => ReturnType<typeof chapterDebugSnapshot>): () => void {
-  if (typeof window === 'undefined' || process.env.NODE_ENV !== 'development') return () => {};
+  if (typeof window === 'undefined') return () => {};
+  // Diagnostics are deliberately opt-in on preview/production builds. This
+  // keeps the normal customer surface unchanged while giving physical QA a
+  // stable, copyable snapshot at /read?debug=1 or /home?debug=1.
+  if (!chapterDebugEnabled(window.location.search, process.env.NODE_ENV)) return () => {};
   const target = window as typeof window & { __chapterDebug?: typeof getSnapshot; __sessionDebug?: () => SessionTimingSnapshot | null };
   target.__chapterDebug = getSnapshot;
   return () => { delete target.__chapterDebug; };
