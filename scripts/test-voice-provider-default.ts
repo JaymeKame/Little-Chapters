@@ -19,7 +19,6 @@
  *   node --experimental-strip-types scripts/test-voice-provider-default.ts
  */
 
-// @ts-expect-error - playwright has no local type declarations; see scripts/test-audio-lifecycle.ts
 import { chromium } from 'playwright';
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3001';
@@ -38,7 +37,7 @@ function fail(label: string, detail?: string): void {
 const FAKE_AUDIO_BYTES = Buffer.from([0xff, 0xfb, 0x90, 0x00]);
 
 async function main() {
-  const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+  const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
 
@@ -57,7 +56,7 @@ async function main() {
       sawRequest = true;
       await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
     });
-    await page.goto(`${BASE_URL}/read`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
     await page.click('button[aria-label="Read aloud"]');
     await page.waitForTimeout(500);
@@ -85,7 +84,7 @@ async function main() {
         await route.fulfill({ status: 200, contentType: 'audio/mpeg', body: FAKE_AUDIO_BYTES });
       }
     });
-    await page.goto(`${BASE_URL}/read`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
     await page.click('button[aria-label="Read aloud"]');
     await page.waitForTimeout(800);
@@ -109,7 +108,7 @@ async function main() {
       requestCount += 1;
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'not configured' }) });
     });
-    await page.goto(`${BASE_URL}/read`);
+    await page.goto(`${BASE_URL}/read?skipWelcome=1&disableLookahead=1`);
     await page.waitForSelector('button[aria-label="Read aloud"]', { timeout: 15000 });
     await page.click('button[aria-label="Read aloud"]');
     await page.waitForTimeout(500);

@@ -17,6 +17,7 @@ import { requireReadingUser, adminUnconfiguredResponse } from '@/lib/route-auth'
 import { completeSessionRemotely } from '@/lib/progress-store-admin';
 import type { SessionInput } from '@/reading-tutor/src/types';
 import type { SessionIntervention } from '@/lib/reading-session-interpreter';
+import { consumeFreeChapterIfApplicable } from '@/lib/chapter-entitlement-server';
 
 interface Body {
   childId?: string;
@@ -73,6 +74,7 @@ export async function POST(request: NextRequest) {
       body.interventions,
       Array.isArray(body.previouslyTricky) ? body.previouslyTricky : [],
     );
+    await consumeFreeChapterIfApplicable(auth.uid, body.sessionInput.chapterId);
     return NextResponse.json(result);
   } catch (error) {
     console.error('Error completing session:', error);

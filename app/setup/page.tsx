@@ -6,7 +6,7 @@
  * "Feels like the beginning of a story, not a signup" — no account fields.  */
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AVATARS,
   INTERESTS,
@@ -14,18 +14,35 @@ import {
   avatarImageObjectPosition,
   avatarImageSrc,
   interestImageSrc,
+  loadProfile,
   newChildId,
   saveProfile,
   type AvatarId,
   type InterestId,
 } from '@/lib/profile';
+import { track } from '@/lib/analytics';
 
 export default function SetupPage() {
   const router = useRouter();
+  // Never let this form silently overwrite an existing valid child profile
+  // — a returning visitor (anonymous demo or registered) who reaches /setup
+  // again (stale bookmark, back button, a shared link) already has a real
+  // profile and reading history on this browser; send them to it instead
+  // of re-running onboarding over it with a brand-new childId.
+  const [checkingExisting, setCheckingExisting] = useState(true);
   const [name, setName] = useState('');
   const [age, setAge] = useState(6);
   const [avatar, setAvatar] = useState<AvatarId | undefined>(undefined);
   const [picked, setPicked] = useState<InterestId[]>([]);
+  const [childContext, setChildContext] = useState('');
+
+  useEffect(() => {
+    if (loadProfile()) {
+      router.replace('/home');
+      return;
+    }
+    setCheckingExisting(false);
+  }, [router]);
 
   const ready = name.trim().length > 0 && picked.length === 3;
 
@@ -37,9 +54,12 @@ export default function SetupPage() {
 
   function start() {
     if (!ready) return;
-    saveProfile({ childId: newChildId(), childName: name.trim(), age, interests: picked, avatar, createdAt: Date.now() });
+    saveProfile({ childId: newChildId(), childName: name.trim(), age, interests: picked, avatar, childContext: childContext.trim().slice(0, 2000) || undefined, createdAt: Date.now() });
+    track('setup_completed', { route: '/setup' });
     router.push('/home');
   }
+
+  if (checkingExisting) return <div className="screen" />;
 
   return (
     <div className="screen">
@@ -267,6 +287,21 @@ export default function SetupPage() {
             );
           })}
         </div>
+        <label htmlFor="child-context" style={{ display: 'block', textAlign: 'left', fontSize: 13.5, fontWeight: 600, marginBottom: 8 }}>
+          Tell us anything that helps us know your child <span style={{ color: 'var(--ink-soft)', fontWeight: 400 }}>(optional)</span>
+        </label>
+        <textarea
+          id="child-context"
+          value={childContext}
+          maxLength={2000}
+          rows={5}
+          onChange={(event) => setChildContext(event.target.value)}
+          placeholder="Share their interests, favorite things, personality, routines, things that make them laugh, or topics they love."
+          style={{ width: '100%', resize: 'vertical', padding: 14, borderRadius: 12, border: '1.5px solid var(--line)', background: 'var(--card)', font: 'inherit', lineHeight: 1.45 }}
+        />
+        <p style={{ textAlign: 'left', color: 'var(--ink-soft)', fontSize: 12, lineHeight: 1.45, margin: '8px 0 24px' }}>
+          We only use this to make their Little Chapters reading experience more relevant to their unique interests and personality. You do not need to share anything sensitive.
+        </p>
       </main>
 
       <footer style={{ padding: '0 30px 26px' }}>

@@ -4,35 +4,48 @@
  * Environment variables (all optional; fall back to Web Speech API when unset):
  *   ELEVENLABS_API_KEY    — your ElevenLabs API key
  *   ELEVENLABS_VOICE_ID   — override the default voice (Rachel / EXAVITQu4vr4xnSDxMaL)
- *   ELEVENLABS_MODEL_ID   — override the default model (eleven_turbo_v2)
+ *   ELEVENLABS_MODEL_ID   — override the default model (eleven_multilingual_v2)
  *
  * Voice selection rationale (see docs/VOICE_AND_PACING_AUDIT.md):
  *   "Rachel" is warm, clear, and passes informal child-listener tests at the
- *   default stability/similarity settings. eleven_turbo_v2 adds < 400 ms
- *   server latency vs the non-turbo model and stays within the free-tier
- *   character quota for typical session lengths (< 2 000 chars / session).
+ *   default stability/similarity settings.
+ *
+ * Model choice (2026-08-22 — see docs/VOICE_AND_PACING_AUDIT.md): switched
+ * the DEFAULT from eleven_turbo_v2 to eleven_multilingual_v2 after a live
+ * production report that the voice "still sounds mechanical" even with
+ * ElevenLabs confirmed as the active provider. turbo_v2 is ElevenLabs' own
+ * documented LATENCY-optimized model (built for real-time conversational
+ * use); multilingual_v2 is their documented QUALITY/expressiveness-optimized
+ * model (their own recommended choice for narration/audiobook-style
+ * content, which is what this app's reading-tutor prompts actually are).
+ * The extra ~300-400ms this costs is immaterial here: every call already
+ * budgets up to ELEVENLABS_TIMEOUT_MS (8s) and repeated phrases are cached,
+ * so nothing in the reading flow is latency-sensitive in the way turbo_v2
+ * was built for. voice_settings below (stability/similarity/style) apply
+ * identically to both v2-family models, so this is a pure model-ID swap —
+ * no other code changes. Not verified by ear in THIS environment (no
+ * ELEVENLABS_API_KEY configured here to synthesize and listen) — this is
+ * ElevenLabs' own documented model positioning applied to a named symptom,
+ * not a blind guess, but it still wants a real listen-through with real
+ * credentials before being treated as final. ELEVENLABS_MODEL_ID stays a
+ * one-line env override with no code change if it needs to move again.
  *
  * Voice-settings tuning (2026-08-21, see docs/VOICE_AND_PACING_AUDIT.md's
  * "mechanical" audit): stability and style nudged from the original 0.50/0.00
  * — 0.00 style is ElevenLabs' fully-neutral setting, which on this voice
  * reads closer to flat/clipped than warm, and the "sounds mechanical"
- * complaint on a genuine correction interaction is consistent with that. Not
- * verified by ear in THIS environment (no ELEVENLABS_API_KEY configured
- * here to synthesize and listen) — this is ElevenLabs' own documented
- * parameter semantics applied to a named symptom, not a blind guess, but it
- * still wants a real listen-through with real credentials before shipping
- * further. Rerun `npm run test:voice -- --speak "..."` after changing either
- * value and compare by ear; if it still isn't right, the voice/model itself
- * (not these two knobs) is almost certainly the bigger lever — see the
- * updated "Alternatives" table in the audit doc.
+ * complaint on a genuine correction interaction is consistent with that.
  */
 
 const ELEVENLABS_BASE = 'https://api.elevenlabs.io/v1';
 
 /** Default voice: Rachel — warm, calm, suitable for children's stories. */
 export const DEFAULT_VOICE_ID = 'EXAVITQu4vr4xnSDxMaL';
-/** Default model: eleven_turbo_v2 — low latency, high quality. */
-export const DEFAULT_MODEL_ID = 'eleven_turbo_v2';
+/** Default model: eleven_multilingual_v2 — ElevenLabs' quality/expressiveness-
+ *  optimized model (their own recommendation for narration-style content),
+ *  traded up from the latency-optimized eleven_turbo_v2 — see the file
+ *  header comment for the full 2026-08-22 rationale. */
+export const DEFAULT_MODEL_ID = 'eleven_multilingual_v2';
 
 export interface ElevenLabsOptions {
   voiceId?: string;
@@ -44,6 +57,8 @@ export interface ElevenLabsOptions {
   /** 0–1 (v2 models only). Adds expressiveness. Default 0.0 (neutral/safe). */
   style?: number;
   speakerBoost?: boolean;
+  /** 0.7–1.2. Purpose-specific delivery speed. */
+  speed?: number;
 }
 
 /** True when ELEVENLABS_API_KEY is present in the environment. */
@@ -83,6 +98,7 @@ export async function synthesize(
       // exaggeration 0.0 was originally chosen to avoid.
       style: opts.style ?? 0.25,
       use_speaker_boost: opts.speakerBoost ?? true,
+      speed: Math.max(0.7, Math.min(1.2, opts.speed ?? 1)),
     },
   };
 
