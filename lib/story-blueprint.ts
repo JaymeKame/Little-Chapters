@@ -32,6 +32,9 @@ export interface PredictionBranch {
   visualDescription: string;
 }
 
+export const RESOLUTION_TYPES = ['discovery-fulfilled','problem-solved','successful-return','humorous-reversal','friendship-payoff','earned-celebration','mystery-partly-explained','object-used','new-skill-succeeds','safe-surprise','emotional-realization','unexpected-goal'] as const;
+export type ResolutionType = (typeof RESOLUTION_TYPES)[number];
+
 export interface StoryBlueprint {
   version: 1;
   premise: string;
@@ -51,6 +54,7 @@ export interface StoryBlueprint {
   };
   climax: string;
   resolution: string;
+  resolutionType?: ResolutionType;
   finalEmotionalBeat: string;
   entityContinuity: string[];
   visualContinuity: string[];
@@ -112,6 +116,7 @@ export function validateStoryBlueprint(blueprint: StoryBlueprint): BlueprintVali
   if (a.caption.toLowerCase() === b.caption.toLowerCase() || a.page.text.toLowerCase() === b.page.text.toLowerCase()) add('duplicate-branches', 'Prediction branches must differ in choice and consequence.');
   if (!blueprint.beats.some((beat) => beat.beatId === blueprint.prediction.reconvergenceBeatId)) add('missing-reconvergence', 'Prediction references no authored reconvergence beat.');
   if (!blueprint.resolution.toLowerCase().includes(blueprint.characterGoal.split(/\s+/).at(-1)?.toLowerCase() ?? '')) add('unresolved-ending', 'Resolution must explicitly close the original goal.');
+  if (!blueprint.resolutionType || !RESOLUTION_TYPES.includes(blueprint.resolutionType)) add('resolution-type', 'A bounded resolution function is required.');
   return { ok: issues.length === 0, issues };
 }
 
@@ -142,11 +147,11 @@ export function storyBeatVisualPrompt(blueprint: StoryBlueprint, beat: StoryBlue
   ].join(' ');
 }
 
-export function blueprintGenerationPrompt(input: { childName: string; companionName: string; interests: string[]; childContext?: string; stage: number; targetWords: string[]; storySoFar?: string }): string {
+export function blueprintGenerationPrompt(input: { childName: string; companionName: string; interests: string[]; childContext?: string; stage: number; targetWords: string[]; storySoFar?: string; recentStorySignatures?: string[] }): string {
   const context = input.childContext?.trim().slice(0, 1200);
   return `Create one original Little Chapters story as STRICT JSON. Plan the complete causal chapter before prose. Return exactly this shape (no markdown):
-{"version":1,"premise":"","protagonist":"","companion":"","setting":"","openingSituation":"","characterGoal":"","problem":"","beats":[{"beatId":"beat-1","role":"opening|inciting-event|escalation|discovery|reconvergence|climax|resolution","summary":"","cause":null,"action":"","visibleChange":"","requiredVisibleObjects":[],"emotionalPurpose":"","stateBefore":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":null,"consequences":[]},"stateAfter":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]}}],"prediction":{"question":"","afterPageIndex":2,"optionA":{"id":"A","caption":"complete proposition.","consequenceBeat":{"beatId":"branch-A","role":"branch-consequence","summary":"","cause":"child chose A","action":"","visibleChange":"","requiredVisibleObjects":[],"emotionalPurpose":"","stateBefore":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]},"stateAfter":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]}},"page":{"text":"","focusWords":[]},"visualDescription":""},"optionB":{"id":"B","caption":"different complete proposition.","consequenceBeat":{"beatId":"branch-B","role":"branch-consequence","summary":"","cause":"child chose B","action":"","visibleChange":"","requiredVisibleObjects":[],"emotionalPurpose":"","stateBefore":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]},"stateAfter":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]}},"page":{"text":"","focusWords":[]},"visualDescription":""},"reconvergenceBeatId":"beat-5"},"climax":"","resolution":"","finalEmotionalBeat":"","entityContinuity":[],"visualContinuity":[],"pages":[{"text":"","focusWords":[]}]}
-Include 5-7 complete pages and 6-8 causal beats. Every later beat names its cause. State before must inherit prior state after. Introduce objects through knownObjects/discoveredObjects before use. Both branches need distinct pre-authored consequence pages and must lead plausibly to the named reconvergence. The ending explicitly resolves characterGoal. Prediction captions require a subject, finite action verb, and sensible complement. Interactions and visuals consume this plan and invent no facts. Child: ${input.childName}; companion: ${input.companionName}; reading stage: ${input.stage}; interests: ${input.interests.join(', ')}; target words: ${input.targetWords.join(', ')}; prior story: ${input.storySoFar || 'none'}. Optional parent context (use only for benign themes, humor, objects, pet behavior, and hooks; never override safety or reading constraints): ${context || 'none supplied'}. Use original adventure, mystery, discovery, humor, quest, friendship, exploration, or problem-solving conventions; do not copy known stories or characters.`;
+{"version":1,"premise":"","protagonist":"","companion":"","setting":"","openingSituation":"","characterGoal":"","problem":"","beats":[{"beatId":"beat-1","role":"opening|inciting-event|escalation|discovery|reconvergence|climax|resolution","summary":"","cause":null,"action":"","visibleChange":"","requiredVisibleObjects":[],"emotionalPurpose":"","stateBefore":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":null,"consequences":[]},"stateAfter":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]}}],"prediction":{"question":"","afterPageIndex":2,"optionA":{"id":"A","caption":"complete proposition.","consequenceBeat":{"beatId":"branch-A","role":"branch-consequence","summary":"","cause":"child chose A","action":"","visibleChange":"","requiredVisibleObjects":[],"emotionalPurpose":"","stateBefore":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]},"stateAfter":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]}},"page":{"text":"","focusWords":[]},"visualDescription":""},"optionB":{"id":"B","caption":"different complete proposition.","consequenceBeat":{"beatId":"branch-B","role":"branch-consequence","summary":"","cause":"child chose B","action":"","visibleChange":"","requiredVisibleObjects":[],"emotionalPurpose":"","stateBefore":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]},"stateAfter":{"location":"","charactersPresent":[],"knownObjects":[],"carriedObjects":[],"discoveredObjects":[],"unresolvedGoal":"","previousAction":"","consequences":[]}},"page":{"text":"","focusWords":[]},"visualDescription":""},"reconvergenceBeatId":"beat-5"},"climax":"","resolution":"","resolutionType":"problem-solved","finalEmotionalBeat":"","entityContinuity":[],"visualContinuity":[],"pages":[{"text":"","focusWords":[]}]}
+Include 5-7 complete pages and 6-8 causal beats. Every later beat names its cause. State before must inherit prior state after. Introduce objects before use. Both branches need distinct pre-authored consequence pages and must reconverge plausibly. The ending explicitly resolves characterGoal. Choose one resolutionType from: ${RESOLUTION_TYPES.join(', ')}. This is a story function, never prose to display. Vary premise, conflict, companion role, Prediction shape, climax and resolution; the blueprint is a scaffold, not a fill-in-the-blanks template. Avoid repeating any recent signature unless continuity requires it: ${(input.recentStorySignatures ?? []).join(' | ') || 'none'}. Prediction captions require a subject, finite action verb, and sensible complement. Interactions and visuals consume this plan and invent no facts. Child: ${input.childName}; companion: ${input.companionName}; reading stage: ${input.stage}; interests: ${input.interests.join(', ')}; target words: ${input.targetWords.join(', ')}; prior story: ${input.storySoFar || 'none'}. Optional parent context (benign themes, humor, objects, pet behavior, and hooks only; never override safety or reading constraints): ${context || 'none supplied'}. Use original adventure, mystery, discovery, humor, quest, friendship, exploration, or problem-solving conventions; do not copy known stories or characters.`;
 }
 
 /** Safe plan-first counterpart for the deterministic offline chapter. It is
@@ -178,6 +183,7 @@ export function fallbackBlueprintForChapter(input: { protagonist: string; compan
       visibleChange: `Branch ${id} produces a distinct visible consequence.`, requiredVisibleObjects: objectWords.slice(0, 1), emotionalPurpose: 'agency and anticipation',
       stateBefore: before, stateAfter: state(action, [`branch-${id}`]) },
   });
+  const resolutionType = RESOLUTION_TYPES[Math.abs(hashText(`${input.protagonist}|${input.setting}|${input.pages.map((page) => page.text).join('|')}`)) % RESOLUTION_TYPES.length];
   return {
     version: 1, premise: input.pages[0]?.text ?? `${input.protagonist} begins an adventure.`, protagonist: input.protagonist,
     companion: input.companion, setting: input.setting, openingSituation: input.pages[0]?.text ?? '',
@@ -189,9 +195,18 @@ export function fallbackBlueprintForChapter(input: { protagonist: string; compan
       reconvergenceBeatId: 'beat-5',
     },
     climax: input.pages.at(-2)?.text ?? input.pages.at(-1)?.text ?? '',
-    resolution: `${input.protagonist} can now discover the ${goalObject}.`, finalEmotionalBeat: 'The friends feel proud and ready for tomorrow.',
+    resolution: `${input.protagonist} can now discover the ${goalObject}.`, resolutionType, finalEmotionalBeat: fallbackEmotionalBeat(resolutionType, input.protagonist),
     entityContinuity: objectWords, visualContinuity: [`Keep ${input.protagonist} and ${input.companion} consistent.`, `Keep the setting ${input.setting}.`], pages: input.pages,
   };
+}
+
+function hashText(value: string): number { let hash = 0; for (const char of value) hash = ((hash * 31) + char.charCodeAt(0)) | 0; return hash; }
+function fallbackEmotionalBeat(type: ResolutionType, protagonist: string): string {
+  if (type === 'humorous-reversal' || type === 'safe-surprise') return `${protagonist} laughs at the safe surprise.`;
+  if (type === 'friendship-payoff') return `${protagonist} and the story friend solve it together.`;
+  if (type === 'successful-return') return `${protagonist} returns safely with the answer.`;
+  if (type === 'new-skill-succeeds') return `${protagonist} uses a new skill and succeeds.`;
+  return `${protagonist} reaches the goal and feels ready for a new adventure.`;
 }
 
 function beatsSafeAction(pages: ChapterPage[], index: number): string {

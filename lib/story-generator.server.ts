@@ -23,6 +23,7 @@ export interface StoryGenerationParams {
   recentlyMissedWords?: string[];
   storySoFar?: string;
   childContext?: string;
+  recentStorySignatures?: string[];
 }
 
 export interface StoryGenerationResult {
@@ -72,6 +73,7 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
     const basePrompt = blueprintGenerationPrompt({
       childName: params.childName, companionName: params.companionName ?? 'Momo', interests: params.interests,
       childContext: params.childContext, stage, targetWords: Object.values(slots), storySoFar,
+      recentStorySignatures: (params.recentStorySignatures ?? []).filter((row): row is string => typeof row === 'string').slice(0, 5),
     });
     let rejection = '';
     for (let attempt = 0; attempt < 3; attempt += 1) {

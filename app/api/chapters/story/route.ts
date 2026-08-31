@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
       skeletonId?: string;
       recentlyMissedWords?: string[];
       storySoFar?: string;
+      recentStorySignatures?: string[];
     };
     const profile = body.profile;
     if (!profile?.childName || !Array.isArray(profile.interests) || !body.chapterId || body.chapterId.length > 220) {
@@ -88,6 +89,7 @@ export async function POST(request: NextRequest) {
       recentlyMissedWords,
       skeletonId: body.skeletonId,
       childContext: profile.childContext,
+      recentStorySignatures: Array.isArray(body.recentStorySignatures) ? body.recentStorySignatures.slice(0, 5) : [],
     });
     if (!result) return NextResponse.json({ error: 'Story generation failed' }, { status: 503 });
     const { draft, skeleton, slots, blueprint } = result;

@@ -61,6 +61,7 @@ interface TodayRequestBody {
   skeletonId?: string;
   recentlyMissedWords?: string[];
   storySoFar?: string;
+  recentStorySignatures?: string[];
 }
 
 async function tryGenerate(
@@ -79,6 +80,7 @@ async function tryGenerate(
     recentlyMissedWords: body.recentlyMissedWords,
     storySoFar: body.storySoFar,
     childContext: profile.childContext,
+    recentStorySignatures: body.recentStorySignatures,
   });
   if (!result) return { source: 'fallback' };
   return { source: 'generated', entitlementSource, draft: result.draft, blueprint: result.blueprint, skeletonId: result.skeleton.id, slots: result.slots };

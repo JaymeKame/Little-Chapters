@@ -405,7 +405,7 @@ export function adaptTutorDraft(
     const tokens = tokensOf(sentence);
     return practiceWords.filter((w) => tokens.has(w.toLowerCase())).slice(0, 2);
   };
-  return {
+  const chapter: Chapter = {
     ...base,
     pages: draft.sentences.map((text) => ({ text, focusWords: focusFor(text) })),
     cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
@@ -414,9 +414,26 @@ export function adaptTutorDraft(
     storyBlueprint: blueprint,
     provenance: { source: 'generated', generatedAt: new Date().toISOString() },
   };
+  rememberStorySignature(profile, chapter);
+  return chapter;
 }
 
 const TUTOR_CACHE_PREFIX = 'little-chapters-tutor-chapter:';
+const STORY_SIGNATURE_PREFIX = 'little-chapters-story-signatures:';
+
+function storySignatureKey(profile: ChildProfile): string { return `${STORY_SIGNATURE_PREFIX}${profile.childId}`; }
+function recentStorySignatures(profile: ChildProfile): string[] {
+  try { return (JSON.parse(localStorage.getItem(storySignatureKey(profile)) ?? '[]') as unknown[]).filter((row): row is string => typeof row === 'string').slice(0, 5); }
+  catch { return []; }
+}
+function rememberStorySignature(profile: ChildProfile, chapter: Chapter): void {
+  const blueprint = chapter.storyBlueprint;
+  if (!blueprint) return;
+  const majorObject = blueprint.entityContinuity[0] ?? 'none';
+  const signature = `setting=${blueprint.setting}; goal=${blueprint.characterGoal}; problem=${blueprint.problem}; object=${majorObject}; prediction=${blueprint.prediction.optionA.caption} / ${blueprint.prediction.optionB.caption}; climax=${blueprint.climax}; resolution=${blueprint.resolutionType ?? 'unspecified'}`.slice(0, 700);
+  try { localStorage.setItem(storySignatureKey(profile), JSON.stringify([signature, ...recentStorySignatures(profile).filter((row) => row !== signature)].slice(0, 5))); }
+  catch { /* novelty memory is best effort */ }
+}
 
 function loadCachedTutorChapter(id: string): Chapter | null {
   try {
@@ -489,7 +506,7 @@ export function chapterDebugInfo(): ChapterDiag | null {
 export function resolveGenerationContext(
   profile: ChildProfile,
   uid: string | null,
-): { stage: number; skeleton: Skeleton; recentlyMissedWords: string[]; storySoFar: string } {
+): { stage: number; skeleton: Skeleton; recentlyMissedWords: string[]; storySoFar: string; recentStorySignatures: string[] } {
   const context = tutorStoryContext(profile, uid);
   // Safe to persist/reuse by construction: this is ChildProgress.trickyWords,
   // which applySession() already computed under every existing invariant —
@@ -504,7 +521,7 @@ export function resolveGenerationContext(
   // loadReport). This was simply never read back in; wiring it in is
   // closing an already-designed gap, not inventing new state.
   const storySoFar = loadReport()?.teaser ?? '';
-  return { ...context, recentlyMissedWords, storySoFar };
+  return { ...context, recentlyMissedWords, storySoFar, recentStorySignatures: recentStorySignatures(profile) };
 }
 
 /** One generation per child per day: the tutor chapter is cached under the
@@ -583,6 +600,7 @@ async function generateTutorChapterPersisted(
         skeletonId: context.skeleton.id,
         recentlyMissedWords: context.recentlyMissedWords,
         storySoFar: context.storySoFar,
+        recentStorySignatures: context.recentStorySignatures,
       }),
     });
     if (!response.ok) return null; // 402 (not subscribed) / 503 / etc — caller stays on the demo arc
@@ -644,6 +662,7 @@ async function generateTutorChapter(
         skeletonId: context.skeleton.id,
         recentlyMissedWords: context.recentlyMissedWords,
         storySoFar: context.storySoFar,
+        recentStorySignatures: context.recentStorySignatures,
       }),
     });
     if (!response.ok) { generationFailures.set(id, `story-generation-${response.status}`); latestGenerationFailure = `story-generation-${response.status}`; return null; }
