@@ -22,10 +22,9 @@ export default function SupportPage() {
       <section>
         <h2>Get in touch</h2>
         <p>
-          Email us at <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a> and
-          we&rsquo;ll come back to you within one business day. Please include your
-          child&rsquo;s first name and, if it&rsquo;s a billing question, the email
-          on the account.
+          Email us at <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>. If it is
+          a billing question, include the email on the parent account. Please do not
+          send reading audio or sensitive information by email.
         </p>
       </section>
 

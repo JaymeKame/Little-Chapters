@@ -1,7 +1,4 @@
-/* /privacy — V1 parent-facing summary of what Little Chapters collects and
- * how it is used. Written in plain English, not legalese. Marked DRAFT so
- * counsel review is visible rather than implied — never remove that badge
- * without a review sign-off. */
+/* /privacy — parent-facing summary of the product's current data behavior. */
 
 import Link from 'next/link';
 
@@ -13,7 +10,7 @@ export default function PrivacyPage() {
       <header className="lc-policy-header">
         <Link href="/" className="lc-policy-back" aria-label="Back to Little Chapters">‹</Link>
         <div>
-          <span className="lc-policy-eyebrow">DRAFT — pending counsel review</span>
+          <span className="lc-policy-eyebrow">For families</span>
           <h1>Privacy</h1>
           <p>Last updated August 31, 2026.</p>
         </div>

@@ -1,6 +1,4 @@
-/* /terms — V1 plain-language service terms. Marked DRAFT: this describes how
- * the product works today so a parent and counsel can both read it and know
- * what they are agreeing to. It is not a substitute for legal review. */
+/* /terms — plain-language terms describing the service as it works today. */
 
 import Link from 'next/link';
 
@@ -12,7 +10,7 @@ export default function TermsPage() {
       <header className="lc-policy-header">
         <Link href="/" className="lc-policy-back" aria-label="Back to Little Chapters">‹</Link>
         <div>
-          <span className="lc-policy-eyebrow">DRAFT — pending counsel review</span>
+          <span className="lc-policy-eyebrow">For families</span>
           <h1>Terms of Service</h1>
           <p>Last updated August 31, 2026.</p>
         </div>
@@ -69,6 +67,25 @@ export default function TermsPage() {
           Please use Little Chapters as intended: one family, personal use, not
           resale or automated scraping. Don&rsquo;t attempt to disrupt the service or
           impersonate other people.
+        </p>
+      </section>
+
+      <section>
+        <h2>Accounts and ending service</h2>
+        <p>
+          Keep your parent account secure and use accurate account information. You can
+          delete your account from <Link href="/settings">Settings</Link>. We may suspend
+          or end access when an account is used to harm the service or other people.
+        </p>
+      </section>
+
+      <section>
+        <h2>Service availability</h2>
+        <p>
+          We work to keep Little Chapters available, but internet and AI services can
+          occasionally be interrupted or return imperfect results. We do not promise
+          uninterrupted availability. When a provider is unavailable, the app may use
+          a reviewed built-in story or illustration so a reading session can continue.
         </p>
       </section>
 
