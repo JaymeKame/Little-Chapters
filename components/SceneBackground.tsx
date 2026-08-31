@@ -66,7 +66,7 @@ export function SceneBackground({
   }, [src, visibleSrc]);
 
   return (
-    <div className={`lc-scene-bg${cliff ? ' lc-scene-bg--cliff' : ''}`} aria-hidden>
+    <div className={`lc-scene-bg${cliff ? ' lc-scene-bg--cliff' : ''}`} aria-hidden data-effective-scene-url={visibleSrc ?? ''}>
       {visibleSrc && !failed && (
         <img
           className="lc-scene-bg__layer lc-scene-bg__layer--visible"

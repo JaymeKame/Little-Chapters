@@ -88,9 +88,12 @@ export async function lookupChapterScenePackage(chapterId: string, user: User | 
 
 export async function requestChapterScenePackage(chapter: Chapter, manifest: StoryInteractionManifest, user: User | null): Promise<ChapterScenePackage | null> {
   const cached = loadChapterScenePackage(chapter.id);
-  if (cached) return cached;
+  // A local package is an immediate paint accelerator, not the authority.
+  // Always hydrate against the server so a newly generated/reviewed package
+  // can replace an older browser copy instead of being permanently hidden by
+  // the early cache return that physical testing exposed.
   const existing = await lookupChapterScenePackage(chapter.id, user);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) return existing ?? cached;
   try {
     const response = await fetch('/api/chapters/visuals', {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...(await authHeaders(user)) },

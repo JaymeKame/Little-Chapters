@@ -7,6 +7,7 @@ const sandboxChromium = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 interface SceneSnapshot {
   pageIdx: number;
   activeInteractionId: string | null;
+  activeInteractionVisualSceneId: string | null;
   pageAuthoredSceneId: string;
   requestedSceneId: string;
   resolvedSceneUrl: string;
@@ -82,8 +83,10 @@ async function main() {
     states.push(await snapshot(page));
   }
 
-  const overrides = states.filter((state) => state.activeInteractionId && state.requestedSceneId !== state.pageAuthoredSceneId);
-  assert.ok(overrides.length >= 2, 'sequential fixture must exercise authored interaction overrides');
+  const interactionStates = states.filter((state) => state.activeInteractionId);
+  for (const state of interactionStates) assert.equal(state.requestedSceneId, state.activeInteractionVisualSceneId, 'active interaction must request its story-authored scene');
+  const overrides = interactionStates.filter((state) => state.requestedSceneId !== state.pageAuthoredSceneId);
+  assert.ok(overrides.length >= 1, 'sequential fixture must exercise at least one authored interaction override');
   for (const state of overrides) assert.equal(state.renderedImgSrc, state.resolvedSceneUrl, 'interaction-authored URL must own the background');
   const readingStates = states.filter((state) => !state.activeInteractionId);
   const byPage = new Map(readingStates.map((state) => [state.pageIdx, state]));

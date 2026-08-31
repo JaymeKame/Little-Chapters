@@ -16,6 +16,7 @@ export interface ChapterSceneDebugContext {
   resolvedSceneUrl: string | null;
   sceneAssetUrls: Record<string, string>;
   sceneAssetSources: Record<string, 'generated' | 'approved-static-fallback'>;
+  loadedSceneUrl?: string | null;
 }
 
 /** Diagnostic mapping for scene progression (correction pass 2, Section 5).
@@ -72,12 +73,14 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
   const sceneIdsByUrl = new Map<string, string[]>();
   for (const [sceneId, url] of Object.entries(sceneUrls)) sceneIdsByUrl.set(url, [...(sceneIdsByUrl.get(url) ?? []), sceneId]);
   const duplicateSceneUrls = [...sceneIdsByUrl].filter(([, sceneIds]) => sceneIds.length > 1).map(([url, sceneIds]) => ({ url, sceneIds }));
-  const renderedImage = typeof document === 'undefined' ? null : document.querySelector<HTMLImageElement>('.lc-scene-bg img');
+  const renderedImages = typeof document === 'undefined' ? [] : [...document.querySelectorAll<HTMLImageElement>('.lc-scene-bg img')];
+  const renderedImage = renderedImages.at(-1) ?? null;
   return {
     chapterId: chapter?.id ?? null,
     entitlementSource: chapter?.provenance?.entitlementSource ?? context?.entitlementSource ?? null,
     storySource: chapter?.provenance?.source ?? 'fallback', chapterSource: chapter?.provenance?.source ?? 'fallback', generatedAt: chapter?.provenance?.generatedAt ?? null,
     visualPackageId: scenePackage ? `${scenePackage.chapterId}:v${scenePackage.visualBibleVersion}` : null,
+    generatedPackageAvailable: Boolean(scenePackage),
     visualBibleVersion: scenePackage?.visualBibleVersion ?? null,
     visualSource: visual.source, scenes: scenePackage?.scenes.map(({ sceneId, assetUrl }) => ({ sceneId, assetUrl })) ?? [],
     scene: context?.scene ? {
@@ -90,6 +93,7 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
         && new Set(Object.values(sceneUrls)).size <= 1,
       renderedImgSrc: renderedImage?.getAttribute('src') ?? null,
       renderedImgCurrentSrc: renderedImage?.currentSrc || null,
+      effectiveUrl: context.scene.resolvedSceneUrl,
       packageProvenance: visual.packageProvenance,
     } : null,
     staticFallbackUsed: visual.source === 'approved-static-fallback', storyGenerationFailureReason: chapter?.provenance?.failureReason ?? latestChapterGenerationFailure() ?? null,

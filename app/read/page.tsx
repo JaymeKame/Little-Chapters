@@ -706,24 +706,25 @@ export default function ReadPage() {
       activeInteractionId: activeInteraction?.id ?? null,
       activeInteractionKind: activeInteraction?.kind ?? null,
       activeInteractionVisualSceneId: activeInteraction?.activity.visualSceneId ?? null,
-      pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources,
+      pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources, loadedSceneUrl,
     },
-  })), [chapter, scenePackage, subscribed, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources]);
+  })), [chapter, scenePackage, subscribed, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources, loadedSceneUrl]);
 
   useEffect(() => {
     if (!chapter || !interactionManifest || authLoading) return;
     setScenePackage(null);
-    const cached = loadChapterScenePackage(chapter.id); if (cached) { setScenePackage(cached); return; }
+    const cached = loadChapterScenePackage(chapter.id);
+    if (cached) setScenePackage(cached);
     let cancelled = false;
     void requestChapterScenePackage(chapter, interactionManifest, user).then((value) => {
       if (cancelled) return;
-      if (value) setScenePackage(value);
+      if (value && value.chapterId === chapter.id) setScenePackage(value);
       // Null return means generation failed and the app is running on the
       // approved-static fallback pack (see lib/chapter-scenes.ts —
       // latestVisualState.packageProvenance goes to 'approved-static-fallback').
       // Track only a short category; never sends the story or generated
       // prompt. The reading flow is unchanged either way.
-      else track('visual_generation_failed', {
+      else if (!cached) track('visual_generation_failed', {
         route: '/read', provider: 'chapter-scenes', fallback: 'used',
         errorCategory: 'package-null',
       });
@@ -1818,7 +1819,7 @@ export default function ReadPage() {
       );
     }
     return (
-      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind} data-layout-mode="interaction" data-interaction-ready={String(interactionReady)} data-instruction-status={interactionReady ? 'complete' : 'playing'} data-interaction-mode={activeInteraction.kind === 'find-in-scene' ? 'tactile-card-fallback' : undefined}>
+      <div className="lc-session-interaction" data-session-beat={activeInteraction.kind} data-layout-mode="interaction" data-interaction-ready={String(interactionReady)} data-instruction-status={interactionReady ? 'complete' : 'playing'} data-interaction-mode={activeInteraction.kind === 'find-in-scene' ? 'tactile-card-fallback' : undefined} data-requested-scene-id={requestedSceneId ?? undefined}>
         <SceneBackground src={sceneBg} focal={sceneFocal} onLoadState={(state, url) => setLoadedSceneUrl(state === 'loaded' ? url : null)} />
         <div className="lc-interaction-card lc-scene-content">
           <button className="lc-prompt-speaker" aria-label="Hear the example words again" onClick={replayInteractionInstruction}><img src="/icons/speaker-audio.png" alt="" /></button>
@@ -1832,7 +1833,7 @@ export default function ReadPage() {
               because the child needs to see it. */}
           {activeInteraction.kind === 'sound-hunt'
             ? <p className="lc-sound-hunt-prompt">{interactionReady ? 'Which story word starts the same way?' : 'Listen to the example words…'}</p>
-            : <h1>{activeInteraction.kind === 'find-in-scene' ? 'Tap the story word' : 'Choose a picture'}</h1>}
+            : <h1>{activeInteraction.kind === 'find-in-scene' ? 'Tap the story word' : activeInteraction.kind === 'story-order' ? 'What happened first?' : 'Choose a picture'}</h1>}
           <div className={`lc-choice-grid is-${activeInteraction.kind}${interactionFeedback === 'success' ? ' is-world-reacting' : ''}`} aria-disabled={!interactionReady || correctionSpeaking ? true : undefined}>
             {choices.map((choice) => (
               <button
@@ -1843,8 +1844,8 @@ export default function ReadPage() {
                 aria-label={choice.spokenLabel}
                 disabled={!interactionReady || correctionSpeaking}
               >
-                {activeInteraction.kind === 'prediction' && <span className={`lc-prediction-picture picture-${activeInteraction.activity.interactiveObjects.indexOf(choice) + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" /><i aria-hidden>{activeInteraction.activity.interactiveObjects.indexOf(choice) === 0 ? '✦' : ')))'}</i></span>}
-                <strong>{activeInteraction.kind === 'prediction' ? (choice.caption ?? choice.label) : choice.label}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
+                {(activeInteraction.kind === 'prediction' || activeInteraction.kind === 'story-order') && <span className={`lc-prediction-picture picture-${activeInteraction.activity.interactiveObjects.indexOf(choice) + 1}`}><img src={sceneAssetUrls[choice.visualSceneId] ?? sceneBg ?? '/images/scenes/bg-meadow-path-sunny-01.jpg'} alt="" data-choice-scene-id={choice.visualSceneId} /><i aria-hidden>{activeInteraction.activity.interactiveObjects.indexOf(choice) === 0 ? '✦' : ')))'}</i></span>}
+                <strong>{activeInteraction.kind === 'prediction' || activeInteraction.kind === 'story-order' ? (choice.caption ?? choice.spokenLabel) : choice.label}</strong><span className="lc-word-speaker" aria-hidden><img src="/icons/speaker-audio.png" alt="" /></span>
               </button>
             ))}
           </div>
@@ -1962,18 +1963,9 @@ export default function ReadPage() {
                 word={tricky}
                 segments={slideSegments}
                 onComplete={() => {
-                  setSpeaking(true);
-                  audioSession.speak(tricky, { purpose: 'slider-word-blend',
-                    onEnd: () => {
-                      if (disposedRef.current) return;
-                      setSpeaking(false);
-                      // Only NOW is it "the child's turn" — the mic button
-                      // stays disabled until the blended word has actually
-                      // finished playing, so sliding + hearing the blend
-                      // visibly precedes retrying aloud.
-                      setHelpDone(true);
-                    },
-                  });
+                  if (disposedRef.current) return;
+                  setSpeaking(false);
+                  setHelpDone(true);
                 }}
               />
             ) : (

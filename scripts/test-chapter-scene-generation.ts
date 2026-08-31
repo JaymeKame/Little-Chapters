@@ -45,15 +45,18 @@ const mockPackage: ChapterScenePackage = { chapterId:'underwater', visualBibleVe
 memory.delete(scenePackageCacheKey('underwater'));
 let gets = 0;
 let posts = 0;
+let serverStored = false;
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (async (_input, init) => {
-  if (init?.method === 'GET') { gets += 1; return new Response(JSON.stringify({ error:'SCENE_PACKAGE_NOT_FOUND' }), { status:404 }); }
-  posts += 1;
+  if (init?.method === 'GET') { gets += 1; return serverStored
+    ? new Response(JSON.stringify({ scenePackage:mockPackage }), { status:200, headers:{'Content-Type':'application/json'} })
+    : new Response(JSON.stringify({ error:'SCENE_PACKAGE_NOT_FOUND' }), { status:404 }); }
+  posts += 1; serverStored = true;
   return new Response(JSON.stringify({ scenePackage:mockPackage }), { status:201, headers:{'Content-Type':'application/json'} });
 }) as typeof fetch;
 assert.deepEqual(await requestChapterScenePackage(chapters[0], firstManifest, null), mockPackage);
 assert.deepEqual(await requestChapterScenePackage(chapters[0], firstManifest, null), mockPackage);
-assert.equal(gets, 1, 'local reuse must not repeat the durable lookup');
+assert.equal(gets, 2, 'local reuse must revalidate against the durable package authority');
 assert.equal(posts, 1, 'a missing package generates exactly once');
 
 // A refresh loses the in-memory UI but not the durable package. Even when

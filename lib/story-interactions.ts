@@ -54,11 +54,12 @@ export interface StoryInteractionBeat {
   successStoryAction: string;
   spokenSuccess: string;
   transitionTarget: string;
+  storyOrder?: { prompt: string; events: Array<{ beatId: string; caption: string; visualSceneId: string }>; correctBeatId: string };
 }
 
 export interface StoryInteractionManifest {
   version: 2;
-  contentRevision: 4;
+  contentRevision: 5;
   chapterId: string;
   visualBible: ChapterVisualBible;
   scenes: StoryScene[];
@@ -67,7 +68,7 @@ export interface StoryInteractionManifest {
 
 const CACHE_PREFIX = 'little-chapters-interaction-manifest:';
 const STOP_WORDS = new Set(['the','and','was','with','from','that','this','then','there','what','could','something','little','today','tomorrow','inside','across']);
-const NON_VISUAL_WORDS = new Set(['soft','loud','big','tiny','very','still','calm','bright','fine','fast','slow','found','looked','kept','came','went','said','heard','began','open','shut','move','moved','moving','out','back','more','before','again','red','blue','green','gold','old','small']);
+const NON_VISUAL_WORDS = new Set<string>(['soft','loud','big','tiny','very','still','calm','bright','fine','fast','slow','found','looked','kept','came','went','said','heard','began','open','shut','move','moved','moving','out','back','more','before','again','red','blue','green','gold','old','small']);
 
 function storyWords(chapter: Chapter): string[] {
   const focused = chapter.pages.flatMap((page) => page.focusWords);
@@ -254,6 +255,10 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
   while (distractors.length < 2) distractors.push(['look','find','go'][distractors.length]);
   const soundChoices = [distractors[0], soundAnswer, distractors[1]];
   const visualEntities = entities.filter((word) => word !== soundAnswer && word !== chapter.character.toLowerCase() && !NON_VISUAL_WORDS.has(word));
+  const findTarget = visualEntities[0] ?? soundAnswer;
+  const findTargetPage = Math.max(0, chapter.pages.findIndex((page) =>
+    ((page.text.toLowerCase().match(/[a-z']+/g) ?? []) as string[]).includes(findTarget.toLowerCase())));
+  const findTargetSceneId = sceneForPage(scenes, findTargetPage);
   const settingEntities = (chapter.setting.toLowerCase().match(/[a-z']+/g) ?? []).filter((word) => word.length > 3 && !STOP_WORDS.has(word) && !NON_VISUAL_WORDS.has(word));
   // Correction pass 2, Section 4: prediction choices are FULL SENTENCES —
   // grammatical, plausible next-story actions — not bare-noun tokens. See
@@ -270,6 +275,11 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
   const builderTarget = chapter.pages.slice(1, -1).flatMap((page) => page.focusWords)
     .map((word) => word.toLowerCase()).find((word) => /^[a-z]{3,6}$/.test(word)) ?? soundAnswer;
   const builderPieces = wordBuilderPieces(builderTarget);
+  const storyOrderEvents = chapter.pages.slice(0, Math.min(chapter.pages.length, stageEventCount(chapter))).map((page, index) => ({
+    beatId: chapter.storyBlueprint?.beats[index]?.beatId ?? `page-${index + 1}`,
+    caption: shortEventCaption(page.text),
+    visualSceneId: sceneForPage(scenes, index),
+  }));
 
   const beats: StoryInteractionBeat[] = [
     {
@@ -290,11 +300,11 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
       spokenSuccess: `Yes — ${soundAnswer}.`, transitionTarget: 'reading-2',
     },
     {
-      beatId: 'find-in-scene', mechanicType: 'find-it-in-scene', literacyTarget: visualEntities[0] ?? soundAnswer,
-      spokenInstruction: `Can you find ${visualEntities[0] ?? soundAnswer}?`,
-      storyEntities: [visualEntities[0] ?? soundAnswer], visualSceneId: sceneForPage(scenes, Math.max(1, Math.floor(chapter.pages.length / 2))),
-      interactiveObjects: [{ objectId: 'scene-target', label: visualEntities[0] ?? soundAnswer, spokenLabel: visualEntities[0] ?? soundAnswer, visualSceneId: sceneForPage(scenes, Math.max(1, Math.floor(chapter.pages.length / 2))), visualCue: 'scene-crop' }],
-      correctTarget: visualEntities[0] ?? soundAnswer, successStoryAction: `You found ${visualEntities[0] ?? soundAnswer}.`,
+      beatId: 'find-in-scene', mechanicType: 'find-it-in-scene', literacyTarget: findTarget,
+      spokenInstruction: `Can you find ${findTarget}?`,
+      storyEntities: [findTarget], visualSceneId: findTargetSceneId,
+      interactiveObjects: [{ objectId: 'scene-target', label: findTarget, spokenLabel: findTarget, visualSceneId: findTargetSceneId, visualCue: 'scene-crop' }],
+      correctTarget: findTarget, successStoryAction: `You found ${findTarget}.`,
       spokenSuccess: `You found it. Now let’s see what happens next.`, transitionTarget: 'reading-3',
     },
     {
@@ -322,16 +332,17 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
     },
     {
       beatId: 'story-order', mechanicType: 'story-order', literacyTarget: null,
-      spokenInstruction: 'Think back. What happened first?',
+      spokenInstruction: 'What happened first?',
       storyEntities: chapter.pages.slice(0, Math.min(chapter.pages.length, 4)).map((page) => page.text),
       visualSceneId: sceneForPage(scenes, Math.min(1, lastPage)),
-      interactiveObjects: chapter.pages.slice(0, Math.min(chapter.pages.length, stageEventCount(chapter))).map((page, index) => ({
-        objectId: `story-event-${index}`, label: index === 0 ? 'first' : `event-${index + 1}`,
-        spokenLabel: shortEventCaption(page.text), caption: shortEventCaption(page.text),
-        visualSceneId: sceneForPage(scenes, Math.min(index, lastPage)), visualCue: 'word-object' as const,
+      interactiveObjects: storyOrderEvents.map((event) => ({
+        objectId: `story-order-${event.beatId}`, label: event.beatId,
+        spokenLabel: event.caption, caption: event.caption,
+        visualSceneId: event.visualSceneId, visualCue: 'scene-crop' as const,
       })).reverse(),
-      correctTarget: 'first', successStoryAction: 'You remembered what happened first.',
+      correctTarget: storyOrderEvents[0]?.beatId ?? null, successStoryAction: 'You remembered what happened first.',
       spokenSuccess: 'Yes. That happened first. Now back to the story.', transitionTarget: 'reading-3',
+      storyOrder: { prompt: 'What happened first?', events: storyOrderEvents, correctBeatId: storyOrderEvents[0]?.beatId ?? '' },
     },
     {
       beatId: 'final-unlock', mechanicType: 'final-story-unlock', literacyTarget: finalTarget,
@@ -343,7 +354,7 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
     },
   ];
   for (const scene of scenes) scene.interactionBeatIds = beats.filter((beat) => beat.visualSceneId === scene.sceneId).map((beat) => beat.beatId);
-  return { version: 2, contentRevision: 4, chapterId: chapter.id, visualBible: bible, scenes, beats };
+  return { version: 2, contentRevision: 5, chapterId: chapter.id, visualBible: bible, scenes, beats };
 }
 
 function stageEventCount(chapter: Chapter): number {
@@ -361,7 +372,7 @@ export function resolveStoryInteractionManifest(chapter: Chapter): StoryInteract
   if (typeof localStorage !== 'undefined') {
     try {
       const cached = JSON.parse(localStorage.getItem(CACHE_PREFIX + chapter.id) ?? 'null') as StoryInteractionManifest | null;
-      if (cached?.version === 2 && cached.contentRevision === 4 && cached.chapterId === chapter.id) return cached;
+      if (cached?.version === 2 && cached.contentRevision === 5 && cached.chapterId === chapter.id) return cached;
     } catch { /* regenerate a malformed local record */ }
   }
   const manifest = buildStoryInteractionManifest(chapter);
