@@ -422,7 +422,7 @@ const TUTOR_CACHE_PREFIX = 'little-chapters-tutor-chapter:';
 const STORY_SIGNATURE_PREFIX = 'little-chapters-story-signatures:';
 
 function storySignatureKey(profile: ChildProfile): string { return `${STORY_SIGNATURE_PREFIX}${profile.childId}`; }
-function recentStorySignatures(profile: ChildProfile): string[] {
+export function recentStorySignatures(profile: ChildProfile): string[] {
   try { return (JSON.parse(localStorage.getItem(storySignatureKey(profile)) ?? '[]') as unknown[]).filter((row): row is string => typeof row === 'string').slice(0, 5); }
   catch { return []; }
 }
@@ -606,6 +606,7 @@ async function generateTutorChapterPersisted(
     if (!response.ok) return null; // 402 (not subscribed) / 503 / etc — caller stays on the demo arc
     const data = (await response.json()) as {
       chapter?: Chapter | null;
+      created?: boolean;
       record?: { source: 'generated' | 'fallback'; stage: number; draft?: StoryDraft; blueprint?: StoryBlueprint; skeletonId?: string; slots?: Record<string, string> };
     };
     if (data.chapter?.pages?.length) {
@@ -615,7 +616,8 @@ async function generateTutorChapterPersisted(
     const rec = data.record;
     if (!rec || rec.source !== 'generated' || !rec.draft) return null;
     const skeleton = SKELETONS.find((s) => s.id === rec.skeletonId) ?? context.skeleton;
-    const chapter = adaptTutorDraft(profile, rec.draft, skeleton, rec.slots, rec.stage, rec.blueprint);
+    const adapted = adaptTutorDraft(profile, rec.draft, skeleton, rec.slots, rec.stage, rec.blueprint);
+    const chapter = adapted ? { ...adapted, provenance: { ...adapted.provenance, source: data.created === false ? 'cached-generated' as const : 'generated' as const } } : null;
     if (!chapter) return null;
     try {
       localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));

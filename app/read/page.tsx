@@ -23,7 +23,7 @@ import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
 import { MicIcon } from '@/components/icons/MicIcon';
 import { QuietCheckIcon } from '@/components/icons/QuietCheckIcon';
 import { SuccessStar } from '@/components/SuccessStar';
-import { chapterFor, latestChapterGenerationFailure, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
+import { chapterFor, latestChapterGenerationFailure, recentStorySignatures, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage, selectStaticSceneSequence, type SceneSelectionResult } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
@@ -57,6 +57,7 @@ import { correctionModel, modelWordThroughSound, successSoundModel, wordBuilderC
 import { confidentTrackerWords } from '@/lib/reading-tracker';
 import { TutorPhraseSession } from '@/lib/tutor-intents';
 import { materializeStoryPages } from '@/lib/story-blueprint';
+import { RuntimeDebugBadge } from '@/components/RuntimeDebugBadge';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
@@ -701,6 +702,7 @@ export default function ReadPage() {
 
   useEffect(() => installChapterDebug(() => chapterDebugSnapshot(chapter, scenePackage, adventureTelemetryRef.current, {
     entitlementSource: subscribed === true ? 'subscription' : 'free',
+    recentStorySignatureCount: profile ? recentStorySignatures(profile).length : 0,
     scene: {
       pageIdx, phase,
       activeInteractionId: activeInteraction?.id ?? null,
@@ -708,7 +710,7 @@ export default function ReadPage() {
       activeInteractionVisualSceneId: activeInteraction?.activity.visualSceneId ?? null,
       pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources, loadedSceneUrl,
     },
-  })), [chapter, scenePackage, subscribed, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources, loadedSceneUrl]);
+  })), [chapter, scenePackage, subscribed, profile, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources, loadedSceneUrl]);
 
   useEffect(() => {
     if (!chapter || !interactionManifest || authLoading) return;
@@ -1697,6 +1699,7 @@ export default function ReadPage() {
     return (
       <div className="lc-session-interaction" data-session-beat="welcome" data-layout-mode="story">
         <SceneBackground src={sceneBg} focal={sceneFocal} />
+        <RuntimeDebugBadge chapter={chapter} scenePackage={scenePackage} />
         <div className="lc-interaction-card lc-scene-content">
           <p className="lc-interaction-kicker">Welcome to today’s chapter</p>
           <h1>Let’s find out what happens next.</h1>
@@ -1747,6 +1750,7 @@ export default function ReadPage() {
         const region = entity.approximateRegion;
         return <div className="lc-session-interaction lc-find-scene" data-session-beat="find-in-scene" data-layout-mode="story" data-interaction-mode="scene-region" data-verified-entity={entity.label} data-verification-confidence={String(entity.verificationConfidence ?? 0)}>
           <SceneBackground src={sceneBg} focal={sceneFocal} />
+          <RuntimeDebugBadge chapter={chapter} scenePackage={scenePackage} />
           <button className="lc-prompt-speaker" aria-label="Hear the clue again" onClick={() => audioSession.speak(activeInteraction.activity.spokenInstruction,{purpose:'discovery'})}><img src="/icons/speaker-audio.png" alt="" /></button>
           <div className="lc-find-scene-clue"><span>Look in the story world</span><strong>Find the {target}</strong></div>
           <button className={`lc-scene-hotspot${interactionFeedback === 'success' ? ' is-success' : ''}`} style={{left:`${region.x*100}%`,top:`${region.y*100}%`,width:`${region.width*100}%`,height:`${region.height*100}%`}} aria-label={`Found the ${target}`} onClick={() => interactionReady && chooseInteraction(target)}><span>{target}</span></button>
@@ -1772,6 +1776,7 @@ export default function ReadPage() {
       return (
         <div className="lc-session-interaction" data-session-beat="word-builder" data-layout-mode="focus" data-interaction-ready={String(interactionReady)}>
           <SceneBackground src={sceneBg} focal={sceneFocal} />
+          <RuntimeDebugBadge chapter={chapter} scenePackage={scenePackage} />
           <div className={`lc-interaction-card lc-scene-content lc-word-builder${complete ? ' is-complete' : ''}`}>
             <button className="lc-prompt-speaker" aria-label="Hear the word again" onClick={() => {
               const chunks = activeInteraction.activity.interactiveObjects.map((object) => object.label);
@@ -1821,6 +1826,7 @@ export default function ReadPage() {
     return (
       <div className="lc-session-interaction" data-session-beat={activeInteraction.kind} data-layout-mode="interaction" data-interaction-ready={String(interactionReady)} data-instruction-status={interactionReady ? 'complete' : 'playing'} data-interaction-mode={activeInteraction.kind === 'find-in-scene' ? 'tactile-card-fallback' : undefined} data-requested-scene-id={requestedSceneId ?? undefined}>
         <SceneBackground src={sceneBg} focal={sceneFocal} onLoadState={(state, url) => setLoadedSceneUrl(state === 'loaded' ? url : null)} />
+        <RuntimeDebugBadge chapter={chapter} scenePackage={scenePackage} />
         <div className="lc-interaction-card lc-scene-content">
           <button className="lc-prompt-speaker" aria-label="Hear the example words again" onClick={replayInteractionInstruction}><img src="/icons/speaker-audio.png" alt="" /></button>
           <p className="lc-interaction-kicker">{activeInteraction.kind === 'sound-hunt' ? 'Listen for the word' : activeInteraction.kind === 'find-in-scene' ? 'Find the story word' : 'What happens next?'}</p>
@@ -1862,6 +1868,7 @@ export default function ReadPage() {
     return (
       <div className="lc-session-interaction lc-ending-v11" data-session-beat="ending" data-layout-mode="story">
         <SceneBackground src={sceneBg} focal={sceneFocal} cliff />
+        <RuntimeDebugBadge chapter={chapter} scenePackage={scenePackage} />
         <div className="lc-interaction-card lc-scene-content">
           <div className="lc-ending-stars" aria-hidden>
             <SuccessStar size={48} />
@@ -1883,6 +1890,7 @@ export default function ReadPage() {
   return (
     <div className={`scene lc-scenic lc-reading-scene${phase === 'listening' ? ' lc-listening' : ''}`} data-layout-mode="story" style={{ position: 'relative' }}>
     <SceneBackground src={sceneBg} focal={sceneFocal} />
+    <RuntimeDebugBadge chapter={chapter} scenePackage={scenePackage} />
     <div className="screen lc-scene-content">
       <header className="lc-top-controls" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 18px' }}>
         <button

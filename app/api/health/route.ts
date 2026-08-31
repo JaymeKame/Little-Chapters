@@ -19,6 +19,7 @@
 
 import { NextResponse } from 'next/server';
 import { adminCredentialsConfigured, adminStorageConfigured } from '@/lib/firebase-admin';
+import { LITTLE_CHAPTERS_BUILD } from '@/lib/build-info';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -68,6 +69,7 @@ export async function GET() {
       reachable: await probeMdd(),
     },
     openai: { configured: configured('OPENAI_API_KEY') },
+    openai_images: { configured: configured('OPENAI_API_KEY') },
     elevenlabs: { configured: configured('ELEVENLABS_API_KEY') },
     twilio: { configured: configured('TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER') },
   };
@@ -80,6 +82,7 @@ export async function GET() {
     {
       status,
       missing,
+      build: LITTLE_CHAPTERS_BUILD,
       capabilities,
       generatedAt: new Date().toISOString(),
     },

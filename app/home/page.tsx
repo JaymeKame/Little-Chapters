@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { SceneBackground } from '@/components/SceneBackground';
 import { useAuth } from '@/components/AuthProvider';
 import { avatarEmoji, avatarImageObjectPosition, avatarImageSrc, fetchRemoteProfile, loadProfile, saveProfile, type ChildProfile } from '@/lib/profile';
-import { chapterFor, latestChapterGenerationFailure, requestTutorChapter, type Chapter } from '@/lib/chapters';
+import { chapterFor, latestChapterGenerationFailure, recentStorySignatures, requestTutorChapter, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage } from '@/lib/scene-selector';
 import { wasChapterCompleted } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
@@ -83,9 +83,10 @@ export default function ChildHomePage() {
   useEffect(() => installChapterDebug(() => {
     const chapterDebugInfo = chapterDebugSnapshot(chapter, scenePackage, undefined, {
       entitlementSource: entitlement.subscribed === true ? 'subscription' : 'free',
+      recentStorySignatureCount: profile ? recentStorySignatures(profile).length : 0,
     });
     return chapterDebugInfo;
-  }), [chapter, scenePackage, entitlement.subscribed]);
+  }), [chapter, scenePackage, entitlement.subscribed, profile]);
   const forcedState = typeof window !== 'undefined' && process.env.NODE_ENV === 'development'
     ? new URLSearchParams(window.location.search).get('homeState') as DailyStateKind | null : null;
   const forcedOffline = typeof window !== 'undefined' && process.env.NODE_ENV === 'development'

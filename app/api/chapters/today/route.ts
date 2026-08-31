@@ -161,7 +161,7 @@ export async function POST(request: NextRequest) {
         const adapted = adaptTutorDraft(profile, record.draft, skeleton, record.slots, record.stage, record.blueprint);
         if (adapted) {
           chapter = { ...adapted, id: chapterId, character: profile.childName, companion: companionName,
-            provenance: { ...adapted.provenance, source: 'generated', entitlementSource: record.entitlementSource ?? entitlementSource } };
+            provenance: { ...adapted.provenance, source: created ? 'generated' : 'cached-generated', entitlementSource: record.entitlementSource ?? entitlementSource } };
           await dailyChapterRef(chapterId).set({ chapter, ownerUid: auth.uid, entitlementSource: record.entitlementSource ?? entitlementSource, generatedAt: record.createdAt }, { merge: true });
         }
       }
