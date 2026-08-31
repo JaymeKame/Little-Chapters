@@ -12,7 +12,11 @@ async function check(condition: boolean, label: string) {
 }
 
 await page.goto(base);
-await page.waitForSelector('text=The better 20 minutes.');
+// Copy updated as part of the V1 final-polish pass — headline is now
+// "A short daily reading adventure." (see app/page.tsx). This selector
+// gets the child's-first-name-invitation-shaped CTA instead so it stays
+// robust across small copy tweaks.
+await page.waitForSelector('text=Try a Chapter Free Tonight');
 await check(page.url() === `${base}/`, 'new anonymous visitor remains on acquisition');
 
 await page.evaluate(() => localStorage.setItem('little-chapters-profile', JSON.stringify({

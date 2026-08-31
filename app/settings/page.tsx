@@ -10,6 +10,8 @@ import {
   type ConsumerPreferences, type DifficultyObservation, type ParentCommunication,
 } from '@/lib/preferences';
 import { dismissInstallPrompt, shouldShowInstallPrompt } from '@/lib/install-prompt';
+import { PaymentAttentionBanner } from '@/components/PaymentAttentionBanner';
+import { track } from '@/lib/analytics';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -65,16 +67,55 @@ export default function SettingsPage() {
   async function managePlan() {
     if (!user || user.isAnonymous) { router.push('/unlock'); return; }
     if (subscription !== 'active') { router.push('/payment'); return; }
+    track('billing_portal_opened', { route: '/settings' });
     const response = await fetch('/api/payments/portal', { method: 'POST', headers: { Authorization: `Bearer ${await user.getIdToken()}` } });
     const data = await response.json().catch(() => ({})) as { url?: string };
     if (response.ok && data.url) window.location.href = data.url;
     else setStatus('Subscription management is unavailable right now.');
   }
 
+  // Delete-account state — deliberately typed-word confirmation, no modal, no
+  // reversible "are you sure" spam. The button is disabled until the parent
+  // types the exact confirmation string.
+  const [showDelete, setShowDelete] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deleting, setDeleting] = useState(false);
+
+  async function deleteAccount() {
+    if (!user || user.isAnonymous || deleteConfirm !== 'DELETE') return;
+    setDeleting(true);
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch('/api/parents/delete', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error || 'Deletion failed.');
+      }
+      track('subscription_canceled', { route: '/settings' });
+      // Clear local state — the server has removed the account; localStorage
+      // pet/profile/history should not linger on this device.
+      try {
+        for (const key of Object.keys(localStorage)) {
+          if (key.startsWith('little-chapters')) localStorage.removeItem(key);
+        }
+      } catch { /* private browsing */ }
+      await signOut();
+      router.replace('/');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Deletion failed.');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (!profile) return <SettingsLoading />;
 
   return (
     <main className="lc-settings-shell">
+      <PaymentAttentionBanner />
       <header className="lc-settings-header">
         <button className="lc-settings-back" onClick={() => router.push('/home')} aria-label="Back to child Home">‹</button>
         <div><span className="lc-settings-eyebrow">For grown-ups</span><h1>Settings</h1></div>
@@ -122,7 +163,53 @@ export default function SettingsPage() {
         <div className="lc-settings-section-title"><span>04</span><div><h2>Account</h2><p>Plan, sign-in, and family data.</p></div></div>
         <div className="lc-account-row"><div><strong>{subscription === 'active' ? 'Active membership' : subscription === 'loading' ? 'Checking membership…' : 'No active membership'}</strong><span>{isAuthenticated ? user?.email ?? 'Signed in' : 'Anonymous free trial'}</span></div><button onClick={managePlan}>{subscription === 'active' ? 'Manage plan' : 'View plans'}</button></div>
         <div className="lc-account-links"><button onClick={() => document.getElementById('privacy-note')?.scrollIntoView({ behavior: 'smooth' })}>Privacy &amp; data</button>{isAuthenticated && <button onClick={async () => { await signOut(); router.replace('/'); }}>Log out</button>}</div>
-        <p id="privacy-note" className="lc-settings-note">Little Chapters stores the child profile and reading progress needed to personalize the experience. Contact support to request access or deletion.</p>
+        <p id="privacy-note" className="lc-settings-note">
+          Little Chapters stores the child profile and reading progress needed to personalize the experience.
+          See our <a href="/privacy">Privacy summary</a>, <a href="/terms">Terms</a>, or <a href="/support">Support</a> for details.
+        </p>
+
+        {isAuthenticated && (
+          <div className="lc-danger-zone" aria-labelledby="danger-title">
+            <h3 id="danger-title">Delete account</h3>
+            <p>
+              This cancels your subscription and permanently removes your child&rsquo;s profile,
+              reading progress, and account data from our servers. It cannot be undone.
+            </p>
+            {!showDelete ? (
+              <button className="lc-danger-cancel" onClick={() => setShowDelete(true)}>Delete my account</button>
+            ) : (
+              <>
+                <label htmlFor="danger-confirm">Type <strong>DELETE</strong> to confirm</label>
+                <input
+                  id="danger-confirm"
+                  type="text"
+                  autoComplete="off"
+                  value={deleteConfirm}
+                  onChange={(e) => setDeleteConfirm(e.target.value)}
+                  disabled={deleting}
+                />
+                <div className="lc-danger-actions">
+                  <button
+                    type="button"
+                    className="lc-danger-confirm"
+                    disabled={deleting || deleteConfirm !== 'DELETE'}
+                    onClick={deleteAccount}
+                  >
+                    {deleting ? 'Deleting…' : 'Permanently delete'}
+                  </button>
+                  <button
+                    type="button"
+                    className="lc-danger-cancel"
+                    disabled={deleting}
+                    onClick={() => { setShowDelete(false); setDeleteConfirm(''); }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </section>
 
       <div className="lc-settings-save"><button className="btn-primary" onClick={persist} disabled={saving || !profile.childName.trim() || profile.interests.length === 0}>{saving ? 'Saving…' : 'Save settings'}</button><span role="status">{status}</span></div>

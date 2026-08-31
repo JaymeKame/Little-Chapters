@@ -20,6 +20,7 @@ import {
   type AvatarId,
   type InterestId,
 } from '@/lib/profile';
+import { track } from '@/lib/analytics';
 
 export default function SetupPage() {
   const router = useRouter();
@@ -54,6 +55,7 @@ export default function SetupPage() {
   function start() {
     if (!ready) return;
     saveProfile({ childId: newChildId(), childName: name.trim(), age, interests: picked, avatar, childContext: childContext.trim().slice(0, 2000) || undefined, createdAt: Date.now() });
+    track('setup_completed', { route: '/setup' });
     router.push('/home');
   }
 

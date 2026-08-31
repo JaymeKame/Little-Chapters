@@ -11,6 +11,7 @@ import { useAuth } from '@/components/AuthProvider';
 import { loadProfile, loadReport, type ChildProfile, type SessionReport } from '@/lib/profile';
 import { loadChapterHistory, type ChapterHistoryEntry } from '@/lib/chapter-history';
 import { ParentMessages } from '@/components/ParentMessages';
+import { PaymentAttentionBanner } from '@/components/PaymentAttentionBanner';
 
 const PRACTICE_ICONS = ['🌱', '✨', '🪄'];
 
@@ -53,6 +54,7 @@ export default function ParentMessagePage() {
 
   return (
     <div className="screen" style={{ background: '#f4f2ee' }}>
+      <PaymentAttentionBanner />
       <header
         style={{
           display: 'flex',

@@ -7,6 +7,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
+import { useEffect } from 'react';
+import { track } from '@/lib/analytics';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -14,6 +16,8 @@ export default function RegisterPage() {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [busy, setBusy] = useState<'google' | 'apple' | 'submit' | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { track('register_started', { route: '/register' }); }, []);
 
   async function handleProvider(provider: 'google' | 'apple') {
     setError(null);
@@ -56,6 +60,7 @@ export default function RegisterPage() {
       }
       await saveParentPhoneNumber(phoneNumber);
 
+      track('register_completed', { route: '/register' });
       // Redirect to payment setup after successful registration
       router.push('/payment');
     } catch (err) {

@@ -24,7 +24,8 @@
     "test:experience": "tsx scripts/test-experience-sprint.ts",
     "test:correction": "tsx scripts/test-experience-correction.ts",
     "test:correction-pass-2": "tsx scripts/test-experience-correction-pass-2.ts",
-    "capture:daily-adventure": "tsx scripts/capture-daily-adventure.ts"
+    "capture:daily-adventure": "tsx scripts/capture-daily-adventure.ts",
+    "test:analytics": "tsx scripts/test-analytics-funnel.ts"
   },
   "dependencies": {
     "@stripe/stripe-js": "^9.13.0",

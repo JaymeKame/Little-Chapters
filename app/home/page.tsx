@@ -16,6 +16,8 @@ import { audioSession } from '@/lib/audio-session';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
 import { chapterDebugSnapshot, installChapterDebug } from '@/lib/adventure-debug';
+import { PaymentAttentionBanner } from '@/components/PaymentAttentionBanner';
+import { track } from '@/lib/analytics';
 
 export default function ChildHomePage() {
   const router = useRouter();
@@ -115,6 +117,7 @@ export default function ChildHomePage() {
   function go(action: 'play' | 'grown-up') {
     audioSession.playHomeSound(action === 'play' ? 'play.mp3' : 'tap-soft.mp3');
     if (action === 'grown-up') { audioSession.stopTheme(); router.push('/settings'); return; }
+    track('chapter_started', { route: '/home', authed: !!user && !user.isAnonymous });
     audioSession.playTheme(); setLeaving(true); setTimeout(() => router.push('/read'), 260);
   }
 
@@ -127,6 +130,7 @@ export default function ChildHomePage() {
 
   return (
     <main className={`lc-home-v11${leaving ? ' is-leaving' : ''}`} data-home-state={dailyState}>
+      <PaymentAttentionBanner />
       <SceneBackground src={sceneUrl(scenePackage, 'scene-1') ?? scene?.asset.src ?? null} focal={scene?.asset.focal} priority />
       <div className="lc-home-scrim" />
       <header className="lc-home-v11-header">

@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { fetchRemoteProfile, loadProfile, saveProfile } from '@/lib/profile';
 import { resolveRootEntry } from '@/lib/root-entry';
+import { track } from '@/lib/analytics';
 
 const FEATURES = [
   { label: 'Made for real life', src: '/images/landing/icon-made-for-real-life.png' },
@@ -14,6 +15,7 @@ const FEATURES = [
 ];
 
 function LandingPage() {
+  useEffect(() => { track('landing_view', { route: '/' }); }, []);
   return (
     <div className="lc-landing">
       <div className="lc-landing-inner">
@@ -27,7 +29,7 @@ function LandingPage() {
         <main className="lc-landing-main">
           <div className="lc-landing-copy-column">
             <div className="lc-landing-copy lc-landing-copy-column">
-              <h1 className="lc-h1">The better 20&nbsp;minutes.</h1>
+              <h1 className="lc-h1">A short daily reading adventure.</h1>
               <p className="lc-subhead">
                 A story they love.
                 <br />
@@ -35,6 +37,9 @@ function LandingPage() {
               </p>
               <p className="lc-lede">
                 AI writes a new chapter every day at exactly their level. They read. AI listens. The adventure continues tomorrow.
+              </p>
+              <p className="lc-lede" style={{ fontSize: 12, color: 'var(--ink-soft)', marginTop: 6 }}>
+                Little Chapters uses AI to personalize each chapter for your child, with safety and reading-level checks built in.
               </p>
 
               <div className="lc-feature-grid" aria-label="Little Chapters benefits">
@@ -64,7 +69,7 @@ function LandingPage() {
               <img src="/images/landing/landing-reading-scene.jpg" alt="" />
             </div>
             <div className="lc-landing-cta lc-landing-cta-overlap">
-              <Link href="/setup" style={{ textDecoration: 'none' }}>
+              <Link href="/setup" style={{ textDecoration: 'none' }} onClick={() => track('setup_started', { route: '/' })}>
                 <span className="btn-primary lc-cta">Try a Chapter Free Tonight</span>
               </Link>
             </div>

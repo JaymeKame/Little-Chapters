@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
 import { clearEntitlementCache } from '@/lib/use-entitlement';
+import { track } from '@/lib/analytics';
 
 // Webhook-driven fields (subscription status) can lag the browser's own
 // verify call by a few seconds. A single failed attempt does not mean the
@@ -54,6 +55,8 @@ export default function PaymentSuccessPage() {
           // lifetime; without this the parent pays and /home still sends
           // them back to /unlock until they hard-reload.
           clearEntitlementCache(user.uid);
+          track('checkout_completed', { route: '/payment/success' });
+          track('subscription_active', { route: '/payment/success' });
           if (!cancelled) router.replace('/home');
           return;
         } catch {

@@ -9,6 +9,7 @@ import { useAuth } from '@/components/AuthProvider';
 // lib/plans, NOT lib/stripe — importing the latter from this 'use client'
 // module shipped the Stripe Node sdk to the browser. See lib/plans.ts.
 import { PLANS } from '@/lib/plans';
+import { track } from '@/lib/analytics';
 
 export default function PaymentPage() {
   const router = useRouter();
@@ -45,6 +46,7 @@ export default function PaymentPage() {
   async function handleSubscribe(planId: string) {
     setLoading(true);
     setError(null);
+    track('checkout_started', { route: '/payment', plan: planId as 'monthly' | 'yearly' });
 
     try {
       const token = await user?.getIdToken();
@@ -62,6 +64,7 @@ export default function PaymentPage() {
       const data = await response.json();
 
       if (!response.ok) {
+        track('payment_failed', { route: '/payment', plan: planId as 'monthly' | 'yearly', errorCategory: 'checkout_create' });
         throw new Error(data.error || 'Failed to create checkout session');
       }
 

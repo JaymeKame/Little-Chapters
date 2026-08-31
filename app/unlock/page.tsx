@@ -18,6 +18,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
 import { useEntitlement } from '@/lib/use-entitlement';
 import { PLANS } from '@/lib/plans';
+import { track } from '@/lib/analytics';
 
 export default function UnlockPage() {
   const router = useRouter();
@@ -29,6 +30,8 @@ export default function UnlockPage() {
   useEffect(() => {
     if (ready && subscribed) router.replace('/home');
   }, [ready, subscribed, router]);
+
+  useEffect(() => { track('unlock_shown', { route: '/unlock', authed: isAuthenticated }); }, [isAuthenticated]);
 
   const monthly = PLANS.find((plan) => plan.id === 'monthly');
 

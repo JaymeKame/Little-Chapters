@@ -14,6 +14,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
+import { track } from '@/lib/analytics';
 import { usePet } from '@/components/PetCompanion';
 import { SceneBackground } from '@/components/SceneBackground';
 import { SlideWordHelp } from '@/components/SlideWordHelp';
@@ -1307,6 +1308,7 @@ export default function ReadPage() {
     if (!claimEndingCompletion(finishChapterRef)) return;
     audioSession.cancelAll();
     const c = chapter!;
+    track('chapter_completed', { route: '/read', authed: !!user && !user.isAnonymous, stage });
     // Dedupe: a generated chapter may practise one or two words across every
     // page, and "den, den, den" reads like a bug to the parent.
     const newWords = [
