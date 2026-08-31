@@ -1,13 +1,20 @@
 'use client';
 
-/* Parent account registration page with Google/Apple sign-in AND phone number.
- * Follows the pattern from inzone-games but requires both authentication
- * and phone number for SMS notifications after the free chapter experience. */
+/* Parent account creation.
+ *
+ * V1-polish notes:
+ *  - The value proposition is account continuity + membership management, NOT
+ *    SMS. Twilio is optional in this product and the default reading-note
+ *    delivery is in-app; advertising SMS as a subscription feature was
+ *    misleading. See the audit trail.
+ *  - Phone is OPTIONAL. Registration proceeds without it; parents who later
+ *    switch communication to "SMS" in Settings enter their number there.
+ *  - The button gates on isAuthenticated (a real sign-in must have happened)
+ *    but never on phone. */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
-import { useEffect } from 'react';
 import { track } from '@/lib/analytics';
 
 export default function RegisterPage() {
@@ -26,10 +33,9 @@ export default function RegisterPage() {
       if (provider === 'google') await signInWithGoogle();
       else await signInWithApple();
     } catch (e) {
-      // Raw Firebase codes are meaningless to a parent — say what to do.
       const code = (e as { code?: string })?.code ?? '';
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        /* they closed it themselves — not an error worth showing */
+        /* parent closed it themselves — not an error worth showing */
       } else if (code === 'auth/popup-blocked') {
         setError('Your browser blocked the sign-in window. Allow pop-ups for this site, or tap the button again.');
       } else if (code === 'auth/network-request-failed') {
@@ -42,26 +48,30 @@ export default function RegisterPage() {
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleContinue(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+
+    if (!isAuthenticated) {
+      setError('Please sign in above with Google or Apple before continuing.');
+      return;
+    }
     setBusy('submit');
-
     try {
-      // Basic phone number validation
+      // Phone is optional. Save it ONLY if the parent entered something that
+      // looks like a phone number. Existing stored numbers are preserved on
+      // the server side — saveParentPhoneNumber is a set-merge, so the field
+      // is only overwritten when we call it.
       const cleanedPhone = phoneNumber.replace(/\D/g, '');
-      if (cleanedPhone.length < 10) {
-        throw new Error('Please enter a valid phone number');
+      if (cleanedPhone.length > 0) {
+        if (cleanedPhone.length < 10) {
+          setError('Please enter a valid phone number, or clear the field to continue without one.');
+          setBusy(null);
+          return;
+        }
+        await saveParentPhoneNumber(phoneNumber);
       }
-
-      // Save phone number to Firestore
-      if (!isAuthenticated) {
-        throw new Error('Please sign in before continuing.');
-      }
-      await saveParentPhoneNumber(phoneNumber);
-
       track('register_completed', { route: '/register' });
-      // Redirect to payment setup after successful registration
       router.push('/payment');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
@@ -72,12 +82,13 @@ export default function RegisterPage() {
 
   return (
     <div className="screen" style={{ padding: '20px', maxWidth: '400px', margin: '0 auto' }}>
-      <header style={{ marginBottom: '30px', textAlign: 'center' }}>
+      <header style={{ marginBottom: '24px', textAlign: 'center' }}>
         <h1 style={{ fontFamily: 'var(--serif)', fontSize: '28px', margin: '0 0 10px' }}>
           Save their adventure
         </h1>
-        <p style={{ color: 'var(--ink-soft)', fontSize: 14, margin: 0 }}>
-          Create your parent account so tomorrow&rsquo;s chapter can continue where they left off.
+        <p style={{ color: 'var(--ink-soft)', fontSize: 14, margin: 0, lineHeight: 1.5 }}>
+          Create your parent account to save your child&rsquo;s progress, manage your membership,
+          and keep tomorrow&rsquo;s chapter waiting for them.
         </p>
       </header>
 
@@ -87,10 +98,6 @@ export default function RegisterPage() {
         </div>
       )}
 
-      {/* Signed-in confirmation. The provider buttons below stay visible (a
-          parent may want to switch accounts), so without this the screen
-          looks identical before and after a successful sign-in — which is
-          exactly how the onAuthStateChanged bug used to present itself. */}
       {isAuthenticated && (
         <div
           style={{
@@ -107,25 +114,15 @@ export default function RegisterPage() {
         </div>
       )}
 
-      {/* Google and Apple sign-in buttons */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px' }}>
         <button
           onClick={() => handleProvider('google')}
           disabled={!!busy}
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '12px',
-            padding: '14px',
-            fontSize: 15,
-            fontWeight: 500,
-            borderRadius: 12,
-            border: '1.5px solid var(--line)',
-            background: '#fff',
-            color: 'var(--ink)',
-            cursor: busy ? 'not-allowed' : 'pointer',
-            opacity: busy ? 0.6 : 1,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px',
+            padding: '14px', fontSize: 15, fontWeight: 500, borderRadius: 12,
+            border: '1.5px solid var(--line)', background: '#fff', color: 'var(--ink)',
+            cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1,
           }}
         >
           <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
@@ -141,19 +138,10 @@ export default function RegisterPage() {
           onClick={() => handleProvider('apple')}
           disabled={!!busy}
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '12px',
-            padding: '14px',
-            fontSize: 15,
-            fontWeight: 500,
-            borderRadius: 12,
-            border: '1.5px solid var(--line)',
-            background: '#fff',
-            color: 'var(--ink)',
-            cursor: busy ? 'not-allowed' : 'pointer',
-            opacity: busy ? 0.6 : 1,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px',
+            padding: '14px', fontSize: 15, fontWeight: 500, borderRadius: 12,
+            border: '1.5px solid var(--line)', background: '#fff', color: 'var(--ink)',
+            cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1,
           }}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
@@ -163,68 +151,46 @@ export default function RegisterPage() {
         </button>
       </div>
 
-      {/* Phone number form (required) */}
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <form onSubmit={handleContinue} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
         <div>
-          <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: '8px' }}>
-            Phone Number <span style={{ color: 'var(--leaf)' }}>*</span>
+          <label htmlFor="parent-phone" style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: '8px' }}>
+            Mobile number <span style={{ color: 'var(--ink-soft)', fontWeight: 400 }}>Optional</span>
           </label>
           <input
+            id="parent-phone"
             type="tel"
             value={phoneNumber}
             onChange={(e) => setPhoneNumber(e.target.value)}
             placeholder="(555) 123-4567"
-            required
             style={{
-              width: '100%',
-              padding: '13px 14px',
-              fontSize: 16,
-              borderRadius: 12,
-              border: '1.5px solid var(--line)',
-              background: 'var(--card)',
-              outline: 'none',
+              width: '100%', padding: '13px 14px', fontSize: 16, borderRadius: 12,
+              border: '1.5px solid var(--line)', background: 'var(--card)', outline: 'none',
             }}
-              disabled={busy === 'submit' || authLoading}
+            disabled={busy === 'submit' || authLoading}
           />
-          <p style={{ fontSize: 12, color: 'var(--ink-soft)', marginTop: '6px' }}>
-            We'll send you one specific win after each reading session
+          <p style={{ fontSize: 12, color: 'var(--ink-soft)', marginTop: '6px', lineHeight: 1.5 }}>
+            Optional. Only used if you later switch reading notes to SMS in Settings. You can skip
+            this and continue in the app.
           </p>
         </div>
 
-        {/* Deliberately NOT disabled for `!isAuthenticated` — a disabled
-            button that still LOOKS enabled (this one used to: `disabled`
-            included !isAuthenticated but the cursor/opacity styling below
-            never did) silently eats every click with no feedback, which is
-            indistinguishable from the app being broken. Staying clickable
-            lets handleSubmit's own `if (!isAuthenticated) throw ...` fire
-            and show "Please sign in before continuing." — a real answer
-            instead of nothing. Only busy/empty-phone genuinely block
-            submission (nothing useful to submit, or a submission already in
-            flight), so those are the only two conditions in EITHER prop —
-            kept identical on purpose so the button's look always matches
-            what a click will actually do. */}
         <button
           type="submit"
           className="btn-primary"
-          disabled={busy === 'submit' || !phoneNumber.trim()}
+          disabled={busy === 'submit' || !isAuthenticated}
           style={{
-            padding: '14px',
-            fontSize: 16,
-            fontWeight: 600,
-            borderRadius: 12,
-            border: 0,
-            background: 'var(--leaf)',
-            color: '#fff',
-            cursor: busy === 'submit' || !phoneNumber.trim() ? 'not-allowed' : 'pointer',
-            opacity: busy === 'submit' || !phoneNumber.trim() ? 0.6 : 1,
+            padding: '14px', fontSize: 16, fontWeight: 600, borderRadius: 12, border: 0,
+            background: 'var(--leaf)', color: '#fff',
+            cursor: busy === 'submit' || !isAuthenticated ? 'not-allowed' : 'pointer',
+            opacity: busy === 'submit' || !isAuthenticated ? 0.6 : 1,
           }}
         >
           {busy === 'submit' ? 'Saving...' : 'Continue to Payment'}
         </button>
       </form>
 
-      <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--ink-soft)', marginTop: '24px' }}>
-        By continuing, you agree to receive SMS messages about your child's reading progress.
+      <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--ink-soft)', marginTop: '20px', lineHeight: 1.5 }}>
+        By continuing you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy</a> policy.
       </p>
     </div>
   );

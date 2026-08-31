@@ -542,6 +542,20 @@ function _speakElevenLabs(
       _transportDebug.finalProvider = 'web-speech';
     }
     voiceLog({ provider: 'elevenlabs', fallback: 'web-speech', retried: afterRetry, reason, httpStatus: status });
+    // Fire the quality event so operators see the ElevenLabs-degradation
+    // rate at a glance. Never sends the utterance text. Import is dynamic
+    // to keep this module tree-shakeable in tests that stub the audio
+    // path — analytics is a client-only side effect, not a dependency of
+    // speech playback.
+    try {
+      void import('./analytics').then(({ track }) => {
+        track('tts_failed', {
+          route: typeof window !== 'undefined' ? window.location.pathname : undefined,
+          provider: 'elevenlabs', fallback: 'used',
+          errorCategory: (reason || 'unknown').slice(0, 40),
+        });
+      }).catch(() => {});
+    } catch { /* analytics must never affect voice playback */ }
     _lastUtterance = {
       requestedProvider: 'elevenlabs',
       playedProvider: null,

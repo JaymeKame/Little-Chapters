@@ -432,6 +432,14 @@ export default function ReadPage() {
         setChapter(tutorChapter);
       } else if (!cancelled && !disposedRef.current && !startedReadingRef.current) {
         setChapter((current) => current ? { ...current, provenance: { source: 'fallback', failureReason: latestChapterGenerationFailure() } } : current);
+        // Story generation fell back to the demo arc. Fire the quality
+        // event so the operator dashboard shows this rate rather than
+        // guessing at it later. Never sends the profile, story text, or
+        // failure body — only a short category string.
+        track('story_generation_failed', {
+          route: '/read',
+          errorCategory: (latestChapterGenerationFailure() || 'fallback').slice(0, 40),
+        });
       }
     })();
     return () => {
@@ -707,7 +715,19 @@ export default function ReadPage() {
     setScenePackage(null);
     const cached = loadChapterScenePackage(chapter.id); if (cached) { setScenePackage(cached); return; }
     let cancelled = false;
-    void requestChapterScenePackage(chapter, interactionManifest, user).then((value) => { if (value && !cancelled) setScenePackage(value); });
+    void requestChapterScenePackage(chapter, interactionManifest, user).then((value) => {
+      if (cancelled) return;
+      if (value) setScenePackage(value);
+      // Null return means generation failed and the app is running on the
+      // approved-static fallback pack (see lib/chapter-scenes.ts —
+      // latestVisualState.packageProvenance goes to 'approved-static-fallback').
+      // Track only a short category; never sends the story or generated
+      // prompt. The reading flow is unchanged either way.
+      else track('visual_generation_failed', {
+        route: '/read', provider: 'chapter-scenes', fallback: 'used',
+        errorCategory: 'package-null',
+      });
+    });
     return () => { cancelled = true; };
   }, [chapter, interactionManifest, user, authLoading]);
 
@@ -985,9 +1005,18 @@ export default function ReadPage() {
       const verdicts = combineVerdicts(r.words, decodeResult);
       await exposeVerdictDebug(verdicts, true);
       return { verdicts, decode: decodeResult };
-    } catch {
+    } catch (error) {
       const verdicts = combineVerdicts(r.words, null);
       await exposeVerdictDebug(verdicts, false);
+      // MDD decoder was unreachable for this take — grading degraded to
+      // Azure-only. The reading FLOW is unchanged: the caller receives the
+      // same tuple shape and continues. Track only a short category so
+      // "MDD flaky in prod" is visible in the operator log without ever
+      // sending audio, transcript, or reference text.
+      track('speech_scoring_failed', {
+        route: '/read', provider: 'mdd', fallback: 'used',
+        errorCategory: (error instanceof Error ? error.message : 'network').slice(0, 40),
+      });
       return { verdicts, decode: null };
     }
   }

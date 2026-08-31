@@ -71,41 +71,38 @@ async function main() {
     }
   }
 
-  console.log('\n=== Test 2: unauthenticated "Continue to Payment" never silently no-ops ===');
+  console.log('\n=== Test 2: unauthenticated "Continue to Payment" — honest disabled state ===');
   {
+    // V1-polish (2026-08-31): registration phone is now OPTIONAL and the
+    // "Continue to Payment" gate is `disabled={!isAuthenticated}` alone.
+    // The invariant is that the button clearly LOOKS disabled while the
+    // parent hasn't signed in yet AND does not silently succeed — either
+    // is a real bug. The previous test asserted the opposite (the
+    // pre-polish design kept it clickable and threw an inline error);
+    // that was the right fix at the time but is no longer the current UX.
     await page.goto(`${BASE_URL}/register`);
     await page.waitForSelector('input[type="tel"]', { timeout: 15000 });
-    await page.fill('input[type="tel"]', '5551234567');
+    // Phone is optional now — no need to prefill to reach the button.
 
     const button = page.locator('button[type="submit"]:has-text("Continue to Payment")');
     const isDisabled = await button.isDisabled();
-    if (!isDisabled) {
-      ok('the Continue-to-Payment button is NOT disabled while unauthenticated (stays clickable — see item D)');
+    if (isDisabled) {
+      ok('the Continue-to-Payment button is disabled while unauthenticated (real state — no silent no-op)');
     } else {
-      fail('button is disabled while unauthenticated — a click cannot reach handleSubmit at all, reproducing the original bug');
+      fail('button is enabled while unauthenticated — a click would fall through with nothing to do');
     }
 
     const cursor = await button.evaluate((el: Element) => getComputedStyle(el).cursor);
     const opacity = await button.evaluate((el: Element) => getComputedStyle(el).opacity);
-    if (cursor === 'pointer' && Number(opacity) === 1) {
-      ok(`button styling matches its actual (clickable) state (cursor=${cursor}, opacity=${opacity})`);
+    if (cursor === 'not-allowed' && Number(opacity) < 1) {
+      ok(`button styling MATCHES its disabled state (cursor=${cursor}, opacity=${opacity})`);
     } else {
-      fail('button LOOKS disabled (styling) despite being clickable — the original mismatch bug', `cursor=${cursor} opacity=${opacity}`);
-    }
-
-    await button.click();
-    await page.waitForTimeout(400);
-
-    const errorText = await page.locator('body').innerText();
-    if (errorText.includes('Please sign in before continuing.')) {
-      ok('clicking while unauthenticated shows "Please sign in before continuing." (never a silent no-op)');
-    } else {
-      fail('expected error message not found after clicking while unauthenticated', errorText.slice(0, 300));
+      fail('button LOOKS enabled despite being disabled — restores the original mismatch bug', `cursor=${cursor} opacity=${opacity}`);
     }
 
     const url = page.url();
     if (url.includes('/register')) {
-      ok('did not navigate to /payment while unauthenticated');
+      ok('remains on /register while unauthenticated (no navigation without sign-in)');
     } else {
       fail('unexpectedly navigated away from /register', url);
     }

@@ -88,7 +88,7 @@ export default function PaymentPage() {
           Choose Your Plan
         </h1>
         <p style={{ color: 'var(--ink-soft)', fontSize: 14, margin: 0 }}>
-          Get daily SMS updates about your child's reading progress
+          A short daily reading adventure, written for your child.
         </p>
       </header>
 
@@ -137,10 +137,10 @@ export default function PaymentPage() {
           What you'll get:
         </h3>
         <ul style={{ margin: 0, paddingLeft: '20px', fontSize: 14, lineHeight: 1.6, color: 'var(--ink-2)' }}>
-          <li style={{ marginBottom: '8px' }}>Daily SMS with specific wins from each reading session</li>
-          <li style={{ marginBottom: '8px' }}>Progress tracking across all chapters</li>
-          <li style={{ marginBottom: '8px' }}>In-app message history</li>
-          <li style={{ marginBottom: 0 }}>Cancel anytime</li>
+          <li style={{ marginBottom: '8px' }}>A brand-new chapter every day, personalized to your child</li>
+          <li style={{ marginBottom: '8px' }}>Gentle reading support, phonics, and comprehension games</li>
+          <li style={{ marginBottom: '8px' }}>A short after-session note in the app — never a score</li>
+          <li style={{ marginBottom: 0 }}>Cancel anytime from Settings</li>
         </ul>
       </div>
 
