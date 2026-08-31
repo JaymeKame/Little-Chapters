@@ -49,18 +49,20 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   let text: string;
+  let speed = 1;
   try {
-    const body = (await req.json()) as { text?: unknown };
+    const body = (await req.json()) as { text?: unknown; speed?: unknown };
     if (typeof body.text !== 'string' || !body.text.trim()) {
       return NextResponse.json({ error: 'text is required' }, { status: 400 });
     }
     text = body.text.trim().slice(0, MAX_TEXT_CHARS);
+    if (typeof body.speed === 'number') speed = Math.max(0.7, Math.min(1.2, body.speed));
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
   try {
-    const upstream = await synthesize(text);
+    const upstream = await synthesize(text, { speed });
     // Forward the ElevenLabs stream directly — avoids buffering the entire clip
     return new Response(upstream.body, {
       headers: {

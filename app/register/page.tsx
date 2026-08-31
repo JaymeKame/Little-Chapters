@@ -69,10 +69,10 @@ export default function RegisterPage() {
     <div className="screen" style={{ padding: '20px', maxWidth: '400px', margin: '0 auto' }}>
       <header style={{ marginBottom: '30px', textAlign: 'center' }}>
         <h1 style={{ fontFamily: 'var(--serif)', fontSize: '28px', margin: '0 0 10px' }}>
-          Create Your Account
+          Save their adventure
         </h1>
         <p style={{ color: 'var(--ink-soft)', fontSize: 14, margin: 0 }}>
-          Sign in to get daily progress updates via SMS
+          Create your parent account so tomorrow&rsquo;s chapter can continue where they left off.
         </p>
       </header>
 
@@ -186,10 +186,22 @@ export default function RegisterPage() {
           </p>
         </div>
 
+        {/* Deliberately NOT disabled for `!isAuthenticated` — a disabled
+            button that still LOOKS enabled (this one used to: `disabled`
+            included !isAuthenticated but the cursor/opacity styling below
+            never did) silently eats every click with no feedback, which is
+            indistinguishable from the app being broken. Staying clickable
+            lets handleSubmit's own `if (!isAuthenticated) throw ...` fire
+            and show "Please sign in before continuing." — a real answer
+            instead of nothing. Only busy/empty-phone genuinely block
+            submission (nothing useful to submit, or a submission already in
+            flight), so those are the only two conditions in EITHER prop —
+            kept identical on purpose so the button's look always matches
+            what a click will actually do. */}
         <button
           type="submit"
           className="btn-primary"
-          disabled={busy === 'submit' || !phoneNumber.trim() || !isAuthenticated}
+          disabled={busy === 'submit' || !phoneNumber.trim()}
           style={{
             padding: '14px',
             fontSize: 16,

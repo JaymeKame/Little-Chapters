@@ -55,6 +55,8 @@ export interface ChildProfile {
   age: number;
   interests: InterestId[];
   avatar?: AvatarId;
+  /** Optional parent-provided context used only to personalize safe story blueprints. */
+  childContext?: string;
   createdAt: number;
 }
 
@@ -83,6 +85,7 @@ export function loadProfile(): ChildProfile | null {
       age: typeof raw.age === 'number' && Number.isFinite(raw.age) ? Math.min(12, Math.max(3, Math.round(raw.age))) : 6,
       interests: raw.interests.filter((i): i is InterestId => INTERESTS.some((x) => x.id === i)).slice(0, 3),
       avatar: AVATARS.some((a) => a.id === raw.avatar) ? (raw.avatar as AvatarId) : undefined,
+      childContext: typeof raw.childContext === 'string' ? raw.childContext.slice(0, 2000) : undefined,
       createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
     };
     if (childId !== raw.childId) saveProfile(profile);
@@ -98,6 +101,47 @@ export function saveProfile(p: ChildProfile): void {
   } catch {
     /* best-effort */
   }
+}
+
+/* ── Server mirror (best-effort; see docs/PERSISTENCE.md-style rationale in
+ * lib/profile-store-admin.ts for why this is server-mediated) ──────────
+ *
+ * The local profile above is a single global localStorage key — not even
+ * uid-scoped — which is exactly right for the account-free onboarding, but
+ * means a returning subscriber on a NEW browser/device (or one who cleared
+ * site data) has NO profile at all client-side. app/home and app/read call
+ * fetchRemoteProfile() as a fallback ONLY when loadProfile() returns null
+ * and the caller is a real signed-in uid, so a known returning subscriber
+ * is restored instead of being routed through Setup like a brand-new
+ * visitor. */
+
+/** Best-effort load from the server mirror. Never throws — callers that
+ *  have no token, are offline, or hit an unconfigured Admin SDK are
+ *  already fully correct falling back to "no profile found" (genuinely new
+ *  visitor) in that case. */
+export async function fetchRemoteProfile(idToken: string): Promise<ChildProfile | null> {
+  try {
+    const res = await fetch('/api/profile', { headers: { Authorization: `Bearer ${idToken}` } });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { profile?: ChildProfile | null };
+    return data.profile ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Fire-and-forget mirror of the current local profile to the server.
+ *  Never blocks the caller and never surfaces a failure — the local copy
+ *  is already fully correct on its own device; this only helps a FUTURE
+ *  device recognize the same returning subscriber. */
+export function mirrorProfileRemote(idToken: string, profile: ChildProfile): void {
+  void fetch('/api/profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ profile }),
+  }).catch(() => {
+    /* best-effort mirror — the local copy already has everything this device needs */
+  });
 }
 
 /* ── Last-session report for the parent message screen ─────────────────── */
