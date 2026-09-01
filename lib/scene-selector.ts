@@ -264,7 +264,12 @@ export function selectStaticSceneSequence(
     // enough to the best semantic score; never trade a matching bridge/forest
     // beat for an unrelated landscape merely to make the URL different.
     const topScore = ranked[0].score;
-    const winner = ranked.find(({ asset, score }) => topScore - score <= RECENCY_TIEBREAK_BAND && !used.has(asset.id)) ?? ranked[0];
+    const winner = ranked.find(({ asset, score }) => topScore - score <= RECENCY_TIEBREAK_BAND && !used.has(asset.id))
+      // A truthful but slightly less-specific approved scene is preferable to
+      // showing the same wallpaper for most of a fallback chapter. Reuse only
+      // after the complete approved pool is exhausted.
+      ?? ranked.find(({ asset }) => !used.has(asset.id))
+      ?? ranked[0];
     used.add(winner.asset.id);
     recordRecentHistory(uid, winner.asset.id);
     result[scene.sceneId] = {

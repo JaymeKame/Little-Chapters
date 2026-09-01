@@ -31,6 +31,8 @@
     ,"test:visual-provenance-browser": "tsx scripts/test-visual-provenance-browser.ts"
     ,"test:live-runtime-debug-browser": "tsx scripts/test-live-runtime-debug-browser.ts"
     ,"test:generation-outcomes": "tsx scripts/test-generation-outcomes.ts"
+    ,"test:generation-contract-repair": "tsx scripts/test-generation-contract-repair.ts"
+    ,"test:live-generation-sample": "tsx scripts/test-live-generation-sample.ts"
   },
   "dependencies": {
     "@stripe/stripe-js": "^9.13.0",

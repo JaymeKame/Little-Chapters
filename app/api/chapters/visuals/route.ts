@@ -7,6 +7,7 @@ import type { Chapter } from '@/lib/chapters';
 import { buildStoryInteractionManifest } from '@/lib/story-interactions';
 import { chapterStoryFingerprint, VISUAL_BIBLE_VERSION, type ChapterScenePackage, type GeneratedSceneAsset, type SceneEntityMetadata } from '@/lib/chapter-scenes';
 import { ownedDailyChapter } from '@/lib/chapter-entitlement-server';
+import { imageRepairFeedback, reviewPasses, safeReviewerReasonCodes, type ImageGenerationAttemptDiagnostic, type ImageReviewPanelDiagnostic } from '@/lib/image-review-contract';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,7 +50,7 @@ function validChapter(value: unknown): value is Chapter {
   return Boolean(chapter && typeof chapter.id === 'string' && chapter.id.length <= 180 && typeof chapter.character === 'string' && typeof chapter.setting === 'string' && Array.isArray(chapter.pages) && chapter.pages.length >= 3 && chapter.pages.length <= 10 && chapter.pages.every((page) => typeof page?.text === 'string' && page.text.length <= 500));
 }
 
-async function generateStoryboard(prompt: string): Promise<Buffer> {
+async function generateStoryboard(prompt: string): Promise<{ bytes: Buffer; status: number }> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error('IMAGE_PROVIDER_NOT_CONFIGURED');
   const response = await fetch('https://api.openai.com/v1/images/generations', {
@@ -61,10 +62,10 @@ async function generateStoryboard(prompt: string): Promise<Buffer> {
   if (!response.ok) throw new Error(`IMAGE_PROVIDER_${response.status}`);
   const body = await response.json() as { data?: Array<{ b64_json?: string; url?: string }> };
   const image = body.data?.[0];
-  if (image?.b64_json) return Buffer.from(image.b64_json, 'base64');
+  if (image?.b64_json) return { bytes: Buffer.from(image.b64_json, 'base64'), status: response.status };
   if (image?.url) {
     const download = await fetch(image.url); if (!download.ok) throw new Error('IMAGE_DOWNLOAD_FAILED');
-    return Buffer.from(await download.arrayBuffer());
+    return { bytes: Buffer.from(await download.arrayBuffer()), status: response.status };
   }
   throw new Error('IMAGE_PROVIDER_EMPTY');
 }
@@ -83,7 +84,7 @@ interface ReviewedPanel {
     confidence: number;
   };
 }
-interface ReviewOutcome { approved: boolean; reasons: string[]; panels: ReviewedPanel[] }
+interface ReviewOutcome { approved: boolean; accepted: boolean; reasons: string[]; panels: ReviewedPanel[]; status: number }
 
 async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<ReviewOutcome> {
   const manifest = buildStoryInteractionManifest(chapter);
@@ -137,13 +138,15 @@ async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<R
           },
         }))
     : [];
-  const relevant = panels.length === manifest.scenes.length && panels.every((panel) =>
-    Object.entries(panel.storyBeatRelevance).every(([key, value]) => key === 'confidence' ? Number(value) >= 0.7 : value === true));
-  if (!approved || !relevant) throw new Error(`IMAGE_REVIEW_REJECTED:${reasons.join('|').slice(0, 400) || 'story-beat relevance failed'}`);
-  return { approved, reasons, panels };
+  const panelDiagnostics = panels.map(reviewPanelDiagnostic);
+  return { approved, accepted: reviewPasses(approved, panelDiagnostics, manifest.scenes.length), reasons, panels, status: response.status };
 }
 
-function storyboardPrompt(chapter: Chapter) {
+function reviewPanelDiagnostic(panel: ReviewedPanel): ImageReviewPanelDiagnostic {
+  return { panel: panel.panel, ...panel.storyBeatRelevance };
+}
+
+function storyboardPrompt(chapter: Chapter, repair = '') {
   const manifest = buildStoryInteractionManifest(chapter);
   const bible = manifest.visualBible;
   return [
@@ -153,6 +156,7 @@ function storyboardPrompt(chapter: Chapter) {
     `Continuity rules: ${bible.continuityRules.join(' ')} Forbidden: ${bible.forbiddenStyles.join(', ')}, painterly realism, generic 3D, anime, glossy AI art.`,
     ...manifest.scenes.map((scene, index) => `Panel ${index + 1} (${scene.visualPurpose}): ${scene.visualPrompt}`),
     'Each panel must clearly stage its narrative action with a simple child-readable focal point and safe negative space for touch overlays.',
+    repair ? `REPAIR FEEDBACK FROM THE PRIOR REVIEW (structural only): ${repair}` : '',
   ].join('\n');
 }
 
@@ -214,8 +218,22 @@ async function uploadScene(bucketName: string, path: string, bytes: Buffer): Pro
 
 async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
   const started = Date.now(); const manifest = buildStoryInteractionManifest(chapter);
-  const storyboard = await generateStoryboard(storyboardPrompt(chapter));
-  const review = await reviewStoryboard(storyboard, chapter);
+  const attempts: ImageGenerationAttemptDiagnostic[] = [];
+  let storyboard: Buffer | null = null;
+  let review: ReviewOutcome | null = null;
+  let repair = '';
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const generated = await generateStoryboard(storyboardPrompt(chapter, repair));
+    const reviewed = await reviewStoryboard(generated.bytes, chapter);
+    const diagnostic: ImageGenerationAttemptDiagnostic = {
+      attempt, providerStatus: generated.status, reviewStatus: reviewed.status, reviewApproved: reviewed.approved,
+      reasons: safeReviewerReasonCodes(reviewed.reasons), panels: reviewed.panels.map(reviewPanelDiagnostic),
+    };
+    attempts.push(diagnostic);
+    if (reviewed.accepted) { storyboard = generated.bytes; review = reviewed; break; }
+    repair = imageRepairFeedback(diagnostic.panels, diagnostic.reasons);
+  }
+  if (!storyboard || !review) throw new ImageGenerationError('image-review-rejected', { attempts });
   const normalized = await sharp(storyboard).resize(2048, 2048, { fit: 'cover' }).png().toBuffer();
   const bucketName = process.env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!;
   const safe = packageId(chapter.id, chapterStoryFingerprint(chapter));
@@ -233,7 +251,11 @@ async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
       entities: entityMetadata(chapter, scene.sceneId, index, reviewedPanel),
     });
   }
-  return { chapterId: chapter.id, storyFingerprint: chapterStoryFingerprint(chapter), visualBibleVersion: VISUAL_BIBLE_VERSION, provider: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', generatedAt: new Date().toISOString(), generationLatencyMs: Date.now() - started, scenes };
+  return { chapterId: chapter.id, storyFingerprint: chapterStoryFingerprint(chapter), visualBibleVersion: VISUAL_BIBLE_VERSION, provider: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', generatedAt: new Date().toISOString(), generationLatencyMs: Date.now() - started, scenes, imageGenerationDiagnostic: { attempts } };
+}
+
+class ImageGenerationError extends Error {
+  constructor(public readonly reason: string, public readonly diagnostic: { attempts: ImageGenerationAttemptDiagnostic[] }) { super(reason); }
 }
 
 export async function POST(request: NextRequest) {
@@ -259,11 +281,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ scenePackage, cache: 'miss' });
   } catch (error) {
     console.error('Chapter scene generation failed', error);
-    return NextResponse.json({ error: 'SCENE_GENERATION_FAILED', reason: visualFailureReason(error) }, { status: 503 });
+    return NextResponse.json({ error: 'SCENE_GENERATION_FAILED', reason: visualFailureReason(error), diagnostic: error instanceof ImageGenerationError ? error.diagnostic : undefined }, { status: 503 });
   }
 }
 
 function visualFailureReason(error: unknown): string {
+  if (error instanceof ImageGenerationError) return error.reason;
   const message = error instanceof Error ? error.message : '';
   const provider = message.match(/^IMAGE_PROVIDER_(\d{3})$/)?.[1];
   if (provider) return `image-provider-${provider}`;

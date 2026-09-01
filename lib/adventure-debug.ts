@@ -120,6 +120,7 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
       packageChapterId: scenePackage?.chapterId ?? null,
       packageVersion: scenePackage?.visualBibleVersion ?? null,
       packageSource, sceneCount: scenePackage?.scenes.length ?? 0, requestedSceneId,
+      generationDiagnostic: scenePackage?.imageGenerationDiagnostic ?? visual.diagnostic ?? null,
       resolvedSceneUrl: safeAssetUrl(context?.scene?.resolvedSceneUrl),
       domCurrentSrc: safeAssetUrl(renderedImage?.currentSrc),
       sceneProvenance: requestedSceneId ? context?.scene?.sceneAssetSources[requestedSceneId] ?? null : null,

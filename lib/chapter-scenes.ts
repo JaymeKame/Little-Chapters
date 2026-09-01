@@ -2,6 +2,7 @@
 import type { User } from 'firebase/auth';
 import type { Chapter } from './chapters';
 import type { StoryInteractionManifest } from './story-interactions';
+import type { ImageGenerationAttemptDiagnostic } from './image-review-contract';
 
 export const VISUAL_BIBLE_VERSION = 2;
 export interface SceneEntityRegion { x: number; y: number; width: number; height: number }
@@ -40,13 +41,14 @@ export interface ChapterScenePackage {
   generatedAt: string;
   generationLatencyMs: number;
   scenes: GeneratedSceneAsset[];
+  imageGenerationDiagnostic?: { attempts: ImageGenerationAttemptDiagnostic[] };
 }
 
 const CACHE_PREFIX = 'little-chapters-scene-package:';
 export type VisualSource = 'generated' | 'cached-generated' | 'approved-static-fallback';
 export type ScenePackageProvenance = 'local-storage' | 'server-cache' | 'generated' | 'approved-static-fallback';
-let latestVisualState: { source: VisualSource; packageProvenance: ScenePackageProvenance; failureReason?: string } = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback' };
-export function visualProvenance(): { source: VisualSource; packageProvenance: ScenePackageProvenance; failureReason?: string } { return { ...latestVisualState }; }
+let latestVisualState: { source: VisualSource; packageProvenance: ScenePackageProvenance; failureReason?: string; diagnostic?: { attempts: ImageGenerationAttemptDiagnostic[] } } = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback' };
+export function visualProvenance(): typeof latestVisualState { return { ...latestVisualState }; }
 export function scenePackageCacheKey(chapterId: string) { return `${CACHE_PREFIX}${chapterId}:v${VISUAL_BIBLE_VERSION}`; }
 
 export function chapterStoryFingerprint(chapter: Chapter): string {
@@ -60,7 +62,7 @@ export function loadChapterScenePackage(chapterId: string, expectedFingerprint?:
   try {
     const value = JSON.parse(localStorage.getItem(scenePackageCacheKey(chapterId)) ?? 'null') as ChapterScenePackage | null;
     if (value?.chapterId === chapterId && (!expectedFingerprint || value.storyFingerprint === expectedFingerprint) && value.visualBibleVersion === VISUAL_BIBLE_VERSION && value.scenes.length >= 3) {
-      latestVisualState = { source: 'cached-generated', packageProvenance: 'local-storage' }; return value;
+      latestVisualState = { source: 'cached-generated', packageProvenance: 'local-storage', diagnostic: value.imageGenerationDiagnostic }; return value;
     }
     return null;
   } catch { return null; }
@@ -89,7 +91,7 @@ export async function lookupChapterScenePackage(chapterId: string, user: User | 
     if (response.status === 404) return undefined;
     if (!response.ok) { latestVisualState = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback', failureReason: `visual-lookup-${response.status}` }; return null; }
     const body = await response.json() as { scenePackage?: ChapterScenePackage; cache?: 'hit' | 'miss' };
-    if (body.scenePackage) { latestVisualState = { source: 'cached-generated', packageProvenance: 'server-cache' }; return saveChapterScenePackage(body.scenePackage); }
+    if (body.scenePackage) { latestVisualState = { source: 'cached-generated', packageProvenance: 'server-cache', diagnostic: body.scenePackage.imageGenerationDiagnostic }; return saveChapterScenePackage(body.scenePackage); }
     latestVisualState = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback', failureReason: 'visual-lookup-invalid-response' }; return null;
   } catch (error) { latestVisualState = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback', failureReason: error instanceof Error ? error.message : 'visual-lookup-network' }; return null; }
 }
@@ -108,11 +110,11 @@ export async function requestChapterScenePackage(chapter: Chapter, manifest: Sto
       body: JSON.stringify({ chapter, manifest }),
     });
     if (!response.ok) {
-      const error = await response.json().catch(() => null) as { reason?: string; error?: string } | null;
-      latestVisualState = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback', failureReason: error?.reason ?? error?.error?.toLowerCase().replaceAll('_', '-') ?? `visual-generation-${response.status}` }; return null;
+      const error = await response.json().catch(() => null) as { reason?: string; error?: string; diagnostic?: { attempts: ImageGenerationAttemptDiagnostic[] } } | null;
+      latestVisualState = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback', failureReason: error?.reason ?? error?.error?.toLowerCase().replaceAll('_', '-') ?? `visual-generation-${response.status}`, diagnostic: error?.diagnostic }; return null;
     }
     const body = await response.json() as { scenePackage?: ChapterScenePackage; cache?: 'hit' | 'miss' };
-    if (body.scenePackage) { latestVisualState = { source: body.cache === 'hit' ? 'cached-generated' : 'generated', packageProvenance: body.cache === 'hit' ? 'server-cache' : 'generated' }; return saveChapterScenePackage(body.scenePackage); }
+    if (body.scenePackage) { latestVisualState = { source: body.cache === 'hit' ? 'cached-generated' : 'generated', packageProvenance: body.cache === 'hit' ? 'server-cache' : 'generated', diagnostic: body.scenePackage.imageGenerationDiagnostic }; return saveChapterScenePackage(body.scenePackage); }
     latestVisualState = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback', failureReason: 'visual-generation-invalid-response' }; return null;
   } catch (error) { latestVisualState = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback', failureReason: error instanceof Error ? error.message : 'visual-generation-network' }; return null; }
 }
