@@ -24,6 +24,7 @@ import type {
   AudioConfig,
   SpeechRecognizer,
 } from 'microsoft-cognitiveservices-speech-sdk';
+import { setTutorMicrophoneActive } from './audio';
 
 /* ── Result types ──────────────────────────────────────────────────────── */
 
@@ -366,6 +367,7 @@ export async function startReadingSession(opts: ReadingSessionOptions): Promise<
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
     });
+    setTutorMicrophoneActive(true);
   } catch (e) {
     status('error');
     throw new Error(
@@ -471,6 +473,7 @@ export async function startReadingSession(opts: ReadingSessionOptions): Promise<
       /* already stopped */
     }
     stream.getTracks().forEach((t) => t.stop());
+    setTutorMicrophoneActive(false);
   };
 
   const segments: AzureSegment[] = [];

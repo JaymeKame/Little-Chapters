@@ -7,7 +7,35 @@
     "build": "next build",
     "start": "next start -p 3001",
     "typecheck": "tsc --noEmit",
-    "test:voice": "node --experimental-strip-types scripts/test-voice-provider.ts"
+    "test:entry": "node --experimental-strip-types scripts/test-entry-flow.ts",
+    "test:auth-registration": "node --experimental-strip-types scripts/test-auth-registration.ts",
+    "test:voice": "node --experimental-strip-types scripts/test-voice-provider.ts",
+    "test:foundation": "node --experimental-strip-types scripts/test-product-foundation.ts",
+    "test:entry-browser": "node --experimental-strip-types scripts/test-entry-browser.ts",
+    "test:v11": "node --experimental-strip-types scripts/test-v11-session.ts",
+    "test:v11-browser": "node --experimental-strip-types scripts/test-v11-browser.ts",
+    "test:chapter-scenes": "node --experimental-strip-types scripts/test-chapter-scene-generation.ts",
+    "test:scene-progression-browser": "tsx scripts/test-scene-progression-browser.ts",
+    "test:find-sound-browser": "tsx scripts/test-find-sound-browser.ts",
+    "test:story-engine": "tsx scripts/test-complete-story-engine.ts",
+    "test:account-management": "tsx scripts/test-account-management.ts",
+    "test:story-branch-browser": "tsx scripts/test-story-branch-browser.ts",
+    "test:daily-adventure": "tsx scripts/test-daily-adventure.ts",
+    "test:experience": "tsx scripts/test-experience-sprint.ts",
+    "test:correction": "tsx scripts/test-experience-correction.ts",
+    "test:correction-pass-2": "tsx scripts/test-experience-correction-pass-2.ts",
+    "capture:daily-adventure": "tsx scripts/capture-daily-adventure.ts",
+    "test:analytics": "tsx scripts/test-analytics-funnel.ts",
+    "test:physical-qa": "tsx scripts/test-physical-qa-contract.ts",
+    "test:word-scroll-browser": "tsx scripts/test-word-scroll-browser.ts",
+    "test:visual-provenance-browser": "tsx scripts/test-visual-provenance-browser.ts",
+    "test:live-runtime-debug-browser": "tsx scripts/test-live-runtime-debug-browser.ts",
+    "test:generation-outcomes": "tsx scripts/test-generation-outcomes.ts",
+    "test:generation-contract-repair": "tsx scripts/test-generation-contract-repair.ts",
+    "test:live-generation-sample": "tsx scripts/test-live-generation-sample.ts",
+    "test:canonical-reader-startup-browser": "tsx scripts/test-canonical-reader-startup-browser.ts",
+    "test:stage1-literacy-realization": "tsx scripts/test-stage1-literacy-realization.ts",
+    "test:story-image-grounding": "tsx scripts/test-story-image-grounding.ts"
   },
   "dependencies": {
     "@stripe/stripe-js": "^9.13.0",
@@ -19,6 +47,7 @@
     "next": "^14.2.35",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "sharp": "^0.35.3",
     "stripe": "^22.5.0",
     "twilio": "^6.1.0"
   },
@@ -26,6 +55,8 @@
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "playwright": "^1.62.1",
+    "tsx": "^4.23.12",
     "typescript": "^5.6.3"
   }
 }

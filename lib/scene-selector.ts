@@ -37,13 +37,19 @@
 
 import type { Chapter, ChapterPage } from './chapters.ts';
 import type { AvatarId } from './profile';
-import { SCENE_MANIFEST, type SceneAsset } from './scene-manifest.ts';
+import { RUNTIME_SCENE_MANIFEST, type SceneAsset } from './scene-manifest.ts';
 
 export interface SceneSelectionResult {
   asset: SceneAsset;
   score: number;
   /** Human-readable breakdown for tests/debugging — never rendered in the UI. */
   reason: string;
+}
+
+export interface AuthoredScenePage {
+  sceneId: string;
+  page: ChapterPage;
+  pageIndex: number;
 }
 
 /* ── Recent-image history (per uid, small + bounded) ─────────────────────
@@ -210,7 +216,7 @@ export function selectSceneForPage(
   const dogBias = chapter.ambience === 'farm'; // see SETTINGS in lib/chapters.ts — the only ambience the 'dogs' interest maps to
   const recent = loadRecentHistory(uid);
 
-  const scored = SCENE_MANIFEST.map((asset) => ({
+  const scored = RUNTIME_SCENE_MANIFEST.map((asset) => ({
     asset,
     score: scoreAsset(asset, pageQuery, chapterQuery, chapter, avatar, dogBias),
   })).sort((a, b) => {
@@ -231,4 +237,46 @@ export function selectSceneForPage(
     score: winner.score,
     reason: `page="${page.text.slice(0, 40)}${page.text.length > 40 ? '…' : ''}" ambience=${chapter.ambience} avatar=${avatar ?? 'none'} -> ${winner.asset.id} (score ${winner.score}, top ${top})`,
   };
+}
+
+/** Select one approved static asset per AUTHORED scene, preserving semantic
+ * ranking while avoiding duplicate wallpaper whenever the approved library
+ * has enough assets. Generated packages bypass this map entirely. */
+export function selectStaticSceneSequence(
+  chapter: Chapter,
+  scenes: readonly AuthoredScenePage[],
+  avatar: AvatarId | undefined,
+  uid: string | null,
+): Record<string, SceneSelectionResult> {
+  const used = new Set<string>();
+  const result: Record<string, SceneSelectionResult> = {};
+  const chapterQuery = [...tokenize(chapter.setting), ...tokenize(chapter.character)];
+  const dogBias = chapter.ambience === 'farm';
+
+  for (const scene of scenes) {
+    const pageQuery = [...tokenize(scene.page.text), ...scene.page.focusWords.map((word) => word.toLowerCase())];
+    const ranked = RUNTIME_SCENE_MANIFEST.map((asset) => ({
+      asset,
+      score: scoreAsset(asset, pageQuery, chapterQuery, chapter, avatar, dogBias),
+    })).sort((a, b) => b.score - a.score
+      || stableHash(`${chapter.id}:${scene.pageIndex}:${a.asset.id}`) - stableHash(`${chapter.id}:${scene.pageIndex}:${b.asset.id}`));
+    // Narrative relevance wins. Avoid repetition only among candidates close
+    // enough to the best semantic score; never trade a matching bridge/forest
+    // beat for an unrelated landscape merely to make the URL different.
+    const topScore = ranked[0].score;
+    const winner = ranked.find(({ asset, score }) => topScore - score <= RECENCY_TIEBREAK_BAND && !used.has(asset.id))
+      // A truthful but slightly less-specific approved scene is preferable to
+      // showing the same wallpaper for most of a fallback chapter. Reuse only
+      // after the complete approved pool is exhausted.
+      ?? ranked.find(({ asset }) => !used.has(asset.id))
+      ?? ranked[0];
+    used.add(winner.asset.id);
+    recordRecentHistory(uid, winner.asset.id);
+    result[scene.sceneId] = {
+      asset: winner.asset,
+      score: winner.score,
+      reason: `authored-scene=${scene.sceneId} page=${scene.pageIndex} -> ${winner.asset.id} (semantic score ${winner.score}; uniqueness only within relevance band)`,
+    };
+  }
+  return result;
 }

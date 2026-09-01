@@ -9,6 +9,7 @@ import { useAuth } from '@/components/AuthProvider';
 // lib/plans, NOT lib/stripe — importing the latter from this 'use client'
 // module shipped the Stripe Node sdk to the browser. See lib/plans.ts.
 import { PLANS } from '@/lib/plans';
+import { track } from '@/lib/analytics';
 
 export default function PaymentPage() {
   const router = useRouter();
@@ -45,6 +46,7 @@ export default function PaymentPage() {
   async function handleSubscribe(planId: string) {
     setLoading(true);
     setError(null);
+    track('checkout_started', { route: '/payment', plan: planId as 'monthly' | 'yearly' });
 
     try {
       const token = await user?.getIdToken();
@@ -62,6 +64,7 @@ export default function PaymentPage() {
       const data = await response.json();
 
       if (!response.ok) {
+        track('payment_failed', { route: '/payment', plan: planId as 'monthly' | 'yearly', errorCategory: 'checkout_create' });
         throw new Error(data.error || 'Failed to create checkout session');
       }
 
@@ -85,7 +88,7 @@ export default function PaymentPage() {
           Choose Your Plan
         </h1>
         <p style={{ color: 'var(--ink-soft)', fontSize: 14, margin: 0 }}>
-          Get daily SMS updates about your child's reading progress
+          A short daily reading adventure, written for your child.
         </p>
       </header>
 
@@ -134,10 +137,10 @@ export default function PaymentPage() {
           What you'll get:
         </h3>
         <ul style={{ margin: 0, paddingLeft: '20px', fontSize: 14, lineHeight: 1.6, color: 'var(--ink-2)' }}>
-          <li style={{ marginBottom: '8px' }}>Daily SMS with specific wins from each reading session</li>
-          <li style={{ marginBottom: '8px' }}>Progress tracking across all chapters</li>
-          <li style={{ marginBottom: '8px' }}>In-app message history</li>
-          <li style={{ marginBottom: 0 }}>Cancel anytime</li>
+          <li style={{ marginBottom: '8px' }}>A brand-new chapter every day, personalized to your child</li>
+          <li style={{ marginBottom: '8px' }}>Gentle reading support, phonics, and comprehension games</li>
+          <li style={{ marginBottom: '8px' }}>A short after-session note in the app — never a score</li>
+          <li style={{ marginBottom: 0 }}>Cancel anytime from Settings</li>
         </ul>
       </div>
 

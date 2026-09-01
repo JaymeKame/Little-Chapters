@@ -25,10 +25,12 @@
  * obvious from a static circle alone. Stops the instant a real drag starts. */
 
 import { useEffect, useRef, useState } from 'react';
-import { playUISound } from '@/lib/audio';
+import { audioSession } from '@/lib/audio-session';
 import type { WordSegment } from '@/lib/help-ladder';
 
 const SEGMENT_COLORS = ['var(--leaf)', 'var(--sky)', 'var(--blue)', 'var(--sunshine)'];
+export const SLIDE_STEP_MS = 140;
+export const WORD_SETTLE_MS = 220;
 
 function trackGradient(count: number): string {
   const stops: string[] = [];
@@ -39,6 +41,15 @@ function trackGradient(count: number): string {
     stops.push(`${color} ${from}%`, `${color} ${to}%`);
   }
   return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
+export function spokenPhoneme(segment: WordSegment): string {
+  const cue = segment.phoneme?.split(' as in ')[0].replaceAll('/', '').trim();
+  if (!cue) return segment.text;
+  if (cue === 'sh') return 'shhh';
+  if (cue === 's') return 'ssss';
+  if (cue === 'm') return 'mmmm';
+  return cue;
 }
 
 export function SlideWordHelp({
@@ -59,6 +70,8 @@ export function SlideWordHelp({
   onComplete: () => void;
 }) {
   const [value, setValue] = useState(0);
+  const [state, setState] = useState<'idle' | 'traversing' | 'word-complete' | 'modeling' | 'retry-ready'>('idle');
+  const [fullWordModelCount, setFullWordModelCount] = useState(0);
   const count = segments.length;
   // `complete` is DERIVED from value, never a separate latch: sliding back
   // off the end must honestly un-complete the caption/visuals immediately,
@@ -74,34 +87,75 @@ export function SlideWordHelp({
   // it (repetition is fine practice, not a bug), hence resetting this in the
   // `else` branch below rather than latching it permanently like `complete`
   // used to.
+  const targetRef = useRef(0);
+  const stepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firedRef = useRef(false);
 
   // A new tricky word (rung escalated to a different word, or the page
   // advanced) must never inherit the previous word's mid-slide position.
   useEffect(() => {
     setValue(0);
+    setState('idle');
+    setFullWordModelCount(0);
+    targetRef.current = 0;
     firedRef.current = false;
+    if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
   }, [word]);
 
+  useEffect(() => () => {
+    if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+  }, []);
+
+  function finishWord() {
+    if (firedRef.current) return;
+    firedRef.current = true;
+    setState('word-complete');
+    settleTimerRef.current = setTimeout(() => {
+      setState('modeling');
+      setFullWordModelCount((count) => count + 1);
+      audioSession.speak(word, {
+        purpose: 'slider-word-blend',
+        onEnd: () => {
+          setState('retry-ready');
+          onComplete();
+        },
+      });
+    }, WORD_SETTLE_MS);
+  }
+
+  function advanceOneStep() {
+    setValue((current) => {
+      if (current >= targetRef.current) return current;
+      const next = current + 1;
+      audioSession.playHomeSound('tap-soft.mp3');
+      setState('traversing');
+      // Intermediate cues are intentionally replaceable. audioSession owns
+      // cancellation, so a fast swipe can never build an overlapping queue.
+      if (next < count) audioSession.speak(spokenPhoneme(segments[next - 1]), { purpose: 'phoneme-model' });
+      if (next >= count) finishWord();
+      else if (next < targetRef.current) stepTimerRef.current = setTimeout(advanceOneStep, SLIDE_STEP_MS);
+      return next;
+    });
+  }
+
   function handleChange(next: number) {
-    // With step={1}, every onChange already represents landing on a genuinely
-    // new segment (the browser only fires onChange at integer boundaries) —
-    // no extra "did this actually change" bookkeeping needed. Skip only the
-    // "back to nothing selected yet" position (0), which isn't a real letter.
-    if (next !== value && next > 0) playUISound('/audio/tap-soft.mp3');
-    setValue(next);
-    if (next >= count) {
-      if (!firedRef.current) {
-        firedRef.current = true;
-        onComplete();
-      }
-    } else {
-      firedRef.current = false;
+    if (state === 'modeling' || state === 'retry-ready') return;
+    // Pointer velocity only raises the requested destination. The teaching
+    // state advances one ordered position at a bounded cadence.
+    targetRef.current = Math.max(targetRef.current, Math.min(count, next));
+    if (!stepTimerRef.current && value < targetRef.current) {
+      stepTimerRef.current = setTimeout(() => {
+        stepTimerRef.current = null;
+        advanceOneStep();
+      }, 0);
     }
   }
 
   return (
-    <div className={complete ? 'lc-slide-help lc-slide-complete' : 'lc-slide-help'}>
+    <div className={complete ? 'lc-slide-help lc-slide-complete' : 'lc-slide-help'} data-word-scroll-state={state} data-chunk-index={value} data-full-word-model-count={fullWordModelCount}>
       <div className="lc-slide-letters" aria-hidden>
         {segments.map((s, i) => (
           <span key={i} className={i < value ? 'lc-slide-letter is-lit' : 'lc-slide-letter'}>
@@ -122,11 +176,12 @@ export function SlideWordHelp({
           style={{ background: trackGradient(count) }}
           aria-label={`Slide across ${word} to sound it out`}
           aria-valuetext={value === 0 ? 'not started' : value >= count ? 'done, whole word' : `letter ${value} of ${count}`}
+          disabled={state === 'modeling' || state === 'retry-ready'}
         />
       </div>
 
       <p className="lc-slide-caption" role="status">
-        {complete ? 'Great job! Now say the whole word…' : 'Slide to sound it out.'}
+        {state === 'modeling' ? word : state === 'retry-ready' ? 'Now it’s your turn.' : complete ? word : 'Slide to build the word.'}
       </p>
     </div>
   );
