@@ -104,8 +104,9 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
     build: LITTLE_CHAPTERS_BUILD,
     chapter: {
       chapterId: chapter?.id ?? null, storySource,
-      generationStatus: !chapter ? 'loading' : failureReason ? 'failed-fallback' : 'ready',
+      generationStatus: !chapter ? 'loading' : storySource === 'fallback' ? 'fallback' : 'ready',
       generationFailureReason: failureReason,
+      generationDiagnostic: chapter?.provenance?.generationDiagnostic ?? null,
     },
     story: {
       title: chapter?.title ?? null,

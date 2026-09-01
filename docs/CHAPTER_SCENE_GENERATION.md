@@ -18,7 +18,7 @@ Little Chapters asks the provider for one square four-panel storyboard, not four
 
 ## Persistence and idempotency
 
-The durable identity is `SHA-256(chapterId + visualBibleVersion)`. Before calling the provider, the route reads `chapterScenePackages/{identity}` in Firestore. A hit returns the stored package and URLs. A miss is deduplicated in-process, generated once, cropped, uploaded to Firebase Storage under `chapter-scenes/{identity}/v{version}/{sceneId}.webp`, and then recorded in Firestore. Assets use immutable one-year cache headers. Browser storage is only a local accelerator; Firestore and Storage are authoritative.
+The durable identity is `SHA-256(chapterId + storyFingerprint + visualBibleVersion)`. Before calling the provider, the route reads `chapterScenePackages/{identity}` in Firestore. A hit returns the stored package and URLs. A miss is deduplicated in-process, generated once, cropped, uploaded to Firebase Storage under `chapter-scenes/{identity}/v{version}/{sceneId}.webp`, and then recorded in Firestore. Assets use immutable one-year cache headers. Browser storage is only a local accelerator; Firestore and Storage are authoritative.
 
 ## Interaction regions
 
@@ -27,6 +27,18 @@ Current playable primitives use separate word objects and scene-choice cards, so
 ## Failure behavior
 
 Missing configuration, provider failure, storage failure, or timeout returns a non-success response. Home resolves that attempt before enabling Play and uses the approved static scene selector. Read continues to use that same approved fallback. Quarantined images are never candidates.
+
+## Authorized fallback chapters
+
+A deterministic fallback chapter returned after a story-provider failure is
+still a real, entitled chapter the child is allowed to read. The server writes
+that exact chapter to the canonical `dailyChapters` ownership record, so the
+visual route may generate a package for it without weakening ownership checks
+or trusting a client-supplied chapter id. Scene packages include a fingerprint
+of the chapter prose. If a later retry replaces fallback prose with a generated
+story under the same daily chapter id, the generated story receives a different
+package and immutable storage path; fallback art can never silently attach to
+the replacement story.
 
 ## Required deployment configuration
 

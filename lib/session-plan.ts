@@ -79,7 +79,7 @@ export function buildSessionPlan(
     id: 'welcome', kind: 'welcome',
     spokenLine: previousTeaser
       ? `Welcome back, ${childName}. Last time, ${previousTeaser} Let’s see what happens now.`
-      : `Welcome, ${childName}. Today, ${chapter.character} has a new mystery for us.`,
+      : `Welcome, ${childName}. Your new story is ready.`,
   }];
   const storyOrder = interactionManifest.beats.find((beat) => beat.mechanicType === 'story-order');
   if (storyOrder) beats.push({ id: 'story-order', kind: 'story-order', afterPage: Math.min(1, count - 2), activity: storyOrder });

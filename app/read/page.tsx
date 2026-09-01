@@ -52,7 +52,7 @@ import { AdventureTelemetry, chapterDebugSnapshot, installChapterDebug } from '@
 import { loadPreferences } from '@/lib/preferences';
 import { resolveStoryInteractionManifest } from '@/lib/story-interactions';
 import { prepareStoryBeat } from '@/lib/story-session-orchestrator';
-import { loadChapterScenePackage, requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
+import { chapterStoryFingerprint, loadChapterScenePackage, requestChapterScenePackage, sceneUrl, type ChapterScenePackage } from '@/lib/chapter-scenes';
 import { correctionModel, modelWordThroughSound, successSoundModel, wordBuilderChunkModel, estimateSequenceDurationMs, semanticTurnText } from '@/lib/phonics-model';
 import { confidentTrackerWords } from '@/lib/reading-tracker';
 import { TutorPhraseSession } from '@/lib/tutor-intents';
@@ -715,7 +715,7 @@ export default function ReadPage() {
   useEffect(() => {
     if (!chapter || !interactionManifest || authLoading) return;
     setScenePackage(null);
-    const cached = loadChapterScenePackage(chapter.id);
+    const cached = loadChapterScenePackage(chapter.id, chapterStoryFingerprint(chapter));
     if (cached) setScenePackage(cached);
     let cancelled = false;
     void requestChapterScenePackage(chapter, interactionManifest, user).then((value) => {

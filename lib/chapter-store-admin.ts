@@ -23,12 +23,15 @@
 import { adminDb } from './firebase-admin';
 import type { StoryDraft } from '../reading-tutor/src/validators';
 import type { StoryBlueprint } from './story-blueprint.ts';
+import type { StoryGenerationAttemptDiagnostic, StoryGenerationFailureReason } from './story-generator.server';
 
 export interface PersistedChapterRecord {
   day: string; // YYYY-MM-DD, child-local (see lib/chapter-id.ts)
   chapterId: string;
   stage: number;
   source: 'generated' | 'fallback';
+  failureReason?: StoryGenerationFailureReason;
+  generationDiagnostic?: { model: string; attempts: StoryGenerationAttemptDiagnostic[] };
   entitlementSource?: 'free' | 'subscription';
   draft?: StoryDraft;
   skeletonId?: string;
@@ -77,6 +80,9 @@ export function isAuthoritativeChapterRecord(record: PersistedChapterRecord | nu
  *  until midnight — worse than the multi-device divergence this store
  *  exists to fix. A pre-existing fallback record from before this fix
  *  shipped is likewise treated as "nothing generated yet" and retried.
+ *  The separate `dailyChapters` ownership record may still contain the exact
+ *  authorized fallback chapter for downstream visual authorization; it does
+ *  not make this generation record authoritative and does not prevent retry.
  *
  *  Generation happens OUTSIDE the transaction — an OpenAI call can take
  *  seconds and Firestore transactions retry on contention, which would

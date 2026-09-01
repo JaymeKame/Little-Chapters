@@ -30,6 +30,7 @@
     ,"test:word-scroll-browser": "tsx scripts/test-word-scroll-browser.ts"
     ,"test:visual-provenance-browser": "tsx scripts/test-visual-provenance-browser.ts"
     ,"test:live-runtime-debug-browser": "tsx scripts/test-live-runtime-debug-browser.ts"
+    ,"test:generation-outcomes": "tsx scripts/test-generation-outcomes.ts"
   },
   "dependencies": {
     "@stripe/stripe-js": "^9.13.0",

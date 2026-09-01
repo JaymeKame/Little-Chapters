@@ -1239,7 +1239,7 @@ section('Chapter lifecycle - identity, idempotency, generation-source observabil
   ok(!process.env.OPENAI_API_KEY, 'OPENAI_API_KEY is unset in this sandbox (precondition)');
   ok(!isStoryGenerationConfigured(), 'isStoryGenerationConfigured() correctly reports false');
   const draft = await generateStoryDraft({ childName: 'Ava', interests: ['dogs'], stage: 3 });
-  ok(draft === null, 'generateStoryDraft() resolves to null rather than throwing when OPENAI_API_KEY is unset');
+  ok(!draft.ok && draft.reason === 'not-configured', 'generateStoryDraft() returns a safe not-configured outcome rather than losing the failure reason');
 
   // --- Acceptance 9: inactive-entitlement subscriber keeps history/profile,
   // gets gated only on the NEXT unread chapter -------------------------------

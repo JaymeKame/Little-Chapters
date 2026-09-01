@@ -26,6 +26,7 @@ export const dynamic = 'force-dynamic';
 
 interface Capability {
   configured: boolean;
+  model?: string;
   /** Only present when the route actually tried to talk to the provider. */
   reachable?: boolean;
 }
@@ -68,8 +69,8 @@ export async function GET() {
       configured: true, // has a static default URL — always "configured"
       reachable: await probeMdd(),
     },
-    openai: { configured: configured('OPENAI_API_KEY') },
-    openai_images: { configured: configured('OPENAI_API_KEY') },
+    openai: { configured: configured('OPENAI_API_KEY'), model: process.env.OPENAI_STORY_MODEL || 'gpt-4o-mini' },
+    openai_images: { configured: configured('OPENAI_API_KEY'), model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2' },
     elevenlabs: { configured: configured('ELEVENLABS_API_KEY') },
     twilio: { configured: configured('TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER') },
   };

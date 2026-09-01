@@ -5,7 +5,7 @@ import { adminCredentialsConfigured, adminDb, adminStorage, adminStorageConfigur
 import { requireReadingUser } from '@/lib/route-auth';
 import type { Chapter } from '@/lib/chapters';
 import { buildStoryInteractionManifest } from '@/lib/story-interactions';
-import { VISUAL_BIBLE_VERSION, type ChapterScenePackage, type GeneratedSceneAsset, type SceneEntityMetadata } from '@/lib/chapter-scenes';
+import { chapterStoryFingerprint, VISUAL_BIBLE_VERSION, type ChapterScenePackage, type GeneratedSceneAsset, type SceneEntityMetadata } from '@/lib/chapter-scenes';
 import { ownedDailyChapter } from '@/lib/chapter-entitlement-server';
 
 export const runtime = 'nodejs';
@@ -21,12 +21,12 @@ function rateLimited(uid: string): boolean {
   value.count += 1; return value.count > 5;
 }
 
-function packageId(chapterId: string) {
-  return createHash('sha256').update(`${chapterId}:v${VISUAL_BIBLE_VERSION}`).digest('hex');
+function packageId(chapterId: string, storyFingerprint: string) {
+  return createHash('sha256').update(`${chapterId}:${storyFingerprint}:v${VISUAL_BIBLE_VERSION}`).digest('hex');
 }
 
-function packageRef(chapterId: string) {
-  return adminDb().collection('chapterScenePackages').doc(packageId(chapterId));
+function packageRef(chapterId: string, storyFingerprint: string) {
+  return adminDb().collection('chapterScenePackages').doc(packageId(chapterId, storyFingerprint));
 }
 
 export async function GET(request: NextRequest) {
@@ -34,9 +34,13 @@ export async function GET(request: NextRequest) {
   const chapterId = request.nextUrl.searchParams.get('chapterId');
   if (!chapterId || chapterId.length > 180) return NextResponse.json({ error: 'INVALID_CHAPTER_ID' }, { status: 400 });
   if (!adminCredentialsConfigured()) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
-  if (auth.uid !== 'anonymous' && !(await ownedDailyChapter(auth.uid, chapterId))) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
-  const existing = await packageRef(chapterId).get();
-  if (!existing.exists) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
+  const owned = auth.uid === 'anonymous' ? null : await ownedDailyChapter(auth.uid, chapterId);
+  if (auth.uid !== 'anonymous' && !owned) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
+  const canonical = owned?.data()?.chapter as Chapter | undefined;
+  const fingerprint = canonical ? chapterStoryFingerprint(canonical) : request.nextUrl.searchParams.get('storyFingerprint');
+  if (!fingerprint) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
+  const existing = await packageRef(chapterId, fingerprint).get();
+  if (!existing.exists || existing.data()?.storyFingerprint !== fingerprint) return NextResponse.json({ error: 'SCENE_PACKAGE_NOT_FOUND' }, { status: 404 });
   return NextResponse.json({ scenePackage: existing.data() as ChapterScenePackage, cache: 'hit' });
 }
 
@@ -214,7 +218,7 @@ async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
   const review = await reviewStoryboard(storyboard, chapter);
   const normalized = await sharp(storyboard).resize(2048, 2048, { fit: 'cover' }).png().toBuffer();
   const bucketName = process.env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!;
-  const safe = packageId(chapter.id);
+  const safe = packageId(chapter.id, chapterStoryFingerprint(chapter));
   const positions = [{ left:0,top:0 },{ left:1024,top:0 },{ left:0,top:1024 },{ left:1024,top:1024 }];
   const scenes: GeneratedSceneAsset[] = [];
   for (let index = 0; index < manifest.scenes.length; index += 1) {
@@ -229,7 +233,7 @@ async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
       entities: entityMetadata(chapter, scene.sceneId, index, reviewedPanel),
     });
   }
-  return { chapterId: chapter.id, visualBibleVersion: VISUAL_BIBLE_VERSION, provider: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', generatedAt: new Date().toISOString(), generationLatencyMs: Date.now() - started, scenes };
+  return { chapterId: chapter.id, storyFingerprint: chapterStoryFingerprint(chapter), visualBibleVersion: VISUAL_BIBLE_VERSION, provider: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', generatedAt: new Date().toISOString(), generationLatencyMs: Date.now() - started, scenes };
 }
 
 export async function POST(request: NextRequest) {
@@ -237,10 +241,15 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null) as { chapter?: unknown } | null;
   if (!validChapter(body?.chapter)) return NextResponse.json({ error: 'INVALID_CHAPTER' }, { status: 400 });
   if (!adminCredentialsConfigured()) return NextResponse.json({ error: 'SCENE_GENERATION_NOT_CONFIGURED' }, { status: 503 });
-  const chapter = body.chapter; const id = packageId(chapter.id); const ref = packageRef(chapter.id);
-  if (auth.uid !== 'anonymous' && !(await ownedDailyChapter(auth.uid, chapter.id))) return NextResponse.json({ error: 'CHAPTER_NOT_FOUND' }, { status: 404 });
+  const requestedChapter = body.chapter;
+  const owned = auth.uid === 'anonymous' ? null : await ownedDailyChapter(auth.uid, requestedChapter.id);
+  if (auth.uid !== 'anonymous' && !owned) return NextResponse.json({ error: 'CHAPTER_NOT_FOUND' }, { status: 404 });
+  const chapter = (owned?.data()?.chapter as Chapter | undefined) ?? requestedChapter;
+  if (chapterStoryFingerprint(chapter) !== chapterStoryFingerprint(requestedChapter)) return NextResponse.json({ error: 'CHAPTER_MISMATCH' }, { status: 409 });
+  const fingerprint = chapterStoryFingerprint(chapter);
+  const id = packageId(chapter.id, fingerprint); const ref = packageRef(chapter.id, fingerprint);
   const existing = await ref.get();
-  if (existing.exists) return NextResponse.json({ scenePackage: existing.data() as ChapterScenePackage, cache: 'hit' });
+  if (existing.exists && existing.data()?.storyFingerprint === chapterStoryFingerprint(chapter)) return NextResponse.json({ scenePackage: existing.data() as ChapterScenePackage, cache: 'hit' });
   if (!process.env.OPENAI_API_KEY || !adminStorageConfigured()) return NextResponse.json({ error: 'SCENE_GENERATION_NOT_CONFIGURED' }, { status: 503 });
   if (rateLimited(auth.uid)) return NextResponse.json({ error: 'RATE_LIMITED' }, { status: 429 });
   let pending = inFlight.get(id);
@@ -250,6 +259,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ scenePackage, cache: 'miss' });
   } catch (error) {
     console.error('Chapter scene generation failed', error);
-    return NextResponse.json({ error: 'SCENE_GENERATION_FAILED' }, { status: 503 });
+    return NextResponse.json({ error: 'SCENE_GENERATION_FAILED', reason: visualFailureReason(error) }, { status: 503 });
   }
+}
+
+function visualFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  const provider = message.match(/^IMAGE_PROVIDER_(\d{3})$/)?.[1];
+  if (provider) return `image-provider-${provider}`;
+  const review = message.match(/^IMAGE_REVIEW_(\d{3})$/)?.[1];
+  if (review) return `image-review-${review}`;
+  if (message.startsWith('IMAGE_REVIEW_REJECTED')) return 'image-review-rejected';
+  if (message === 'IMAGE_PROVIDER_NOT_CONFIGURED') return 'image-not-configured';
+  if (message === 'IMAGE_PROVIDER_EMPTY') return 'image-empty-response';
+  if (message === 'IMAGE_DOWNLOAD_FAILED') return 'image-download-failed';
+  return 'visual-generation-unknown';
 }

@@ -17,7 +17,8 @@ import { pickSkeleton, SKELETONS, type Skeleton } from '../reading-tutor/src/ske
 import { assignSlots } from '../reading-tutor/src/slots';
 import type { StoryDraft } from '../reading-tutor/src/validators';
 import { fallbackBlueprintForChapter, type StoryBlueprint } from './story-blueprint.ts';
-import { chapterIdForDay, todayLocal } from './chapter-id';
+import type { StoryGenerationAttemptDiagnostic } from './story-generator.server';
+import { chapterIdForDay, isValidDay, todayLocal } from './chapter-id';
 
 export interface ChapterPage {
   text: string;
@@ -46,7 +47,7 @@ export interface Chapter {
 }
 
 export type ChapterSource = 'generated' | 'cached-generated' | 'fallback' | 'demo/static';
-export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string; entitlementSource?: 'free' | 'subscription' }
+export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string; entitlementSource?: 'free' | 'subscription'; generationDiagnostic?: { model: string; attempts: StoryGenerationAttemptDiagnostic[] } }
 
 const SETTINGS: Record<
   InterestId,
@@ -220,8 +221,12 @@ export function chapterIdFor(interest: InterestId | undefined, childName: string
 }
 
 export function chapterFor(interest: InterestId | undefined, childName = 'reader'): Chapter {
+  return chapterForDay(interest, childName, todayLocal());
+}
+
+export function chapterForDay(interest: InterestId | undefined, childName = 'reader', day: string): Chapter {
   const s = SETTINGS[interest ?? 'dogs'];
-  const id = chapterIdFor(interest, childName);
+  const id = chapterIdForDay(interest, childName, day);
 
   // Deterministic per chapter.id: same child + interest + day always renders
   // the same skeleton and the same slot picks (rotation comes from the day).
@@ -438,7 +443,7 @@ function rememberStorySignature(profile: ChildProfile, chapter: Chapter): void {
 function loadCachedTutorChapter(id: string): Chapter | null {
   try {
     const raw = JSON.parse(localStorage.getItem(TUTOR_CACHE_PREFIX + id) ?? 'null') as Chapter | null;
-    return raw && Array.isArray(raw.pages) && raw.pages.length > 0
+    return raw && raw.provenance?.source !== 'fallback' && raw.provenance?.source !== 'demo/static' && Array.isArray(raw.pages) && raw.pages.length > 0
       ? { ...raw, provenance: { ...raw.provenance, source: 'cached-generated' } }
       : null;
   } catch {
@@ -544,7 +549,10 @@ export async function requestTutorChapter(profile: ChildProfile, uid: string | n
   // the day (same reasoning as the original age-keyed comment here — the
   // source of the stage changed, not the need to key on it).
   const stage = resolveGenerationStage(profile, uid);
-  const id = `${chapterIdFor(profile.interests[0], profile.childName)}:s${stage}`;
+  const query = typeof window === 'undefined' || !window.location ? null : new URLSearchParams(window.location.search);
+  const qaDay = query?.get('debug') === '1' && isValidDay(query.get('qaDay')) ? query!.get('qaDay')! : null;
+  const effectiveDay = qaDay ?? todayLocal();
+  const id = `${chapterIdForDay(profile.interests[0], profile.childName, effectiveDay)}:s${stage}`;
   const cached = loadCachedTutorChapter(id);
   if (cached) {
     recordChapterDiag({ chapterId: cached.id, stage, source: 'generated', cacheHit: 'local', persisted: Boolean(uid && authToken) });
@@ -555,7 +563,7 @@ export async function requestTutorChapter(profile: ChildProfile, uid: string | n
   const run = (async () => {
     const chapter =
       uid && authToken
-        ? await generateTutorChapterPersisted(profile, uid, stage, id, authToken)
+        ? await generateTutorChapterPersisted(profile, uid, stage, id, authToken, qaDay)
         : await generateTutorChapter(profile, uid, id, authToken);
     recordChapterDiag({
       chapterId: chapter?.id ?? id,
@@ -586,6 +594,7 @@ async function generateTutorChapterPersisted(
   stage: number,
   id: string,
   authToken: string,
+  qaDay: string | null,
 ): Promise<Chapter | null> {
   const context = resolveGenerationContext(profile, uid);
   const day = todayLocal();
@@ -601,20 +610,37 @@ async function generateTutorChapterPersisted(
         recentlyMissedWords: context.recentlyMissedWords,
         storySoFar: context.storySoFar,
         recentStorySignatures: context.recentStorySignatures,
+        qaMode: Boolean(qaDay),
+        qaDay,
       }),
     });
-    if (!response.ok) return null; // 402 (not subscribed) / 503 / etc — caller stays on the demo arc
+    if (!response.ok) {
+      const error = await response.json().catch(() => null) as { reason?: string; error?: string } | null;
+      const reason = error?.reason ?? error?.error ?? `story-today-${response.status}`;
+      generationFailures.set(id, reason); latestGenerationFailure = reason;
+      return null; // caller stays on the deterministic chapter
+    }
     const data = (await response.json()) as {
       chapter?: Chapter | null;
       created?: boolean;
-      record?: { source: 'generated' | 'fallback'; stage: number; draft?: StoryDraft; blueprint?: StoryBlueprint; skeletonId?: string; slots?: Record<string, string> };
+      record?: { source: 'generated' | 'fallback'; stage: number; failureReason?: string; generationDiagnostic?: unknown; draft?: StoryDraft; blueprint?: StoryBlueprint; skeletonId?: string; slots?: Record<string, string> };
     };
     if (data.chapter?.pages?.length) {
-      try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(data.chapter)); } catch { /* accelerator only */ }
+      if (data.chapter.provenance?.source === 'fallback') {
+        const reason = data.chapter.provenance.failureReason ?? data.record?.failureReason ?? 'unknown';
+        generationFailures.set(id, reason); latestGenerationFailure = reason;
+      } else {
+        generationFailures.delete(id); latestGenerationFailure = undefined;
+      }
+      if (data.chapter.provenance?.source !== 'fallback') {
+        try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(data.chapter)); } catch { /* accelerator only */ }
+      }
       return data.chapter;
     }
     const rec = data.record;
-    if (!rec || rec.source !== 'generated' || !rec.draft) return null;
+    if (!rec || rec.source !== 'generated' || !rec.draft) {
+      const reason = rec?.failureReason ?? 'unknown'; generationFailures.set(id, reason); latestGenerationFailure = reason; return null;
+    }
     const skeleton = SKELETONS.find((s) => s.id === rec.skeletonId) ?? context.skeleton;
     const adapted = adaptTutorDraft(profile, rec.draft, skeleton, rec.slots, rec.stage, rec.blueprint);
     const chapter = adapted ? { ...adapted, provenance: { ...adapted.provenance, source: data.created === false ? 'cached-generated' as const : 'generated' as const } } : null;
@@ -667,7 +693,11 @@ async function generateTutorChapter(
         recentStorySignatures: context.recentStorySignatures,
       }),
     });
-    if (!response.ok) { generationFailures.set(id, `story-generation-${response.status}`); latestGenerationFailure = `story-generation-${response.status}`; return null; }
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { reason?: string } | null;
+      const reason = body?.reason ?? `story-generation-${response.status}`;
+      generationFailures.set(id, reason); latestGenerationFailure = reason; return null;
+    }
     const data = await response.json() as { chapter?: Chapter; draft?: StoryDraft; skeleton?: Skeleton; slots?: Record<string, string>; blueprint?: StoryBlueprint };
     if (data.chapter?.pages?.length) {
       generationFailures.delete(id);

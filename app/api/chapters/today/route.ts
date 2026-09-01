@@ -17,9 +17,8 @@
  * caller definitively whether OpenAI was actually reached this time
  * ('generated') or generation failed/was unconfigured and the demo arc
  * is standing in ('fallback') — see lib/story-generator.server.ts's
- * `generateStoryDraft`, which returns null (never throws) on either
- * OPENAI_API_KEY being unset or the model/validator failing, and always
- * logs server-side why, so a run of 'fallback' records is diagnosable
+ * `generateStoryDraft`, whose structured failure outcome preserves safe
+ * provider status and validator rule codes, so fallback is diagnosable
  * instead of just looking like the product got repetitive. */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -29,9 +28,10 @@ import { getOrCreateTodayChapter, isAuthoritativeChapterRecord, loadTodayChapter
 import { generateStoryDraft } from '@/lib/story-generator.server';
 import { chapterIdForDay, isValidDay } from '@/lib/chapter-id';
 import { type ChildProfile } from '@/lib/profile';
-import { adaptTutorDraft, type Chapter } from '@/lib/chapters';
+import { adaptTutorDraft, chapterForDay, type Chapter } from '@/lib/chapters';
 import { dailyChapterRef, resolveChapterEntitlement } from '@/lib/chapter-entitlement-server';
 import { SKELETONS } from '@/reading-tutor/src/skeletons';
+import { resolveAuthorizedChapterDay } from '@/lib/qa-day';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -62,6 +62,8 @@ interface TodayRequestBody {
   recentlyMissedWords?: string[];
   storySoFar?: string;
   recentStorySignatures?: string[];
+  qaDay?: string;
+  qaMode?: boolean;
 }
 
 async function tryGenerate(
@@ -82,8 +84,9 @@ async function tryGenerate(
     childContext: profile.childContext,
     recentStorySignatures: body.recentStorySignatures,
   });
-  if (!result) return { source: 'fallback' };
-  return { source: 'generated', entitlementSource, draft: result.draft, blueprint: result.blueprint, skeletonId: result.skeleton.id, slots: result.slots };
+  if (!result.ok) return { source: 'fallback', entitlementSource, failureReason: result.reason, generationDiagnostic: result.diagnostic };
+  const generated = result.result;
+  return { source: 'generated', entitlementSource, generationDiagnostic: result.diagnostic, draft: generated.draft, blueprint: generated.blueprint, skeletonId: generated.skeleton.id, slots: generated.slots };
 }
 
 const COMPANIONS = ['Pip', 'Nori', 'Tavi', 'Bram', 'Kiko', 'Sula', 'Ollie', 'Zia'];
@@ -108,7 +111,7 @@ export async function POST(request: NextRequest) {
   if (!isValidDay(body?.day)) {
     return NextResponse.json({ error: 'Invalid day' }, { status: 400 });
   }
-  const day = body!.day!;
+  const day = resolveAuthorizedChapterDay({ day: body!.day!, qaDay: body?.qaDay, qaMode: body?.qaMode, vercelEnvironment: process.env.VERCEL_ENV });
   const ageEstimate = Math.min(10, Math.max(1, Math.round(body?.ageDerivedStageEstimate || 1)));
 
   // 'anonymous' is route-auth's local-dev-open marker (no admin credentials,
@@ -161,10 +164,21 @@ export async function POST(request: NextRequest) {
         const adapted = adaptTutorDraft(profile, record.draft, skeleton, record.slots, record.stage, record.blueprint);
         if (adapted) {
           chapter = { ...adapted, id: chapterId, character: profile.childName, companion: companionName,
-            provenance: { ...adapted.provenance, source: created ? 'generated' : 'cached-generated', entitlementSource: record.entitlementSource ?? entitlementSource } };
+            provenance: { ...adapted.provenance, source: created ? 'generated' : 'cached-generated', entitlementSource: record.entitlementSource ?? entitlementSource, generationDiagnostic: record.generationDiagnostic } };
           await dailyChapterRef(chapterId).set({ chapter, ownerUid: auth.uid, entitlementSource: record.entitlementSource ?? entitlementSource, generatedAt: record.createdAt }, { merge: true });
         }
       }
+    }
+    if (!chapter && record.source === 'fallback') {
+      chapter = chapterForDay(profile.interests[0], profile.childName, day);
+      chapter = { ...chapter, provenance: { source: 'fallback', failureReason: record.failureReason, entitlementSource, generationDiagnostic: record.generationDiagnostic } };
+    }
+    // Ownership is a downstream authorization primitive, not proof that
+    // OpenAI succeeded. Persist every canonical chapter this entitled user
+    // is actually shown so visuals can authorize the exact fallback too.
+    if (chapter) {
+      await dailyChapterRef(chapterId).set({ chapter, ownerUid: auth.uid, entitlementSource,
+        storySource: record.source, generationFailureReason: record.failureReason ?? null, createdAt: record.createdAt }, { merge: true });
     }
     return NextResponse.json({ record, chapter, created });
   } catch (error) {
