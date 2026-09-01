@@ -52,6 +52,7 @@ async function main() {
     return new Response(JSON.stringify({ choices:[{ message:{ content:JSON.stringify(validBlueprint) } }] }), { status:200 });
   };
   const recovered = await generateStoryDraft(recoveryParams);
+  assert.equal(recovered.ok, true, 'the single transient retry accepts a valid semantic plan');
   assert.equal(recovered.diagnostic.attempts[0].httpStatus, 500);
   assert.equal(recovered.diagnostic.attempts[1].httpStatus, 200);
   assert.equal(calls, 2, 'one transient retry may recover');
