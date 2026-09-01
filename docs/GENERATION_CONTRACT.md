@@ -15,6 +15,19 @@ constraints before it writes child-facing prose.
 | `phonics/sentence-length` | Every child-facing sentence fits the stage min/max. | The range was absent from the blueprint prompt. | Exact range is supplied initially and on targeted retry. |
 | `content/unknown-proper-noun` | Only approved cast names may be capitalized mid-sentence. | The prompt did not prohibit invented names/places. | It lists the only approved proper nouns and requires generic lowercase places. |
 
+## Validation order
+
+`validateStoryBlueprintSemantics()` is the provider-retry boundary. It checks
+the goal, causal beats, state/entity continuity, reconvergence, resolution, and
+that Prediction consequence beats author two distinct semantic outcomes. It
+does not judge captions or child-facing pages.
+
+`validateStoryBlueprintPresentation()` classifies repairable captions and page
+text. `validateStoryBlueprint()` remains the strict final validator and combines
+both layers. A semantic-valid response with presentation or literacy failures
+is realized once and then run through the strict blueprint and literacy
+validators; it does not consume a second provider attempt.
+
 ## Image review recovery
 
 The reviewer confidence and verified-object threshold remain unchanged. Up to

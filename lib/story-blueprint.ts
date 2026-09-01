@@ -107,7 +107,26 @@ function sameSetOrSubset(known: string[], next: string[]): string[] {
   return next.filter((word) => !before.has(word.toLowerCase()));
 }
 
-export function validateStoryBlueprint(blueprint: StoryBlueprint): BlueprintValidation {
+function branchSemanticSignature(branch: PredictionBranch): string {
+  const beat = branch.consequenceBeat;
+  const state = beat.stateAfter;
+  return JSON.stringify({
+    action: beat.action.trim().toLowerCase(),
+    visibleChange: beat.visibleChange.trim().toLowerCase(),
+    requiredVisibleObjects: [...beat.requiredVisibleObjects].map((value) => value.toLowerCase()).sort(),
+    location: state.location.trim().toLowerCase(),
+    knownObjects: [...state.knownObjects].map((value) => value.toLowerCase()).sort(),
+    carriedObjects: [...state.carriedObjects].map((value) => value.toLowerCase()).sort(),
+    discoveredObjects: [...state.discoveredObjects].map((value) => value.toLowerCase()).sort(),
+    previousAction: state.previousAction?.trim().toLowerCase() ?? null,
+    consequences: [...state.consequences].map((value) => value.toLowerCase()).sort(),
+  });
+}
+
+/** Validate the authored story plan without judging child-facing prose.
+ * A passing result is the boundary at which deterministic realization is
+ * allowed: semantics are authoritative, captions/pages remain replaceable. */
+export function validateStoryBlueprintSemantics(blueprint: StoryBlueprint): BlueprintValidation {
   const issues: BlueprintIssue[] = [];
   const add = (code: string, detail: string) => issues.push({ code, detail });
   if (!blueprint.premise || !blueprint.characterGoal || !blueprint.problem || !blueprint.goalId) add('missing-foundation', 'Premise, stable goal id, goal, and problem are required.');
@@ -130,16 +149,43 @@ export function validateStoryBlueprint(blueprint: StoryBlueprint): BlueprintVali
   const a = blueprint.prediction.optionA;
   const b = blueprint.prediction.optionB;
   for (const branch of [a, b]) {
-    for (const problem of predictionCaptionIssues(branch.caption, blueprint.protagonist)) add('malformed-prediction', `${branch.id}: ${problem}`);
-    if (!branch.consequenceBeat.cause || !branch.page.text) add('branch-without-consequence', `${branch.id} has no authored consequence.`);
+    const consequence = branch.consequenceBeat;
+    if (!consequence || !consequence.cause || !consequence.action || !consequence.visibleChange) {
+      add('branch-without-consequence', `${branch.id} lacks authored consequence semantics.`);
+    }
   }
-  if (a.caption.toLowerCase() === b.caption.toLowerCase() || a.page.text.toLowerCase() === b.page.text.toLowerCase()) add('duplicate-branches', 'Prediction branches must differ in choice and consequence.');
+  if (branchSemanticSignature(a) === branchSemanticSignature(b)) add('duplicate-branch-semantics', 'Prediction branches must author meaningfully different consequences.');
   if (!blueprint.beats.some((beat) => beat.beatId === blueprint.prediction.reconvergenceBeatId)) add('missing-reconvergence', 'Prediction references no authored reconvergence beat.');
   const resolutionBeat = blueprint.beats.find((beat) => beat.beatId === blueprint.goalResolutionBeatId);
   if (blueprint.goalResolutionStatus !== 'resolved' || !resolutionBeat || resolutionBeat.role !== 'resolution' || resolutionBeat.stateAfter.unresolvedGoal !== '') {
     add('unresolved-ending', 'The stable goal must point to a resolution beat whose state closes it.');
   }
   if (!blueprint.resolutionType || !RESOLUTION_TYPES.includes(blueprint.resolutionType)) add('resolution-type', 'A bounded resolution function is required.');
+  return { ok: issues.length === 0, issues };
+}
+
+/** Presentation checks intentionally remain strict, but run only after the
+ * semantic gate. A deterministic realizer may repair these fields. */
+export function validateStoryBlueprintPresentation(blueprint: StoryBlueprint): BlueprintValidation {
+  const issues: BlueprintIssue[] = [];
+  const add = (code: string, detail: string) => issues.push({ code, detail });
+  const a = blueprint.prediction.optionA;
+  const b = blueprint.prediction.optionB;
+  for (const branch of [a, b]) {
+    for (const problem of predictionCaptionIssues(branch.caption, blueprint.protagonist)) add('malformed-prediction', `${branch.id}: ${problem}`);
+    if (!branch.page.text.trim()) add('missing-branch-page', `${branch.id} has no child-facing consequence page.`);
+  }
+  if (a.caption.trim().toLowerCase() === b.caption.trim().toLowerCase() || a.page.text.trim().toLowerCase() === b.page.text.trim().toLowerCase()) {
+    add('duplicate-branch-presentation', 'Prediction captions and child-facing consequence pages must differ.');
+  }
+  return { ok: issues.length === 0, issues };
+}
+
+/** Strict final validator: no semantic or presentation invariant is removed. */
+export function validateStoryBlueprint(blueprint: StoryBlueprint): BlueprintValidation {
+  const semantic = validateStoryBlueprintSemantics(blueprint);
+  const presentation = validateStoryBlueprintPresentation(blueprint);
+  const issues = [...semantic.issues, ...presentation.issues];
   return { ok: issues.length === 0, issues };
 }
 

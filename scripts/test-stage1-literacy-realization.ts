@@ -25,9 +25,9 @@
 import assert from 'node:assert/strict';
 import { allowedWordsForStage, getStage, tokenize } from '../reading-tutor/content/stages.ts';
 import { validateAll, type StoryDraft } from '../reading-tutor/src/validators.ts';
-import { validateStoryBlueprint, predictionCaptionIssues, normalizeStoryBlueprint, type StoryBlueprint } from '../lib/story-blueprint.ts';
+import { validateStoryBlueprint, validateStoryBlueprintPresentation, validateStoryBlueprintSemantics, predictionCaptionIssues, normalizeStoryBlueprint, type StoryBlueprint } from '../lib/story-blueprint.ts';
 import { realizeChildFacingProse, applyRealizedProse } from '../lib/story-realizer.ts';
-import { storyLiteracyContract } from '../lib/story-generator.server.ts';
+import { generateStoryDraft, storyLiteracyContract } from '../lib/story-generator.server.ts';
 
 // A blueprint whose PROSE is illegal for Stage 1 in every way that broke live:
 //   - preview-only nouns (backpack, path, door)
@@ -137,7 +137,29 @@ function assertStageLegal(stage: number, blueprint: StoryBlueprint, childName: s
   ok(anyStageNoun, `${label}: at least one stage-palette noun surfaces in child-facing prose`);
 }
 
-function main(): void {
+async function generatedOutcome(blueprint: StoryBlueprint): Promise<{ result: string; calls: number; realizedFromRules: string[] }> {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  const originalModel = process.env.OPENAI_STORY_MODEL;
+  let calls = 0;
+  process.env.OPENAI_API_KEY = 'test-only';
+  process.env.OPENAI_STORY_MODEL = 'fixture-model';
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(blueprint) } }] }), { status: 200 });
+  };
+  try {
+    const outcome = await generateStoryDraft({ childName: blueprint.protagonist, companionName: blueprint.companion ?? 'Pip', interests: ['space'], stage: 1 });
+    const attempt = outcome.diagnostic.attempts.at(-1)!;
+    return { result: attempt.result, calls, realizedFromRules: attempt.realized?.realizedFromRules ?? [] };
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = originalKey;
+    if (originalModel === undefined) delete process.env.OPENAI_STORY_MODEL; else process.env.OPENAI_STORY_MODEL = originalModel;
+  }
+}
+
+async function main(): Promise<void> {
   const combos = [
     { interest: 'dogs',      protagonist: 'Maria',   companion: 'Pip', setting: 'a sunny countryside farm with wooden fences', targetObject: 'gate'  },
     { interest: 'space',     protagonist: 'Zed',     companion: 'Nix', setting: 'a glowing starlit galaxy',                    targetObject: 'star'  },
@@ -163,7 +185,71 @@ function main(): void {
     ok(realizedBlueprint.pages.length === blueprint.pages.length, `${combo.interest}/${combo.protagonist}: page count preserved`);
     ok(realizedBlueprint.prediction.optionA.page.text !== realizedBlueprint.prediction.optionB.page.text, `${combo.interest}/${combo.protagonist}: branch pages remain distinct after realization`);
     ok(realizedBlueprint.prediction.optionA.caption !== realizedBlueprint.prediction.optionB.caption, `${combo.interest}/${combo.protagonist}: captions remain distinct`);
+    ok(realized.provenance.pages.length === blueprint.pages.length, `${combo.interest}/${combo.protagonist}: every page records a semantic beat source`);
+    const authoredPageBeats = blueprint.beats.filter((beat) => beat.role !== 'branch-consequence');
+    realized.provenance.pages.forEach((mapping, index) => {
+      const expectedBeat = authoredPageBeats[Math.min(index, authoredPageBeats.length - 1)];
+      ok(mapping.realizedFromBeatId === expectedBeat.beatId, `${combo.interest}/${combo.protagonist}: page ${index + 1} maps to ${expectedBeat.beatId}`);
+      ok(mapping.actionSource === expectedBeat.action, `${combo.interest}/${combo.protagonist}: page ${index + 1} records authored action source`);
+      ok(mapping.objectSource === (expectedBeat.requiredVisibleObjects[0] ?? blueprint.entityContinuity[0] ?? null), `${combo.interest}/${combo.protagonist}: page ${index + 1} records authored object source`);
+      if (index > 0) ok(realized.pages[index - 1].text !== realized.pages[index].text, `${combo.interest}/${combo.protagonist}: adjacent pages ${index}/${index + 1} do not collapse to repeated filler`);
+    });
+    ok(realized.provenance.optionA.realizedFromBeatId === blueprint.prediction.optionA.consequenceBeat.beatId, `${combo.interest}/${combo.protagonist}: branch A maps to its consequence beat`);
+    ok(realized.provenance.optionB.realizedFromBeatId === blueprint.prediction.optionB.consequenceBeat.beatId, `${combo.interest}/${combo.protagonist}: branch B maps to its consequence beat`);
   }
+
+  console.log('\n=== Semantic gate → presentation realization ordering ===');
+  const raw = illegalStage1Blueprint('Sally', 'Pip', 'a space station', 'star');
+  const malformed = structuredClone(raw);
+  malformed.prediction.optionA.caption = 'First';
+  malformed.prediction.optionB.caption = 'First';
+  malformed.prediction.optionA.page.text = '';
+  malformed.prediction.optionB.page.text = '';
+  ok(validateStoryBlueprintSemantics(malformed).ok, 'live regression: semantic plan passes despite malformed/empty child prose');
+  const rawPresentation = validateStoryBlueprintPresentation(malformed);
+  ok(!rawPresentation.ok && rawPresentation.issues.some((issue) => issue.code === 'malformed-prediction'), 'live regression: raw presentation records malformed-prediction');
+  ok(rawPresentation.issues.some((issue) => issue.code === 'missing-branch-page'), 'live regression: empty branch pages are presentation failures');
+  ok(rawPresentation.issues.some((issue) => issue.code === 'duplicate-branch-presentation'), 'live regression: duplicate raw wording is a presentation failure');
+  const repaired = await generatedOutcome(malformed);
+  ok(repaired.result === 'accepted-realized', 'live regression: one provider semantic plan becomes accepted-realized');
+  ok(repaired.calls === 1, 'live regression: repairable prose spends one provider call');
+  ok(repaired.realizedFromRules.includes('malformed-prediction'), 'accepted-realized diagnostic records repaired malformed-prediction');
+
+  const contract = storyLiteracyContract(1, raw.protagonist, raw.companion ?? 'Pip', ['star']);
+  const alreadyRealized = applyRealizedProse(raw, realizeChildFacingProse(raw, contract, 1));
+  const accepted = await generatedOutcome(alreadyRealized);
+  ok(accepted.result === 'accepted' && accepted.calls === 1, 'case A: valid model prose is accepted unchanged');
+  const literacyRepair = await generatedOutcome(raw);
+  ok(literacyRepair.result === 'accepted-realized' && literacyRepair.calls === 1, 'case B: semantic-valid literacy failure is realized without retry');
+
+  const captionOnly = structuredClone(alreadyRealized);
+  captionOnly.prediction.optionA.caption = 'First';
+  captionOnly.prediction.optionB.caption = 'Second';
+  const captionOutcome = await generatedOutcome(captionOnly);
+  ok(captionOutcome.result === 'accepted-realized' && captionOutcome.calls === 1, 'case C: malformed captions are realized without retry');
+
+  const emptyPages = structuredClone(alreadyRealized);
+  emptyPages.prediction.optionA.page.text = '';
+  emptyPages.prediction.optionB.page.text = '';
+  const pageOutcome = await generatedOutcome(emptyPages);
+  ok(pageOutcome.result === 'accepted-realized' && pageOutcome.calls === 1, 'case D: empty duplicate branch pages are realized from distinct consequences');
+
+  const missingConsequence = structuredClone(raw);
+  missingConsequence.prediction.optionA.consequenceBeat.action = '';
+  ok(validateStoryBlueprintSemantics(missingConsequence).issues.some((issue) => issue.code === 'branch-without-consequence'), 'missing consequence action remains a semantic failure');
+
+  const identicalSemantics = structuredClone(raw);
+  identicalSemantics.prediction.optionB.consequenceBeat = structuredClone(identicalSemantics.prediction.optionA.consequenceBeat);
+  identicalSemantics.prediction.optionB.consequenceBeat.beatId = 'branch-B';
+  ok(!validateStoryBlueprintSemantics(identicalSemantics).ok, 'case E: semantically identical branches fail the semantic gate');
+  const identicalOutcome = await generatedOutcome(identicalSemantics);
+  ok(identicalOutcome.result === 'semantic-blueprint-validation' && identicalOutcome.calls === 3, 'case E: semantic duplicate retries provider');
+
+  const brokenPlan = structuredClone(raw);
+  brokenPlan.prediction.reconvergenceBeatId = 'missing-beat';
+  ok(!validateStoryBlueprintSemantics(brokenPlan).ok, 'case F: missing reconvergence fails the semantic gate');
+  const brokenOutcome = await generatedOutcome(brokenPlan);
+  ok(brokenOutcome.result === 'semantic-blueprint-validation' && brokenOutcome.calls === 3, 'case F: broken plan retries provider');
 
   console.log('\n=== Stage 2/5/9 fallback realization is still legal ===');
   for (const stage of [2, 5, 9]) {
@@ -178,4 +264,4 @@ function main(): void {
   console.log(`\nStage-1 literacy realization: ${passed} passed, 0 failed`);
 }
 
-main();
+main().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -13,7 +13,7 @@ import { allowedWordsForStage, getStage } from '../reading-tutor/content/stages'
 import type { StoryDraft } from '../reading-tutor/src/validators';
 import { validateAll } from '../reading-tutor/src/validators';
 import type { InterestId } from './profile';
-import { blueprintGenerationPrompt, normalizeStoryBlueprint, validateStoryBlueprint, type StoryBlueprint, type StoryLiteracyContract } from './story-blueprint.ts';
+import { blueprintGenerationPrompt, normalizeStoryBlueprint, validateStoryBlueprint, validateStoryBlueprintPresentation, validateStoryBlueprintSemantics, type StoryBlueprint, type StoryLiteracyContract } from './story-blueprint.ts';
 import { applyRealizedProse, realizeChildFacingProse } from './story-realizer';
 
 export interface StoryGenerationParams {
@@ -37,17 +37,17 @@ export interface StoryGenerationResult {
 
 export type StoryGenerationFailureReason =
   | 'not-configured' | 'provider-401' | 'provider-429' | 'provider-4xx' | 'provider-5xx'
-  | 'empty-response' | 'invalid-json' | 'blueprint-validation' | 'literacy-validation'
+  | 'empty-response' | 'invalid-json' | 'semantic-blueprint-validation' | 'presentation-validation' | 'blueprint-validation' | 'literacy-validation'
   | 'realization-failed' | 'retry-exhausted' | 'unknown';
 export interface StoryGenerationAttemptDiagnostic {
   attempt: number; model: string; providerReached: boolean; httpStatus: number | null;
-  result: 'provider-error' | 'empty-response' | 'invalid-json' | 'blueprint-validation' | 'literacy-validation' | 'accepted' | 'accepted-realized' | 'realization-failed' | 'unknown';
+  result: 'provider-error' | 'empty-response' | 'invalid-json' | 'semantic-blueprint-validation' | 'presentation-validation' | 'literacy-validation' | 'accepted' | 'accepted-realized' | 'realization-failed' | 'unknown';
   ruleCodes: string[];
   /** Set only when this attempt was accepted after realizer substitution —
    *  useful to distinguish "model wrote clean prose" from "model wrote a
    *  clean plan, system produced clean prose from it". Never contains
    *  prose, tokens, or provider output. */
-  realized?: { previewWordsUsed: number };
+  realized?: { previewWordsUsed: number; realizedFromRules: string[] };
 }
 export type StoryGenerationOutcome =
   | { ok: true; result: StoryGenerationResult; diagnostic: { model: string; attempts: StoryGenerationAttemptDiagnostic[] } }
@@ -108,11 +108,18 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
       if (!raw.trim()) { attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'empty-response', ruleCodes: [] }); continue; }
       let blueprint: StoryBlueprint;
       try { blueprint = JSON.parse(raw) as StoryBlueprint; } catch { rejection = 'REPAIR: Return valid JSON matching the exact schema. Do not include markdown.'; attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'invalid-json', ruleCodes: [] }); continue; }
-      let holistic: ReturnType<typeof validateStoryBlueprint>;
-      try { blueprint = normalizeStoryBlueprint(blueprint); holistic = validateStoryBlueprint(blueprint); }
+      let semantic: ReturnType<typeof validateStoryBlueprintSemantics>;
+      try { blueprint = normalizeStoryBlueprint(blueprint); semantic = validateStoryBlueprintSemantics(blueprint); }
       catch {
         rejection = 'REPAIR invalid-blueprint-shape: Return every required object and array in the exact schema.';
-        attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'blueprint-validation', ruleCodes: ['invalid-blueprint-shape'] });
+        attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'semantic-blueprint-validation', ruleCodes: ['invalid-blueprint-shape'] });
+        continue;
+      }
+      const semanticCodes = [...new Set(semantic.issues.map((issue) => issue.code))];
+      if (!semantic.ok) {
+        attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status,
+          result: 'semantic-blueprint-validation', ruleCodes: semanticCodes.slice(0, 20) });
+        rejection = targetedRepairInstructions(semanticCodes, literacyContract, []);
         continue;
       }
       const draft: StoryDraft = {
@@ -130,14 +137,16 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
         imagePrompt: `${draft.imagePrompt} | ${blueprint.prediction.optionA.visualDescription} | ${blueprint.prediction.optionB.visualDescription}`,
       };
       const literacy = validateAll(validationDraft, stage, { childName: params.childName, petName: params.companionName ?? 'Momo' });
-      const blueprintCodes = [...new Set(holistic.issues.map((issue) => issue.code))];
+      const presentation = validateStoryBlueprintPresentation(blueprint);
+      const strict = validateStoryBlueprint(blueprint);
+      const presentationCodes = [...new Set(presentation.issues.map((issue) => issue.code))];
       const literacyCodes = [...new Set(literacy.violations.map((issue) => issue.rule))];
-      if (holistic.ok && literacy.ok) {
+      if (strict.ok && literacy.ok) {
         attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'accepted', ruleCodes: [] });
         return { ok: true, result: { draft, skeleton, slots, blueprint }, diagnostic: { model, attempts } };
       }
-      // Blueprint is holistically sound but the model's own prose failed
-      // literacy — this is the reliable-in-live-tests case at Stage 1. The
+      // The semantic plan is sound, so presentation or literacy defects must
+      // not spend another provider call. The
       // realizer replaces ONLY the child-facing text (pages, both branch
       // pages, both captions, and finalEmotionalBeat/teaser) with prose
       // built from stage-legal frames driven by the beat's semantics. The
@@ -147,8 +156,7 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
       // reason still fails literacy (should be structurally impossible for
       // stages ≤ 1), the attempt is rejected as `realization-failed` and
       // the loop retries the model.
-      if (holistic.ok) {
-        try {
+      try {
           const realized = realizeChildFacingProse(blueprint, literacyContract, stage);
           const realizedBlueprint = applyRealizedProse(blueprint, realized);
           const realizedDraft: StoryDraft = {
@@ -165,7 +173,9 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
           const realizedHolistic = validateStoryBlueprint(realizedBlueprint);
           const realizedLiteracy = validateAll(realizedValidationDraft, stage, { childName: params.childName, petName: params.companionName ?? 'Momo' });
           if (realizedHolistic.ok && realizedLiteracy.ok) {
-            attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'accepted-realized', ruleCodes: [], realized: { previewWordsUsed: realized.previewWordsUsed.length } });
+            const realizedFromRules = [...new Set([...presentationCodes, ...literacyCodes])];
+            attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'accepted-realized', ruleCodes: [],
+              realized: { previewWordsUsed: realized.previewWordsUsed.length, realizedFromRules } });
             return { ok: true, result: { draft: realizedDraft, skeleton, slots, blueprint: realizedBlueprint }, diagnostic: { model, attempts } };
           }
           const realizedCodes = [
@@ -173,23 +183,20 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
             ...new Set(realizedLiteracy.violations.map((issue) => issue.rule)),
           ];
           attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'realization-failed', ruleCodes: realizedCodes.slice(0, 20) });
-          rejection = targetedRepairInstructions([...blueprintCodes, ...literacyCodes], literacyContract, literacy.violations.map((issue) => issue.word).filter((word): word is string => Boolean(word)));
+          rejection = targetedRepairInstructions([...presentationCodes, ...literacyCodes], literacyContract, literacy.violations.map((issue) => issue.word).filter((word): word is string => Boolean(word)));
           continue;
-        } catch (error) {
+      } catch (error) {
           attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'realization-failed', ruleCodes: [error instanceof Error ? error.name : 'realizer-threw'] });
-          rejection = targetedRepairInstructions([...blueprintCodes, ...literacyCodes], literacyContract, literacy.violations.map((issue) => issue.word).filter((word): word is string => Boolean(word)));
+          rejection = targetedRepairInstructions([...presentationCodes, ...literacyCodes], literacyContract, literacy.violations.map((issue) => issue.word).filter((word): word is string => Boolean(word)));
           continue;
-        }
       }
-      attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status,
-        result: 'blueprint-validation', ruleCodes: [...blueprintCodes, ...literacyCodes].slice(0, 20) });
-      rejection = targetedRepairInstructions([...blueprintCodes, ...literacyCodes], literacyContract, literacy.violations.map((issue) => issue.word).filter((word): word is string => Boolean(word)));
     }
     console.error('[story-generator] complete blueprint exhausted retries', rejection);
     const last = attempts.at(-1);
     const reason: StoryGenerationFailureReason = attempts.every((row) => row.result === 'provider-error')
       ? providerReason(last?.httpStatus ?? 0)
-      : attempts.every((row) => row.result === 'blueprint-validation') ? 'blueprint-validation'
+      : attempts.every((row) => row.result === 'semantic-blueprint-validation') ? 'semantic-blueprint-validation'
+      : attempts.every((row) => row.result === 'presentation-validation') ? 'presentation-validation'
       : attempts.every((row) => row.result === 'literacy-validation') ? 'literacy-validation'
       : attempts.every((row) => row.result === 'realization-failed') ? 'realization-failed'
       : attempts.every((row) => row.result === 'invalid-json') ? 'invalid-json'

@@ -31,7 +31,7 @@ async function main() {
   const malformed = await generateStoryDraft(params);
   assert.equal(malformed.ok, false);
   if (!malformed.ok) {
-    assert.equal(malformed.reason, 'blueprint-validation');
+    assert.equal(malformed.reason, 'semantic-blueprint-validation');
     assert.ok(malformed.diagnostic.attempts.every((row) => row.ruleCodes.includes('invalid-blueprint-shape')));
   }
 

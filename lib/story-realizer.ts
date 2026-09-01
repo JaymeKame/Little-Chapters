@@ -222,6 +222,19 @@ export interface RealizedProse {
   captionB: string;
   finalEmotionalBeat: string;
   previewWordsUsed: string[];
+  provenance: {
+    pages: RealizationMapping[];
+    optionA: RealizationMapping;
+    optionB: RealizationMapping;
+  };
+}
+
+export interface RealizationMapping {
+  realizedFromBeatId: string;
+  actionSource: string;
+  objectSource: string | null;
+  mappedAction: string;
+  mappedObject: string;
 }
 
 /** Deterministic realization of the child-facing prose from a validated
@@ -259,8 +272,10 @@ export function realizeChildFacingProse(blueprint: StoryBlueprint, contract: Sto
   };
 
   const rendered = new Set<string>();
+  const pageMappings: RealizationMapping[] = [];
   const realizePage = (beat: StoryBlueprintBeat, index: number): ChapterPage => {
-    const noun1 = mapObjectToStageNoun(beat.requiredVisibleObjects[0] ?? blueprint.entityContinuity[0], palette, `${blueprint.goalId}:p${index}:n1`);
+    const objectSource = beat.requiredVisibleObjects[0] ?? blueprint.entityContinuity[0] ?? null;
+    const noun1 = mapObjectToStageNoun(objectSource ?? undefined, palette, `${blueprint.goalId}:p${index}:n1`);
     const noun2 = mapObjectToStageNoun(beat.requiredVisibleObjects[1] ?? blueprint.entityContinuity[1], palette, `${blueprint.goalId}:p${index}:n2`);
     const verb = mapActionToStageVerb(beat.action, palette, `${blueprint.goalId}:p${index}:v`);
     const adj = palette.adjectives[stableIndex(`${blueprint.goalId}:p${index}:a`, palette.adjectives.length)] ?? 'sad';
@@ -271,6 +286,7 @@ export function realizeChildFacingProse(blueprint: StoryBlueprint, contract: Sto
     const frame = pickFrame(`${blueprint.goalId}:p${index}`, preferred);
     const text = frame.render(slots);
     rendered.add(text);
+    pageMappings.push({ realizedFromBeatId: beat.beatId, actionSource: beat.action, objectSource, mappedAction: verb, mappedObject: noun1 });
     // Report any accidental preview usage (structurally impossible on the
     // Stage-1 path, defensive on higher stages).
     text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).forEach(noteIfPreview);
@@ -302,7 +318,16 @@ export function realizeChildFacingProse(blueprint: StoryBlueprint, contract: Sto
   // keep it in the same voice so a child glancing at it isn't confused.
   const finalEmotionalBeat = `${name} did ${palette.verbs[0] ?? 'tap'} and sit.`;
 
-  return { pages, optionAPage, optionBPage, captionA, captionB, finalEmotionalBeat, previewWordsUsed: [...previewUsed] };
+  return {
+    pages, optionAPage, optionBPage, captionA, captionB, finalEmotionalBeat, previewWordsUsed: [...previewUsed],
+    provenance: {
+      pages: pageMappings,
+      optionA: { realizedFromBeatId: branchA.consequenceBeat.beatId, actionSource: branchA.consequenceBeat.action,
+        objectSource: branchA.consequenceBeat.requiredVisibleObjects[0] ?? null, mappedAction: branchVerbA, mappedObject: branchNounA },
+      optionB: { realizedFromBeatId: branchB.consequenceBeat.beatId, actionSource: branchB.consequenceBeat.action,
+        objectSource: branchB.consequenceBeat.requiredVisibleObjects[0] ?? null, mappedAction: branchVerbB, mappedObject: nounB },
+    },
+  };
 }
 
 /** Apply realized prose to a blueprint, returning a new blueprint whose
