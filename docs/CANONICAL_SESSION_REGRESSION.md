@@ -2,7 +2,7 @@
 
 ## Historical path
 
-The last likely working generated-art implementation is PR #26 at
+The last likely working generated-art implementation is open PR #26 at
 `65db8e52e5d1bb72b10fa3914f406189c3a68eba` ("Generate durable chapter
 scene packages"). Its reader posted whichever client chapter was mounted to
 `/api/chapters/visuals`; the route generated or returned a package without a
@@ -16,6 +16,11 @@ result after `startedReadingRef` became true, and independently started the
 visual effect for the mounted placeholder. That combination made secure image
 generation return `CHAPTER_NOT_FOUND` for a chapter the server had never made
 canonical. The safety check was correct; the reader ownership sequence was not.
+
+This repair deliberately keeps the authorization introduced by `2146b2c...`.
+It restores the useful request order from PR #26 by moving the reader forward
+to the secure contract, rather than moving the visuals route backward to trust
+an arbitrary client chapter.
 
 ## Repaired sequence
 
