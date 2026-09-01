@@ -61,9 +61,11 @@ assert.equal(new Set(Object.values(sequence).map((selection) => selection.asset.
 const visualRoute = readFileSync('app/api/chapters/visuals/route.ts', 'utf8');
 const todayRoute = readFileSync('app/api/chapters/today/route.ts', 'utf8');
 const readPage = readFileSync('app/read/page.tsx', 'utf8');
-assert.match(visualRoute, /attempt <= 3/);
+assert.match(visualRoute, /attempt <= 2/);
+assert.doesNotMatch(visualRoute, /attempt <= 3/);
+assert.match(visualRoute, /ImageCallError/);
 assert.match(visualRoute, /imageRepairFeedback/);
-assert.match(visualRoute, /imageGenerationDiagnostic: \{ attempts \}/);
+assert.match(visualRoute, /imageGenerationDiagnostic: imageDiagnostic/);
 assert.match(visualRoute, /diagnostic: error instanceof ImageGenerationError/);
 assert.match(visualRoute, /ownedDailyChapter\(auth\.uid, requestedChapter\.id\)/, 'visual ownership guard remains intact');
 assert.ok(todayRoute.indexOf('await dailyChapterRef(chapterId).set') < todayRoute.lastIndexOf('return NextResponse.json({ record, chapter, created })'), 'generated or fallback ownership is persisted before response');

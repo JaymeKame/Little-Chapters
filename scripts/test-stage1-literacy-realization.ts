@@ -23,6 +23,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
 import { allowedWordsForStage, getStage, tokenize } from '../reading-tutor/content/stages.ts';
 import { validateAll, type StoryDraft } from '../reading-tutor/src/validators.ts';
 import { validateStoryBlueprint, validateStoryBlueprintPresentation, validateStoryBlueprintSemantics, predictionCaptionIssues, normalizeStoryBlueprint, type StoryBlueprint } from '../lib/story-blueprint.ts';
@@ -34,7 +35,7 @@ import { generateStoryDraft, storyLiteracyContract } from '../lib/story-generato
 //   - unknown proper nouns (Meadowbrook)
 //   - >6-word sentences
 // The realizer must render clean Stage-1 prose from the same semantic plan.
-function illegalStage1Blueprint(protagonist: string, companion: string, setting: string, targetObject: string): StoryBlueprint {
+export function illegalStage1Blueprint(protagonist: string, companion: string, setting: string, targetObject: string): StoryBlueprint {
   const state = (previousAction: string | null, discovered: string[] = []) => ({
     location: setting, charactersPresent: [protagonist, companion], knownObjects: [targetObject, 'backpack'],
     carriedObjects: [], discoveredObjects: discovered, unresolvedGoal: 'goal-1', previousAction, consequences: [],
@@ -264,4 +265,4 @@ async function main(): Promise<void> {
   console.log(`\nStage-1 literacy realization: ${passed} passed, 0 failed`);
 }
 
-main().catch((error) => { console.error(error); process.exitCode = 1; });
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => { console.error(error); process.exitCode = 1; });

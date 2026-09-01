@@ -97,6 +97,7 @@ function companionFor(chapterId: string): string {
 }
 
 export async function POST(request: NextRequest) {
+  const routeStarted = Date.now();
   const unconfigured = adminUnconfiguredResponse();
   if (unconfigured) return unconfigured;
 
@@ -179,9 +180,15 @@ export async function POST(request: NextRequest) {
     // Ownership is a downstream authorization primitive, not proof that
     // OpenAI succeeded. Persist every canonical chapter this entitled user
     // is actually shown so visuals can authorize the exact fallback too.
+    let persistenceMs = 0;
     if (chapter) {
+      const persistenceStarted = Date.now();
       await dailyChapterRef(chapterId).set({ chapter, ownerUid: auth.uid, entitlementSource,
         storySource: record.source, generationFailureReason: record.failureReason ?? null, createdAt: record.createdAt }, { merge: true });
+      persistenceMs = Date.now() - persistenceStarted;
+      chapter = { ...chapter, provenance: { ...chapter.provenance!, storyReadyTiming: {
+        persistenceMs, totalServerMs: Date.now() - routeStarted,
+      } } };
     }
     return NextResponse.json({ record, chapter, created });
   } catch (error) {

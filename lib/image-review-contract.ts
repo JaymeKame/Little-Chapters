@@ -16,6 +16,8 @@ export interface ImageGenerationAttemptDiagnostic {
   reviewApproved: boolean;
   reasons: string[];
   panels: ImageReviewPanelDiagnostic[];
+  generationDurationMs?: number;
+  reviewDurationMs?: number;
 }
 
 export function safeReviewerReasonCodes(reasons: string[]): string[] {

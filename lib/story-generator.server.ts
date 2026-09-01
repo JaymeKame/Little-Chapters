@@ -41,6 +41,7 @@ export type StoryGenerationFailureReason =
   | 'realization-failed' | 'retry-exhausted' | 'unknown';
 export interface StoryGenerationAttemptDiagnostic {
   attempt: number; model: string; providerReached: boolean; httpStatus: number | null;
+  durationMs: number;
   result: 'provider-error' | 'empty-response' | 'invalid-json' | 'semantic-blueprint-validation' | 'presentation-validation' | 'literacy-validation' | 'accepted' | 'accepted-realized' | 'realization-failed' | 'unknown';
   ruleCodes: string[];
   /** Set only when this attempt was accepted after realizer substitution —
@@ -50,8 +51,12 @@ export interface StoryGenerationAttemptDiagnostic {
   realized?: { previewWordsUsed: number; realizedFromRules: string[] };
 }
 export type StoryGenerationOutcome =
-  | { ok: true; result: StoryGenerationResult; diagnostic: { model: string; attempts: StoryGenerationAttemptDiagnostic[] } }
-  | { ok: false; reason: StoryGenerationFailureReason; diagnostic: { model: string; attempts: StoryGenerationAttemptDiagnostic[] } };
+  | { ok: true; result: StoryGenerationResult; diagnostic: StoryGenerationDiagnostic }
+  | { ok: false; reason: StoryGenerationFailureReason; diagnostic: StoryGenerationDiagnostic };
+export interface StoryGenerationDiagnostic {
+  model: string; attempts: StoryGenerationAttemptDiagnostic[];
+  totalDurationMs: number; providerDurationMs: number; validationRealizationDurationMs: number;
+}
 
 export function isStoryGenerationConfigured(): boolean {
   return !!process.env.OPENAI_API_KEY;
@@ -62,10 +67,16 @@ export function isStoryGenerationConfigured(): boolean {
  * status/attempt/rule codes only — never prompts, child context, credentials,
  * or raw provider output. */
 export async function generateStoryDraft(params: StoryGenerationParams): Promise<StoryGenerationOutcome> {
+  const generationStarted = Date.now();
   const key = process.env.OPENAI_API_KEY;
   const model = process.env.OPENAI_STORY_MODEL || 'gpt-4o-mini';
   const attempts: StoryGenerationAttemptDiagnostic[] = [];
-  if (!key) return { ok: false, reason: 'not-configured', diagnostic: { model, attempts } };
+  const diagnostic = (): StoryGenerationDiagnostic => {
+    const totalDurationMs = Date.now() - generationStarted;
+    const providerDurationMs = attempts.reduce((sum, row) => sum + row.durationMs, 0);
+    return { model, attempts, totalDurationMs, providerDurationMs, validationRealizationDurationMs: Math.max(0, totalDurationMs - providerDurationMs) };
+  };
+  if (!key) return { ok: false, reason: 'not-configured', diagnostic: diagnostic() };
   const stage = Math.min(10, Math.max(1, Math.round(params.stage || 1)));
   // Both already-existing GenerateRequest fields — see docs/ADAPTIVE_LOOP.md
   // Phase 2. buildPrompt() itself re-filters recentlyMissedWords through
@@ -78,7 +89,9 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
   const slots = assignSlots(skeleton.beats, stage);
   const literacyContract = storyLiteracyContract(stage, params.childName, params.companionName ?? 'Momo', Object.values(slots));
   const complete = async (prompt: string) => {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const started = Date.now();
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -86,9 +99,12 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
         response_format: { type: 'json_object' }, messages: [{ role: 'user', content: prompt }],
       }),
     });
-    if (!response.ok) return { status: response.status, content: '' };
-    const json = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    return { status: response.status, content: json.choices?.[0]?.message?.content ?? '' };
+      if (!response.ok) return { status: response.status, content: '', durationMs: Date.now() - started, providerReached: true };
+      const json = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      return { status: response.status, content: json.choices?.[0]?.message?.content ?? '', durationMs: Date.now() - started, providerReached: true };
+    } catch {
+      return { status: 0, content: '', durationMs: Date.now() - started, providerReached: false };
+    }
   };
   try {
     const basePrompt = blueprintGenerationPrompt({
@@ -97,28 +113,37 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
       recentStorySignatures: (params.recentStorySignatures ?? []).filter((row): row is string => typeof row === 'string').slice(0, 5),
     });
     let rejection = '';
+    let transientProviderFailures = 0;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      // Once infrastructure has consumed a retry, this child-facing request
+      // has a hard two-call budget. A semantically imperfect second response
+      // must not silently open a third paid call.
+      if (attempt >= 2 && transientProviderFailures > 0) break;
       const response = await complete(`${basePrompt}\n${rejection}`);
       const number = attempt + 1;
       if (response.status < 200 || response.status >= 300) {
-        attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'provider-error', ruleCodes: [] });
+        attempts.push({ attempt: number, model, providerReached: response.providerReached, httpStatus: response.status || null, durationMs: response.durationMs, result: 'provider-error', ruleCodes: [] });
+        const permanent = response.status >= 400 && response.status < 500 && ![408, 409].includes(response.status);
+        if (permanent) return { ok: false, reason: providerReason(response.status), diagnostic: diagnostic() };
+        transientProviderFailures += 1;
+        if (transientProviderFailures >= 2) return { ok: false, reason: response.status >= 500 ? 'provider-5xx' : 'unknown', diagnostic: diagnostic() };
         continue;
       }
       const raw = response.content;
-      if (!raw.trim()) { attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'empty-response', ruleCodes: [] }); continue; }
+      if (!raw.trim()) { attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, durationMs: response.durationMs, result: 'empty-response', ruleCodes: [] }); continue; }
       let blueprint: StoryBlueprint;
-      try { blueprint = JSON.parse(raw) as StoryBlueprint; } catch { rejection = 'REPAIR: Return valid JSON matching the exact schema. Do not include markdown.'; attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'invalid-json', ruleCodes: [] }); continue; }
+      try { blueprint = JSON.parse(raw) as StoryBlueprint; } catch { rejection = 'REPAIR: Return valid JSON matching the exact schema. Do not include markdown.'; attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, durationMs: response.durationMs, result: 'invalid-json', ruleCodes: [] }); continue; }
       let semantic: ReturnType<typeof validateStoryBlueprintSemantics>;
       try { blueprint = normalizeStoryBlueprint(blueprint); semantic = validateStoryBlueprintSemantics(blueprint); }
       catch {
         rejection = 'REPAIR invalid-blueprint-shape: Return every required object and array in the exact schema.';
-        attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'semantic-blueprint-validation', ruleCodes: ['invalid-blueprint-shape'] });
+        attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, durationMs: response.durationMs, result: 'semantic-blueprint-validation', ruleCodes: ['invalid-blueprint-shape'] });
         continue;
       }
       const semanticCodes = [...new Set(semantic.issues.map((issue) => issue.code))];
       if (!semantic.ok) {
         attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status,
-          result: 'semantic-blueprint-validation', ruleCodes: semanticCodes.slice(0, 20) });
+          durationMs: response.durationMs, result: 'semantic-blueprint-validation', ruleCodes: semanticCodes.slice(0, 20) });
         rejection = targetedRepairInstructions(semanticCodes, literacyContract, []);
         continue;
       }
@@ -142,8 +167,8 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
       const presentationCodes = [...new Set(presentation.issues.map((issue) => issue.code))];
       const literacyCodes = [...new Set(literacy.violations.map((issue) => issue.rule))];
       if (strict.ok && literacy.ok) {
-        attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'accepted', ruleCodes: [] });
-        return { ok: true, result: { draft, skeleton, slots, blueprint }, diagnostic: { model, attempts } };
+        attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, durationMs: response.durationMs, result: 'accepted', ruleCodes: [] });
+        return { ok: true, result: { draft, skeleton, slots, blueprint }, diagnostic: diagnostic() };
       }
       // The semantic plan is sound, so presentation or literacy defects must
       // not spend another provider call. The
@@ -174,19 +199,19 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
           const realizedLiteracy = validateAll(realizedValidationDraft, stage, { childName: params.childName, petName: params.companionName ?? 'Momo' });
           if (realizedHolistic.ok && realizedLiteracy.ok) {
             const realizedFromRules = [...new Set([...presentationCodes, ...literacyCodes])];
-            attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'accepted-realized', ruleCodes: [],
+            attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, durationMs: response.durationMs, result: 'accepted-realized', ruleCodes: [],
               realized: { previewWordsUsed: realized.previewWordsUsed.length, realizedFromRules } });
-            return { ok: true, result: { draft: realizedDraft, skeleton, slots, blueprint: realizedBlueprint }, diagnostic: { model, attempts } };
+            return { ok: true, result: { draft: realizedDraft, skeleton, slots, blueprint: realizedBlueprint }, diagnostic: diagnostic() };
           }
           const realizedCodes = [
             ...new Set(realizedHolistic.issues.map((issue) => issue.code)),
             ...new Set(realizedLiteracy.violations.map((issue) => issue.rule)),
           ];
-          attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'realization-failed', ruleCodes: realizedCodes.slice(0, 20) });
+          attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, durationMs: response.durationMs, result: 'realization-failed', ruleCodes: realizedCodes.slice(0, 20) });
           rejection = targetedRepairInstructions([...presentationCodes, ...literacyCodes], literacyContract, literacy.violations.map((issue) => issue.word).filter((word): word is string => Boolean(word)));
           continue;
       } catch (error) {
-          attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, result: 'realization-failed', ruleCodes: [error instanceof Error ? error.name : 'realizer-threw'] });
+          attempts.push({ attempt: number, model, providerReached: true, httpStatus: response.status, durationMs: response.durationMs, result: 'realization-failed', ruleCodes: [error instanceof Error ? error.name : 'realizer-threw'] });
           rejection = targetedRepairInstructions([...presentationCodes, ...literacyCodes], literacyContract, literacy.violations.map((issue) => issue.word).filter((word): word is string => Boolean(word)));
           continue;
       }
@@ -201,11 +226,11 @@ export async function generateStoryDraft(params: StoryGenerationParams): Promise
       : attempts.every((row) => row.result === 'realization-failed') ? 'realization-failed'
       : attempts.every((row) => row.result === 'invalid-json') ? 'invalid-json'
       : attempts.every((row) => row.result === 'empty-response') ? 'empty-response' : 'retry-exhausted';
-    return { ok: false, reason, diagnostic: { model, attempts } };
+    return { ok: false, reason, diagnostic: diagnostic() };
   } catch (error) {
     console.error('[story-generator] generation failed:', error);
-    attempts.push({ attempt: attempts.length + 1, model, providerReached: false, httpStatus: null, result: 'unknown', ruleCodes: [] });
-    return { ok: false, reason: 'unknown', diagnostic: { model, attempts } };
+    attempts.push({ attempt: attempts.length + 1, model, providerReached: false, httpStatus: null, durationMs: 0, result: 'unknown', ruleCodes: [] });
+    return { ok: false, reason: 'unknown', diagnostic: diagnostic() };
   }
 }
 

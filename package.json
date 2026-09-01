@@ -25,16 +25,17 @@
     "test:correction": "tsx scripts/test-experience-correction.ts",
     "test:correction-pass-2": "tsx scripts/test-experience-correction-pass-2.ts",
     "capture:daily-adventure": "tsx scripts/capture-daily-adventure.ts",
-    "test:analytics": "tsx scripts/test-analytics-funnel.ts"
-    ,"test:physical-qa": "tsx scripts/test-physical-qa-contract.ts"
-    ,"test:word-scroll-browser": "tsx scripts/test-word-scroll-browser.ts"
-    ,"test:visual-provenance-browser": "tsx scripts/test-visual-provenance-browser.ts"
-    ,"test:live-runtime-debug-browser": "tsx scripts/test-live-runtime-debug-browser.ts"
-    ,"test:generation-outcomes": "tsx scripts/test-generation-outcomes.ts"
-    ,"test:generation-contract-repair": "tsx scripts/test-generation-contract-repair.ts"
-    ,"test:live-generation-sample": "tsx scripts/test-live-generation-sample.ts"
-    ,"test:canonical-reader-startup-browser": "tsx scripts/test-canonical-reader-startup-browser.ts"
-    ,"test:stage1-literacy-realization": "tsx scripts/test-stage1-literacy-realization.ts"
+    "test:analytics": "tsx scripts/test-analytics-funnel.ts",
+    "test:physical-qa": "tsx scripts/test-physical-qa-contract.ts",
+    "test:word-scroll-browser": "tsx scripts/test-word-scroll-browser.ts",
+    "test:visual-provenance-browser": "tsx scripts/test-visual-provenance-browser.ts",
+    "test:live-runtime-debug-browser": "tsx scripts/test-live-runtime-debug-browser.ts",
+    "test:generation-outcomes": "tsx scripts/test-generation-outcomes.ts",
+    "test:generation-contract-repair": "tsx scripts/test-generation-contract-repair.ts",
+    "test:live-generation-sample": "tsx scripts/test-live-generation-sample.ts",
+    "test:canonical-reader-startup-browser": "tsx scripts/test-canonical-reader-startup-browser.ts",
+    "test:stage1-literacy-realization": "tsx scripts/test-stage1-literacy-realization.ts",
+    "test:story-image-grounding": "tsx scripts/test-story-image-grounding.ts"
   },
   "dependencies": {
     "@stripe/stripe-js": "^9.13.0",

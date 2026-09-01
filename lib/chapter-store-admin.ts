@@ -23,7 +23,7 @@
 import { adminDb } from './firebase-admin';
 import type { StoryDraft } from '../reading-tutor/src/validators';
 import type { StoryBlueprint } from './story-blueprint.ts';
-import type { StoryGenerationAttemptDiagnostic, StoryGenerationFailureReason } from './story-generator.server';
+import type { StoryGenerationDiagnostic, StoryGenerationFailureReason } from './story-generator.server';
 
 export interface PersistedChapterRecord {
   day: string; // YYYY-MM-DD, child-local (see lib/chapter-id.ts)
@@ -31,7 +31,7 @@ export interface PersistedChapterRecord {
   stage: number;
   source: 'generated' | 'fallback';
   failureReason?: StoryGenerationFailureReason;
-  generationDiagnostic?: { model: string; attempts: StoryGenerationAttemptDiagnostic[] };
+  generationDiagnostic?: StoryGenerationDiagnostic;
   entitlementSource?: 'free' | 'subscription';
   draft?: StoryDraft;
   skeletonId?: string;
@@ -90,12 +90,10 @@ export function isAuthoritativeChapterRecord(record: PersistedChapterRecord | nu
  *  multiple times. Instead: check existence first (fast path, the common
  *  case after the first successful generation of the day), generate if
  *  needed, then re-check inside the transaction right before writing. Two
- *  requests racing to be first can both call `generate()`, but only the
- *  winner's GENERATED result is ever persisted or returned — a losing
- *  racer's fallback is discarded, and a losing racer's generated draft is
- *  discarded in favor of whichever generated result the transaction saw
- *  first. That rare double-generation cost is accepted; what's guaranteed
- *  is that every caller for this uid+childId+day converges on the SAME
+ *  requests racing inside one server instance share the in-flight promise
+ *  keyed by uid+childId+day, while the transaction remains the cross-instance
+ *  correctness guard. Thus the ordinary /read lifecycle cannot double-spend
+ *  on a concurrent first request, and every caller converges on the SAME
  *  persisted GENERATED chapter once one exists, and that a fallback never
  *  creates a regeneration loop once a real chapter has been persisted —
  *  the existence check above always short-circuits before `generate()` is
@@ -114,6 +112,20 @@ export async function getOrCreateTodayChapter(
   const existingData = existing.exists ? (existing.data() as PersistedChapterRecord) : null;
   if (isAuthoritativeChapterRecord(existingData)) return { record: existingData as PersistedChapterRecord, created: false };
 
+  const key = `${uid}:${childId}:${day}`;
+  const pending = chapterGenerationInFlight.get(key);
+  if (pending) return pending;
+  const run = createTodayChapter(ref, day, chapterId, stage, generate);
+  chapterGenerationInFlight.set(key, run);
+  try { return await run; } finally { chapterGenerationInFlight.delete(key); }
+}
+
+const chapterGenerationInFlight = new Map<string, Promise<{ record: PersistedChapterRecord; created: boolean }>>();
+
+async function createTodayChapter(
+  ref: ReturnType<typeof chapterDayRef>, day: string, chapterId: string, stage: number,
+  generate: () => Promise<Omit<PersistedChapterRecord, 'day' | 'chapterId' | 'stage' | 'createdAt'>>,
+): Promise<{ record: PersistedChapterRecord; created: boolean }> {
   const generated = await generate();
   if (generated.source !== 'generated') {
     // Ephemeral — this request's answer only, never written, so the next

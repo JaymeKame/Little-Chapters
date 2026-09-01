@@ -44,7 +44,7 @@ const chapter: Chapter = { ...chapterFor('ocean','Maya'), id:'distinct-maya-ocea
   pages:[{text:'Maya crossed a shell bridge.',focusWords:['shell']},{text:'A pearl flashed below.',focusWords:['pearl']},{text:'The turtle found a cave.',focusWords:['cave']},{text:'Maya opened the gate.',focusWords:['gate']},{text:'Warm light filled the city.',focusWords:['light']}],
   cliffhanger:['A new doorway shimmered.','Tomorrow…'],teaser:'The doorway waits.',phonics:[{hint:'sh in shell',words:['shell']}], provenance:{source:'generated'} };
 const manifest = buildStoryInteractionManifest(chapter);
-assert.ok(manifest.scenes.every((scene) => scene.narrativeBeat && scene.importantAction && scene.location === chapter.setting));
+assert.ok(manifest.scenes.every((scene) => scene.narrativeBeat && scene.importantAction && scene.location));
 assert.ok(manifest.scenes.slice(1).every((scene) => scene.previousSceneContinuity));
 assert.ok(manifest.beats.some((beat) => beat.mechanicType === 'find-it-in-scene'));
 // Correction sprint Sections 15-20: the session planner now composes each

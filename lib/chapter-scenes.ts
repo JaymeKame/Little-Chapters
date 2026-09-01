@@ -41,13 +41,13 @@ export interface ChapterScenePackage {
   generatedAt: string;
   generationLatencyMs: number;
   scenes: GeneratedSceneAsset[];
-  imageGenerationDiagnostic?: { attempts: ImageGenerationAttemptDiagnostic[] };
+  imageGenerationDiagnostic?: { attempts: ImageGenerationAttemptDiagnostic[]; totalDurationMs?: number; model?: string | null; reviewModel?: string | null };
 }
 
 const CACHE_PREFIX = 'little-chapters-scene-package:';
 export type VisualSource = 'generated' | 'cached-generated' | 'approved-static-fallback';
 export type ScenePackageProvenance = 'local-storage' | 'server-cache' | 'generated' | 'approved-static-fallback';
-let latestVisualState: { source: VisualSource; packageProvenance: ScenePackageProvenance; failureReason?: string; diagnostic?: { attempts: ImageGenerationAttemptDiagnostic[] } } = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback' };
+let latestVisualState: { source: VisualSource; packageProvenance: ScenePackageProvenance; failureReason?: string; diagnostic?: ChapterScenePackage['imageGenerationDiagnostic'] } = { source: 'approved-static-fallback', packageProvenance: 'approved-static-fallback' };
 export function visualProvenance(): typeof latestVisualState { return { ...latestVisualState }; }
 export function scenePackageCacheKey(chapterId: string) { return `${CACHE_PREFIX}${chapterId}:v${VISUAL_BIBLE_VERSION}`; }
 

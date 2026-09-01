@@ -50,7 +50,8 @@ function validChapter(value: unknown): value is Chapter {
   return Boolean(chapter && typeof chapter.id === 'string' && chapter.id.length <= 180 && typeof chapter.character === 'string' && typeof chapter.setting === 'string' && Array.isArray(chapter.pages) && chapter.pages.length >= 3 && chapter.pages.length <= 10 && chapter.pages.every((page) => typeof page?.text === 'string' && page.text.length <= 500));
 }
 
-async function generateStoryboard(prompt: string): Promise<{ bytes: Buffer; status: number }> {
+async function generateStoryboard(prompt: string): Promise<{ bytes: Buffer; status: number; durationMs: number }> {
+  const started = Date.now();
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error('IMAGE_PROVIDER_NOT_CONFIGURED');
   const response = await fetch('https://api.openai.com/v1/images/generations', {
@@ -59,13 +60,13 @@ async function generateStoryboard(prompt: string): Promise<{ bytes: Buffer; stat
       model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', prompt, size: '2048x2048', quality: process.env.OPENAI_IMAGE_QUALITY || 'medium', output_format: 'png', n: 1,
     }),
   });
-  if (!response.ok) throw new Error(`IMAGE_PROVIDER_${response.status}`);
+  if (!response.ok) throw new ImageCallError('provider', response.status, Date.now() - started);
   const body = await response.json() as { data?: Array<{ b64_json?: string; url?: string }> };
   const image = body.data?.[0];
-  if (image?.b64_json) return { bytes: Buffer.from(image.b64_json, 'base64'), status: response.status };
+  if (image?.b64_json) return { bytes: Buffer.from(image.b64_json, 'base64'), status: response.status, durationMs: Date.now() - started };
   if (image?.url) {
     const download = await fetch(image.url); if (!download.ok) throw new Error('IMAGE_DOWNLOAD_FAILED');
-    return { bytes: Buffer.from(await download.arrayBuffer()), status: response.status };
+    return { bytes: Buffer.from(await download.arrayBuffer()), status: response.status, durationMs: Date.now() - started };
   }
   throw new Error('IMAGE_PROVIDER_EMPTY');
 }
@@ -84,15 +85,21 @@ interface ReviewedPanel {
     confidence: number;
   };
 }
-interface ReviewOutcome { approved: boolean; accepted: boolean; reasons: string[]; panels: ReviewedPanel[]; status: number }
+interface ReviewOutcome { approved: boolean; accepted: boolean; reasons: string[]; panels: ReviewedPanel[]; status: number; durationMs: number }
 
 async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<ReviewOutcome> {
+  const started = Date.now();
   const manifest = buildStoryInteractionManifest(chapter);
   const preview = await sharp(storyboard).resize(768, 768, { fit: 'cover' }).jpeg({ quality: 76 }).toBuffer();
   const candidatesByPanel = manifest.scenes.map((scene, index) => {
     const beats = manifest.beats.filter((beat) => beat.visualSceneId === scene.sceneId || beat.interactiveObjects.some((object) => object.visualSceneId === scene.sceneId));
     const candidates = [...new Set([chapter.character, ...beats.flatMap((beat) => beat.storyEntities), ...scene.importantObjects])].filter(Boolean).slice(0, 8);
-    return { panel: index + 1, candidates };
+    return { panel: index + 1, candidates, grounding: {
+      sceneId: scene.sceneId, pageIndexes: scene.pageIndexes, semanticBeatIds: scene.semanticBeatIds,
+      expectedCharacters: scene.charactersPresent, expectedLocation: scene.location,
+      expectedAction: scene.importantAction, expectedObjects: scene.importantObjects,
+      expectedNarrativeBeat: scene.narrativeBeat,
+    } };
   });
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST', headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
@@ -104,16 +111,16 @@ async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<R
           + `Return STRICT JSON with this exact shape:\n`
           + `{"approved": boolean, "reasons": string[], "panels": [{"panel": 1|2|3|4, "visibleObjects": [{"label": "string, must be one of the candidates for that panel", "confidence": 0..1}], "storyBeatRelevance": {"settingMatches": boolean, "characterMatches": boolean, "actionMatches": boolean, "noContradiction": boolean, "meaningfullyDifferent": boolean, "continuityMatches": boolean, "confidence": 0..1}}]}\n`
           + `\nStyle review rules: warm whimsical handcrafted cartoon storybook style; never photorealistic, painterly-realistic, anime, generic/glossy 3D, horror, or glossy AI art; no embedded words/logos; the same characters retain appearance, clothing, proportions and colors in every panel; the environment and palette remain coherent; each panel visibly depicts its requested narrative action; content is calm and child-safe. Set approved=false on any uncertainty.\n`
-          + `\nStory-beat relevance is mandatory: compare each panel with its requested panel prompt. settingMatches, required character, approximate action, no contradiction, meaningful change from the prior panel, and continuity must all be true with confidence >=0.7 or approved MUST be false.\n`
+          + `\nStory-beat relevance is mandatory: compare each panel against the exact structured grounding below, not merely the chapter theme or art style. settingMatches, required character, exact current action, required objects, no contradiction, meaningful change from the prior panel, and continuity must all be true with confidence >=0.7 or approved MUST be false. A beautiful thematic panel with the wrong action is actionMatches=false. Use only these bounded reason codes: wrong-action, missing-story-object, wrong-location, wrong-character, story-beat-mismatch, continuity-mismatch.\n`
           + `\nVisible-objects rules (MANDATORY, even when approved=false): for each of the four panels list ONLY the candidate labels that are UNAMBIGUOUSLY DEPICTED in that panel — a clearly drawn, identifiable object a five-year-old could point to. Never invent labels not in the candidate list. Never list an object because the prompt mentioned it — only because you can SEE it. Confidence is your calibrated certainty (0..1); anything under 0.6 will be treated as unverified downstream, so err on the side of omitting.\n`
           + `\nCandidates per panel (use these labels verbatim):\n`
-          + candidatesByPanel.map((row) => `  Panel ${row.panel}: ${row.candidates.join(', ') || '(none)'}`).join('\n'),
+          + candidatesByPanel.map((row) => `  Panel ${row.panel}: candidates=${row.candidates.join(', ') || '(none)'}; grounding=${JSON.stringify(row.grounding)}`).join('\n'),
         },
         { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${preview.toString('base64')}` } },
       ] }],
     }),
   });
-  if (!response.ok) throw new Error(`IMAGE_REVIEW_${response.status}`);
+  if (!response.ok) throw new ImageCallError('review', response.status, Date.now() - started);
   const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   let parsed: Partial<ReviewOutcome> = {};
   try { parsed = JSON.parse(body.choices?.[0]?.message?.content ?? '{}') as Partial<ReviewOutcome>; } catch { /* keep empty */ }
@@ -139,7 +146,7 @@ async function reviewStoryboard(storyboard: Buffer, chapter: Chapter): Promise<R
         }))
     : [];
   const panelDiagnostics = panels.map(reviewPanelDiagnostic);
-  return { approved, accepted: reviewPasses(approved, panelDiagnostics, manifest.scenes.length), reasons, panels, status: response.status };
+  return { approved, accepted: reviewPasses(approved, panelDiagnostics, manifest.scenes.length), reasons, panels, status: response.status, durationMs: Date.now() - started };
 }
 
 function reviewPanelDiagnostic(panel: ReviewedPanel): ImageReviewPanelDiagnostic {
@@ -222,18 +229,37 @@ async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
   let storyboard: Buffer | null = null;
   let review: ReviewOutcome | null = null;
   let repair = '';
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const generated = await generateStoryboard(storyboardPrompt(chapter, repair));
-    const reviewed = await reviewStoryboard(generated.bytes, chapter);
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    let generated: Awaited<ReturnType<typeof generateStoryboard>>;
+    try { generated = await generateStoryboard(storyboardPrompt(chapter, repair)); }
+    catch (error) {
+      if (error instanceof ImageCallError) {
+        attempts.push({ attempt, providerStatus: error.status, reviewStatus: null, reviewApproved: false,
+          reasons: [`image-${error.kind}-${error.status}`], panels: [], generationDurationMs: error.durationMs });
+        throw new ImageGenerationError(`image-${error.kind}-${error.status}`, imageDiagnostic(started, attempts));
+      }
+      throw error;
+    }
+    let reviewed: ReviewOutcome;
+    try { reviewed = await reviewStoryboard(generated.bytes, chapter); }
+    catch (error) {
+      if (error instanceof ImageCallError) {
+        attempts.push({ attempt, providerStatus: generated.status, reviewStatus: error.status, reviewApproved: false,
+          reasons: [`image-${error.kind}-${error.status}`], panels: [], generationDurationMs: generated.durationMs, reviewDurationMs: error.durationMs });
+        throw new ImageGenerationError(`image-${error.kind}-${error.status}`, imageDiagnostic(started, attempts));
+      }
+      throw error;
+    }
     const diagnostic: ImageGenerationAttemptDiagnostic = {
       attempt, providerStatus: generated.status, reviewStatus: reviewed.status, reviewApproved: reviewed.approved,
       reasons: safeReviewerReasonCodes(reviewed.reasons), panels: reviewed.panels.map(reviewPanelDiagnostic),
+      generationDurationMs: generated.durationMs, reviewDurationMs: reviewed.durationMs,
     };
     attempts.push(diagnostic);
     if (reviewed.accepted) { storyboard = generated.bytes; review = reviewed; break; }
     repair = imageRepairFeedback(diagnostic.panels, diagnostic.reasons);
   }
-  if (!storyboard || !review) throw new ImageGenerationError('image-review-rejected', { attempts });
+  if (!storyboard || !review) throw new ImageGenerationError('image-review-rejected', imageDiagnostic(started, attempts));
   const normalized = await sharp(storyboard).resize(2048, 2048, { fit: 'cover' }).png().toBuffer();
   const bucketName = process.env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!;
   const safe = packageId(chapter.id, chapterStoryFingerprint(chapter));
@@ -251,11 +277,19 @@ async function generatePackage(chapter: Chapter): Promise<ChapterScenePackage> {
       entities: entityMetadata(chapter, scene.sceneId, index, reviewedPanel),
     });
   }
-  return { chapterId: chapter.id, storyFingerprint: chapterStoryFingerprint(chapter), visualBibleVersion: VISUAL_BIBLE_VERSION, provider: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', generatedAt: new Date().toISOString(), generationLatencyMs: Date.now() - started, scenes, imageGenerationDiagnostic: { attempts } };
+  return { chapterId: chapter.id, storyFingerprint: chapterStoryFingerprint(chapter), visualBibleVersion: VISUAL_BIBLE_VERSION, provider: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', generatedAt: new Date().toISOString(), generationLatencyMs: Date.now() - started, scenes, imageGenerationDiagnostic: imageDiagnostic(started, attempts) };
 }
 
 class ImageGenerationError extends Error {
-  constructor(public readonly reason: string, public readonly diagnostic: { attempts: ImageGenerationAttemptDiagnostic[] }) { super(reason); }
+  constructor(public readonly reason: string, public readonly diagnostic: NonNullable<ChapterScenePackage['imageGenerationDiagnostic']>) { super(reason); }
+}
+
+class ImageCallError extends Error {
+  constructor(public readonly kind: 'provider' | 'review', public readonly status: number, public readonly durationMs: number) { super(`IMAGE_${kind.toUpperCase()}_${status}`); }
+}
+
+function imageDiagnostic(started: number, attempts: ImageGenerationAttemptDiagnostic[]): NonNullable<ChapterScenePackage['imageGenerationDiagnostic']> {
+  return { attempts, totalDurationMs: Date.now() - started, model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', reviewModel: process.env.OPENAI_IMAGE_REVIEW_MODEL || 'gpt-4o-mini' };
 }
 
 export async function POST(request: NextRequest) {

@@ -17,12 +17,13 @@ import { pickSkeleton, SKELETONS, type Skeleton } from '../reading-tutor/src/ske
 import { assignSlots } from '../reading-tutor/src/slots';
 import type { StoryDraft } from '../reading-tutor/src/validators';
 import { fallbackBlueprintForChapter, type StoryBlueprint } from './story-blueprint.ts';
-import type { StoryGenerationAttemptDiagnostic } from './story-generator.server';
+import type { StoryGenerationDiagnostic } from './story-generator.server';
 import { chapterIdForDay, isValidDay, todayLocal } from './chapter-id';
 
 export interface ChapterPage {
   text: string;
   focusWords: string[];
+  semanticBeatId?: string;
 }
 
 export interface Chapter {
@@ -47,7 +48,7 @@ export interface Chapter {
 }
 
 export type ChapterSource = 'generated' | 'cached-generated' | 'fallback' | 'demo/static';
-export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string; entitlementSource?: 'free' | 'subscription'; generationDiagnostic?: { model: string; attempts: StoryGenerationAttemptDiagnostic[] }; sessionDay?: string; qaDayRequested?: string | null; qaDayAuthorized?: string | null }
+export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string; entitlementSource?: 'free' | 'subscription'; generationDiagnostic?: StoryGenerationDiagnostic; sessionDay?: string; qaDayRequested?: string | null; qaDayAuthorized?: string | null; storyReadyTiming?: { canonicalRequestMs?: number; persistenceMs?: number; totalServerMs?: number } }
 
 const SETTINGS: Record<
   InterestId,
@@ -412,7 +413,11 @@ export function adaptTutorDraft(
   };
   const chapter: Chapter = {
     ...base,
-    pages: draft.sentences.map((text) => ({ text, focusWords: focusFor(text) })),
+    pages: draft.sentences.map((text, index) => {
+      const beats = blueprint?.beats.filter((beat) => beat.role !== 'branch-consequence') ?? [];
+      const beatIndex = beats.length <= 1 || draft.sentences.length <= 1 ? 0 : Math.round(index * (beats.length - 1) / (draft.sentences.length - 1));
+      return { text, focusWords: focusFor(text), semanticBeatId: beats[beatIndex]?.beatId };
+    }),
     cliffhanger: [draft.sentences.at(-1) ?? skeleton.cliffhangerNote, 'To be continued tomorrow...'],
     teaser: draft.summaryLine || `${profile.childName} has more to discover tomorrow...`,
     phonics: [{ hint: `Stage ${stage} practice`, words: practiceWords }],
@@ -617,6 +622,7 @@ async function generateTutorChapterPersisted(
   authToken: string,
   qaDay: string | null,
 ): Promise<Chapter | null> {
+  const requestStarted = Date.now();
   const context = resolveGenerationContext(profile, uid);
   const ordinaryDay = todayLocal();
   const day = qaDay ?? ordinaryDay;
@@ -659,7 +665,8 @@ async function generateTutorChapterPersisted(
       }
       const sessionDay = data.record?.day ?? day;
       return { ...data.chapter, provenance: { ...data.chapter.provenance!, sessionDay,
-        qaDayRequested: qaDay, qaDayAuthorized: qaDay && sessionDay === qaDay ? qaDay : null } };
+        qaDayRequested: qaDay, qaDayAuthorized: qaDay && sessionDay === qaDay ? qaDay : null,
+        storyReadyTiming: { ...data.chapter.provenance?.storyReadyTiming, canonicalRequestMs: Date.now() - requestStarted } } };
     }
     const rec = data.record;
     if (!rec || rec.source !== 'generated' || !rec.draft) {

@@ -114,6 +114,9 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
     : rawStorySource === 'cached-generated' ? 'stored-generated' : 'fallback';
   const packageSource = scenePackage ? visual.source : visual.source === 'approved-static-fallback' ? 'fallback' : 'absent';
   const requestedSceneId = context?.scene?.requestedSceneId ?? null;
+  const storyDiagnostic = chapter?.provenance?.generationDiagnostic;
+  const imageDiagnostic = scenePackage?.imageGenerationDiagnostic ?? visual.diagnostic;
+  const imageAttempts = imageDiagnostic?.attempts ?? [];
   return {
     build: LITTLE_CHAPTERS_BUILD,
     chapter: {
@@ -139,6 +142,29 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
       domCurrentSrc: safeAssetUrl(renderedImage?.currentSrc),
       sceneProvenance: requestedSceneId ? context?.scene?.sceneAssetSources[requestedSceneId] ?? null : null,
     },
+    openAIUsage: {
+      story: {
+        requestCount: storyDiagnostic?.attempts.length ?? 0,
+        retryCount: Math.max(0, (storyDiagnostic?.attempts.length ?? 0) - 1),
+        statuses: storyDiagnostic?.attempts.flatMap((attempt) => attempt.httpStatus == null ? [] : [attempt.httpStatus]) ?? [],
+        totalDurationMs: storyDiagnostic?.totalDurationMs ?? 0,
+        providerDurationMs: storyDiagnostic?.providerDurationMs ?? 0,
+        validationRealizationDurationMs: storyDiagnostic?.validationRealizationDurationMs ?? 0,
+        finalResult: storyDiagnostic?.attempts.at(-1)?.result ?? null,
+        model: storyDiagnostic?.model ?? null,
+      },
+      images: {
+        generationRequestCount: imageAttempts.filter((attempt) => attempt.providerStatus != null).length,
+        reviewRequestCount: imageAttempts.filter((attempt) => attempt.reviewStatus != null).length,
+        regenerationCount: Math.max(0, imageAttempts.filter((attempt) => attempt.providerStatus != null).length - 1),
+        generationStatuses: imageAttempts.flatMap((attempt) => attempt.providerStatus == null ? [] : [attempt.providerStatus]),
+        reviewStatuses: imageAttempts.flatMap((attempt) => attempt.reviewStatus == null ? [] : [attempt.reviewStatus]),
+        totalDurationMs: imageDiagnostic?.totalDurationMs ?? imageAttempts.reduce((sum, attempt) => sum + (attempt.generationDurationMs ?? 0) + (attempt.reviewDurationMs ?? 0), 0),
+        model: imageDiagnostic?.model ?? null,
+        reviewModel: imageDiagnostic?.reviewModel ?? null,
+      },
+    },
+    storyReadyTiming: chapter?.provenance?.storyReadyTiming ?? null,
     environment: runtimeEnvironment,
     canonicalSession: context?.canonicalSession ?? null,
     lastStoryRequestDiagnostic,

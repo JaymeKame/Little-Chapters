@@ -1,5 +1,6 @@
 import type { Chapter } from './chapters';
-import { predictionCaptionIssues, storyBeatVisualPrompt } from './story-blueprint.ts';
+import { predictionCaptionIssues } from './story-blueprint.ts';
+import type { StoryBlueprintBeat } from './story-blueprint.ts';
 
 export type StoryMechanicType = 'find-sound' | 'find-it-in-scene' | 'what-happens-next' | 'word-builder' | 'story-order' | 'final-story-unlock';
 
@@ -16,6 +17,7 @@ export interface ChapterVisualBible {
 export interface StoryScene {
   sceneId: string;
   pageIndexes: number[];
+  semanticBeatIds: string[];
   visualPurpose: 'opening' | 'discovery' | 'choice' | 'payoff';
   visualPrompt: string;
   narrativeBeat: string;
@@ -228,23 +230,36 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
   };
   const scenes: StoryScene[] = groups.map((pageIndexes, index) => {
     const narrativeBeat = pageIndexes.map((page) => chapter.pages[page].text).join(' ');
-    const importantObjects = storyWords({ ...chapter, pages: pageIndexes.map((page) => chapter.pages[page]) }).slice(0, 5);
-    const blueprintBeat = chapter.storyBlueprint?.beats[Math.min(index, chapter.storyBlueprint.beats.length - 1)];
+    const blueprintBeats = chapter.storyBlueprint?.beats ?? [];
+    const authoredBeatIds = pageIndexes.map((pageIndex) => chapter.pages[pageIndex]?.semanticBeatId).filter((id): id is string => Boolean(id));
+    const fallbackBeatIds = pageIndexes.map((pageIndex) => {
+      if (!blueprintBeats.length) return null;
+      const beatIndex = chapter.pages.length <= 1 ? 0 : Math.round(pageIndex * (blueprintBeats.length - 1) / (chapter.pages.length - 1));
+      return blueprintBeats[beatIndex]?.beatId ?? null;
+    }).filter((id): id is string => Boolean(id));
+    const semanticBeatIds = [...new Set(authoredBeatIds.length ? authoredBeatIds : fallbackBeatIds)];
+    const semanticBeats = semanticBeatIds.map((beatId) => blueprintBeats.find((beat) => beat.beatId === beatId)).filter((beat): beat is StoryBlueprintBeat => Boolean(beat));
+    const importantObjects = [...new Set([
+      ...semanticBeats.flatMap((beat) => beat.requiredVisibleObjects),
+      ...storyWords({ ...chapter, pages: pageIndexes.map((page) => chapter.pages[page]) }),
+    ])].slice(0, 6);
+    const charactersPresent = [...new Set([chapter.character, ...(bible.companion ? [bible.companion] : []), ...semanticBeats.flatMap((beat) => beat.stateAfter.charactersPresent)])];
+    const location = semanticBeats.at(-1)?.stateAfter.location || chapter.setting;
+    const importantAction = semanticBeats.map((beat) => beat.action).filter(Boolean).join(' Then ') || narrativeBeat;
     return {
     sceneId: `scene-${index + 1}`,
     pageIndexes,
+    semanticBeatIds,
     visualPurpose: purposes[Math.min(index, purposes.length - 1)],
     narrativeBeat,
-    charactersPresent: [chapter.character, ...(bible.companion ? [bible.companion] : [])],
-    importantAction: narrativeBeat,
+    charactersPresent,
+    importantAction,
     importantObjects,
-    location: chapter.setting,
+    location,
     emotionalTone: index === groups.length - 1 ? 'wonder and satisfying discovery' : index === 0 ? 'curious anticipation' : 'playful discovery',
     previousSceneContinuity: index ? `Continue directly from scene-${index}; preserve every character, object, clothing detail, light direction, and environment.` : null,
     interactionBeatIds: [],
-    visualPrompt: blueprintBeat && chapter.storyBlueprint
-      ? `${bible.style}. ${storyBeatVisualPrompt(chapter.storyBlueprint, blueprintBeat)} Palette: ${bible.palette.join(', ')}. Avoid: ${bible.forbiddenStyles.join(', ')}.`
-      : `${bible.style}. CURRENT NARRATIVE BEAT: ${narrativeBeat} Characters present: ${chapter.character}${bible.companion ? ` and ${bible.companion}` : ''}. Important action now: ${narrativeBeat}. Important objects: ${importantObjects.join(', ')}. Location: ${chapter.setting}. Emotional tone: ${index === groups.length - 1 ? 'wonder and satisfying discovery' : 'playful curiosity'}. Palette: ${bible.palette.join(', ')}. ${index ? `Continue directly from the preceding panel with identical characters, clothing, objects, environment and lighting.` : ''} Continuity: ${bible.continuityRules.join(' ')} Avoid: ${bible.forbiddenStyles.join(', ')}.`,
+    visualPrompt: `${bible.style}. ILLUSTRATE THIS EXACT CURRENT STORY EVENT, not merely its theme. Pages: ${pageIndexes.join(', ')}. Semantic beats: ${semanticBeatIds.join(', ') || 'page-grounded'}. STORY BEAT: ${importantAction}. VISIBLE CHANGE SINCE PRIOR BEAT: ${semanticBeats.map((beat) => beat.visibleChange).filter(Boolean).join(' Then ') || narrativeBeat}. Characters present: ${charactersPresent.join(', ')}. Location: ${location}. Important action now: ${importantAction}. Required visible story objects: ${importantObjects.join(', ') || 'none'}. Child-visible narrative: ${narrativeBeat}. Emotional tone: ${index === groups.length - 1 ? 'wonder and satisfying discovery' : 'playful curiosity'}. Palette: ${bible.palette.join(', ')}. ${index ? 'Continue directly from the preceding panel with identical characters, clothing, carried objects, environment and lighting.' : ''} Continuity: ${bible.continuityRules.join(' ')} Avoid: ${bible.forbiddenStyles.join(', ')}.`,
   }; });
 
   const soundGroup = chapter.phonics.find((group) => group.words.some((word) => entities.includes(word.toLowerCase())));
@@ -276,7 +291,7 @@ export function buildStoryInteractionManifest(chapter: Chapter): StoryInteractio
     .map((word) => word.toLowerCase()).find((word) => /^[a-z]{3,6}$/.test(word)) ?? soundAnswer;
   const builderPieces = wordBuilderPieces(builderTarget);
   const storyOrderEvents = chapter.pages.slice(0, Math.min(chapter.pages.length, stageEventCount(chapter))).map((page, index) => ({
-    beatId: chapter.storyBlueprint?.beats[index]?.beatId ?? `page-${index + 1}`,
+    beatId: page.semanticBeatId ?? `page-${index + 1}`,
     caption: shortEventCaption(page.text),
     visualSceneId: sceneForPage(scenes, index),
   }));
