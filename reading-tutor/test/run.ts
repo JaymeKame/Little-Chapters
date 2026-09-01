@@ -1227,11 +1227,14 @@ section('Chapter lifecycle - identity, idempotency, generation-source observabil
   ok(chapterDebugInfo() === null, 'chapterDebugInfo() starts with nothing recorded');
   // No server reachable in this sandbox (relative fetch URL, no Next.js
   // runtime) — requestTutorChapter's fetch fails, is caught, and the caller
-  // correctly falls back to null, exactly as a real deployment does when
-  // OPENAI_API_KEY is unset or the model call fails. The point under test is
-  // that the OUTCOME is recorded, not silently swallowed.
+  // correctly returns a locally-owned fallback Chapter (source='fallback')
+  // rather than null. The canonical-reader-startup fix (9a328f5) made this
+  // deliberate: anonymous/unpersisted callers must never see null so /read
+  // can render exactly one canonical chapter without a demo placeholder.
+  // The point under test is still that the OUTCOME is recorded — not
+  // silently swallowed — and that the diagnostic surfaces `fallback`.
   const generated = await requestTutorChapter(profile, null, null);
-  ok(generated === null, 'requestTutorChapter() resolves to null (never throws) when generation is unreachable/unconfigured');
+  ok(generated?.provenance?.source === 'fallback', 'requestTutorChapter() resolves to a canonical fallback chapter (never null, never throws) when generation is unreachable/unconfigured', JSON.stringify(generated?.provenance));
   const diag = chapterDebugInfo();
   ok(diag?.source === 'fallback', 'chapterDebugInfo() now reports source: fallback for the just-attempted chapter', JSON.stringify(diag));
   ok(typeof diag?.chapterId === 'string' && typeof diag?.stage === 'number', 'the diagnostic carries only id/stage/source facts, nothing prompt- or credential-shaped');

@@ -34,6 +34,7 @@
     ,"test:generation-contract-repair": "tsx scripts/test-generation-contract-repair.ts"
     ,"test:live-generation-sample": "tsx scripts/test-live-generation-sample.ts"
     ,"test:canonical-reader-startup-browser": "tsx scripts/test-canonical-reader-startup-browser.ts"
+    ,"test:stage1-literacy-realization": "tsx scripts/test-stage1-literacy-realization.ts"
   },
   "dependencies": {
     "@stripe/stripe-js": "^9.13.0",

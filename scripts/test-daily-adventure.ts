@@ -34,8 +34,16 @@ assert.deepEqual(generationBody.profile?.interests,['ocean']);
 assert.equal(typeof (generationBody.stage ?? generationBody.ageDerivedStageEstimate),'number');
 assert.ok('recentlyMissedWords' in generationBody && 'storySoFar' in generationBody && 'skeletonId' in generationBody);
 calls = [];
-assert.equal((await requestTutorChapter(profile,'uid','token'))?.provenance?.source, 'cached-generated');
-assert.deepEqual(calls,[], 'refresh reuses the successful generated chapter');
+// Canonical-reader-startup (9a328f5): signed-in persisted requests now bypass
+// the local cache entirely — `persistedRequest ? null : loadCachedTutorChapter(id)`
+// in lib/chapters.ts. The server is the single authoritative owner of the
+// day's chapter so multi-device/multi-tab reads cannot fork. Second call is
+// therefore expected to re-hit /api/chapters/today (still one POST, still
+// the same chapter) and to report 'generated' from the server response.
+const second = await requestTutorChapter(profile,'uid','token');
+assert.equal(second?.character, 'Nova', 'server remains authoritative on the second call');
+assert.equal(second?.provenance?.source, 'generated', 'signed-in requests do not fall back to a client cache — the server is the single owner');
+assert.deepEqual(calls,['POST'], 'refresh re-consults the server (get-or-create is idempotent) rather than a stale client cache');
 globalThis.fetch = originalFetch;
 
 assert.deepEqual(wordBuilderPieces('ship'), ['sh','i','p']);
