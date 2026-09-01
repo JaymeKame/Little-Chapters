@@ -111,7 +111,8 @@ export async function POST(request: NextRequest) {
   if (!isValidDay(body?.day)) {
     return NextResponse.json({ error: 'Invalid day' }, { status: 400 });
   }
-  const day = resolveAuthorizedChapterDay({ day: body!.day!, qaDay: body?.qaDay, qaMode: body?.qaMode, vercelEnvironment: process.env.VERCEL_ENV });
+  const day = resolveAuthorizedChapterDay({ day: body!.day!, qaDay: body?.qaDay, qaMode: body?.qaMode,
+    vercelEnvironment: process.env.VERCEL_ENV, productionDay: new Date().toISOString().slice(0, 10) });
   const ageEstimate = Math.min(10, Math.max(1, Math.round(body?.ageDerivedStageEstimate || 1)));
 
   // 'anonymous' is route-auth's local-dev-open marker (no admin credentials,
@@ -164,14 +165,16 @@ export async function POST(request: NextRequest) {
         const adapted = adaptTutorDraft(profile, record.draft, skeleton, record.slots, record.stage, record.blueprint);
         if (adapted) {
           chapter = { ...adapted, id: chapterId, character: profile.childName, companion: companionName,
-            provenance: { ...adapted.provenance, source: created ? 'generated' : 'cached-generated', entitlementSource: record.entitlementSource ?? entitlementSource, generationDiagnostic: record.generationDiagnostic } };
+            provenance: { ...adapted.provenance, source: created ? 'generated' : 'cached-generated', entitlementSource: record.entitlementSource ?? entitlementSource, generationDiagnostic: record.generationDiagnostic,
+              sessionDay: day, qaDayRequested: typeof body?.qaDay === 'string' ? body.qaDay : null, qaDayAuthorized: body?.qaMode && body.qaDay === day ? day : null } };
           await dailyChapterRef(chapterId).set({ chapter, ownerUid: auth.uid, entitlementSource: record.entitlementSource ?? entitlementSource, generatedAt: record.createdAt }, { merge: true });
         }
       }
     }
     if (!chapter && record.source === 'fallback') {
       chapter = chapterForDay(profile.interests[0], profile.childName, day);
-      chapter = { ...chapter, provenance: { source: 'fallback', failureReason: record.failureReason, entitlementSource, generationDiagnostic: record.generationDiagnostic } };
+      chapter = { ...chapter, provenance: { source: 'fallback', failureReason: record.failureReason, entitlementSource, generationDiagnostic: record.generationDiagnostic,
+        sessionDay: day, qaDayRequested: typeof body?.qaDay === 'string' ? body.qaDay : null, qaDayAuthorized: body?.qaMode && body.qaDay === day ? day : null } };
     }
     // Ownership is a downstream authorization primitive, not proof that
     // OpenAI succeeded. Persist every canonical chapter this entitled user

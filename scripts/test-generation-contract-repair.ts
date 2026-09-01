@@ -6,6 +6,8 @@ import { blueprintGenerationPrompt, normalizeStoryBlueprint, predictionCaptionIs
 import { storyLiteracyContract, targetedRepairInstructions } from '../lib/story-generator.server.ts';
 import { imageRepairFeedback, reviewPasses, safeReviewerReasonCodes } from '../lib/image-review-contract.ts';
 import { allowedWordsForStage, getStage } from '../reading-tutor/content/stages.ts';
+import { canonicalReadingStartEnabled } from '../lib/canonical-session.ts';
+import { resolveAuthorizedChapterDay } from '../lib/qa-day.ts';
 
 Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem:()=>null, setItem:()=>undefined } });
 
@@ -57,9 +59,22 @@ const sequence = selectStaticSceneSequence(chapter, [0,1,2,3].map((pageIndex) =>
 assert.equal(new Set(Object.values(sequence).map((selection) => selection.asset.src)).size, 4, 'four authored scenes use four approved assets while the pool permits');
 
 const visualRoute = readFileSync('app/api/chapters/visuals/route.ts', 'utf8');
+const todayRoute = readFileSync('app/api/chapters/today/route.ts', 'utf8');
+const readPage = readFileSync('app/read/page.tsx', 'utf8');
 assert.match(visualRoute, /attempt <= 3/);
 assert.match(visualRoute, /imageRepairFeedback/);
 assert.match(visualRoute, /imageGenerationDiagnostic: \{ attempts \}/);
 assert.match(visualRoute, /diagnostic: error instanceof ImageGenerationError/);
+assert.match(visualRoute, /ownedDailyChapter\(auth\.uid, requestedChapter\.id\)/, 'visual ownership guard remains intact');
+assert.ok(todayRoute.indexOf('await dailyChapterRef(chapterId).set') < todayRoute.lastIndexOf('return NextResponse.json({ record, chapter, created })'), 'generated or fallback ownership is persisted before response');
+assert.doesNotMatch(readPage, /setChapter\(chapterFor\(/, 'Read cannot mount a disposable demo chapter');
+assert.match(readPage, /storyRequestStatus !== 'resolved' \|\| !canonicalOwnershipReady/, 'visual request waits for canonical ownership');
+
+const ready = { storyRequestStatus:'resolved' as const, canonicalChapterId:'dogs-mina-2099-09-02', activeChapterId:'dogs-mina-2099-09-02', storyRequestChapterId:'dogs-mina-2099-09-02', visualRequestChapterId:'dogs-mina-2099-09-02', canonicalOwnershipReady:true };
+assert.equal(canonicalReadingStartEnabled(ready), true);
+assert.equal(canonicalReadingStartEnabled({ ...ready, activeChapterId:'dogs-mina-2026-09-01' }), false);
+assert.equal(canonicalReadingStartEnabled({ ...ready, visualRequestChapterId:null }), false);
+assert.equal(canonicalReadingStartEnabled({ ...ready, canonicalOwnershipReady:false }), false);
+assert.equal(resolveAuthorizedChapterDay({ day:'2099-09-02', qaDay:'2099-09-02', qaMode:true, vercelEnvironment:'production', productionDay:'2026-09-01' }), '2026-09-01');
 
 console.log('Generation contract repair passed: literacy, targeted repair, prediction grammar, structured goal/state, reviewer repair, unique static scenes');

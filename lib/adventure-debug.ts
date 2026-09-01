@@ -1,5 +1,5 @@
 import type { Chapter } from './chapters';
-import { chapterDebugInfo, latestChapterGenerationFailure } from './chapters';
+import { chapterDebugInfo } from './chapters';
 import type { ChapterScenePackage } from './chapter-scenes';
 import { visualProvenance, sceneUrl } from './chapter-scenes';
 import { audioSession } from './audio-session';
@@ -34,6 +34,20 @@ export interface ChapterSceneDebugContext {
   sceneAssetUrls: Record<string, string>;
   sceneAssetSources: Record<string, 'generated' | 'approved-static-fallback'>;
   loadedSceneUrl?: string | null;
+}
+
+export interface CanonicalSessionDebugContext {
+  sessionDay: string | null;
+  qaDayRequested: string | null;
+  qaDayAuthorized: string | null;
+  placeholderChapterId: string | null;
+  canonicalChapterId: string | null;
+  activeChapterId: string | null;
+  storyRequestStatus: 'idle' | 'loading' | 'resolved' | 'failed';
+  storyRequestChapterId: string | null;
+  visualRequestChapterId: string | null;
+  canonicalOwnershipReady: boolean;
+  readingStartEnabled: boolean;
 }
 
 /** Diagnostic mapping for scene progression (correction pass 2, Section 5).
@@ -84,7 +98,7 @@ export class AdventureTelemetry {
   }
 }
 
-export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: ChapterScenePackage | null, session?: AdventureTelemetry, context?: { entitlementSource?: 'free' | 'subscription'; recentStorySignatureCount?: number; scene?: ChapterSceneDebugContext }) {
+export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: ChapterScenePackage | null, session?: AdventureTelemetry, context?: { entitlementSource?: 'free' | 'subscription'; recentStorySignatureCount?: number; scene?: ChapterSceneDebugContext; canonicalSession?: CanonicalSessionDebugContext }) {
   const visual = visualProvenance(); const provider = audioSession.providerSnapshot();
   const rawSceneUrls = context?.scene?.sceneAssetUrls ?? Object.fromEntries(scenePackage?.scenes.map(({ sceneId, assetUrl }) => [sceneId, assetUrl]) ?? []);
   const sceneUrls = Object.fromEntries(Object.entries(rawSceneUrls).map(([sceneId, url]) => [sceneId, safeAssetUrl(url) ?? '']));
@@ -93,11 +107,11 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
   const duplicateSceneUrls = [...sceneIdsByUrl].filter(([, sceneIds]) => sceneIds.length > 1).map(([url, sceneIds]) => ({ url, sceneIds }));
   const renderedImages = typeof document === 'undefined' ? [] : [...document.querySelectorAll<HTMLImageElement>('.lc-scene-bg img')];
   const renderedImage = renderedImages.at(-1) ?? null;
-  const generation = chapterDebugInfo();
-  const failureReason = chapter?.provenance?.failureReason ?? latestChapterGenerationFailure() ?? null;
+  const lastStoryRequestDiagnostic = chapterDebugInfo();
+  const failureReason = chapter?.provenance?.failureReason ?? null;
   const rawStorySource = chapter?.provenance?.source;
-  const storySource = rawStorySource === 'generated' && generation?.cacheHit === 'fresh' ? 'generated'
-    : rawStorySource === 'generated' || rawStorySource === 'cached-generated' ? 'stored-generated' : 'fallback';
+  const storySource = rawStorySource === 'generated' ? 'generated'
+    : rawStorySource === 'cached-generated' ? 'stored-generated' : 'fallback';
   const packageSource = scenePackage ? visual.source : visual.source === 'approved-static-fallback' ? 'fallback' : 'absent';
   const requestedSceneId = context?.scene?.requestedSceneId ?? null;
   return {
@@ -126,6 +140,8 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
       sceneProvenance: requestedSceneId ? context?.scene?.sceneAssetSources[requestedSceneId] ?? null : null,
     },
     environment: runtimeEnvironment,
+    canonicalSession: context?.canonicalSession ?? null,
+    lastStoryRequestDiagnostic,
     chapterId: chapter?.id ?? null,
     entitlementSource: chapter?.provenance?.entitlementSource ?? context?.entitlementSource ?? null,
     storySource: chapter?.provenance?.source ?? 'fallback', chapterSource: chapter?.provenance?.source ?? 'fallback', generatedAt: chapter?.provenance?.generatedAt ?? null,
@@ -147,7 +163,7 @@ export function chapterDebugSnapshot(chapter: Chapter | null, scenePackage: Chap
       effectiveUrl: safeAssetUrl(context.scene.resolvedSceneUrl),
       packageProvenance: visual.packageProvenance,
     } : null,
-    staticFallbackUsed: visual.source === 'approved-static-fallback', storyGenerationFailureReason: chapter?.provenance?.failureReason ?? latestChapterGenerationFailure() ?? null,
+    staticFallbackUsed: visual.source === 'approved-static-fallback', storyGenerationFailureReason: chapter?.provenance?.failureReason ?? null,
     visualGenerationFailureReason: visual.failureReason ?? null, tutorProviderActuallyPlayed: provider?.provider ?? null,
     voiceFallbackReason: provider?.reason ?? null, session: session?.snapshot() ?? null,
     sceneProgression: sceneProgressionSnapshot(chapter, scenePackage),

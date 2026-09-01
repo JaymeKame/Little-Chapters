@@ -47,7 +47,7 @@ export interface Chapter {
 }
 
 export type ChapterSource = 'generated' | 'cached-generated' | 'fallback' | 'demo/static';
-export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string; entitlementSource?: 'free' | 'subscription'; generationDiagnostic?: { model: string; attempts: StoryGenerationAttemptDiagnostic[] } }
+export interface ChapterProvenance { source: ChapterSource; generatedAt?: string; failureReason?: string; entitlementSource?: 'free' | 'subscription'; generationDiagnostic?: { model: string; attempts: StoryGenerationAttemptDiagnostic[] }; sessionDay?: string; qaDayRequested?: string | null; qaDayAuthorized?: string | null }
 
 const SETTINGS: Record<
   InterestId,
@@ -485,6 +485,9 @@ export interface ChapterDiag {
    *  older direct /api/chapters/story call (anonymous/dev/no token —
    *  never persisted server-side, so two devices could still diverge). */
   persisted: boolean;
+  sessionDay?: string;
+  qaDayRequested?: string | null;
+  qaDayAuthorized?: string | null;
   at: number;
 }
 
@@ -553,24 +556,42 @@ export async function requestTutorChapter(profile: ChildProfile, uid: string | n
   const qaDay = query?.get('debug') === '1' && isValidDay(query.get('qaDay')) ? query!.get('qaDay')! : null;
   const effectiveDay = qaDay ?? todayLocal();
   const id = `${chapterIdForDay(profile.interests[0], profile.childName, effectiveDay)}:s${stage}`;
-  const cached = loadCachedTutorChapter(id);
+  // Signed-in Read sessions resolve through the persisted server authority.
+  // A browser cache cannot authorize a preview QA day or prove ownership.
+  const persistedRequest = Boolean(uid && authToken);
+  const cached = persistedRequest ? null : loadCachedTutorChapter(id);
   if (cached) {
-    recordChapterDiag({ chapterId: cached.id, stage, source: 'generated', cacheHit: 'local', persisted: Boolean(uid && authToken) });
+    recordChapterDiag({ chapterId: cached.id, stage, source: 'generated', cacheHit: 'local', persisted: false,
+      sessionDay: effectiveDay, qaDayRequested: qaDay, qaDayAuthorized: qaDay });
     return cached;
   }
   const pending = inFlight.get(id);
   if (pending) return pending;
   const run = (async () => {
-    const chapter =
+    let chapter =
       uid && authToken
         ? await generateTutorChapterPersisted(profile, uid, stage, id, authToken, qaDay)
         : await generateTutorChapter(profile, uid, id, authToken);
+    // Anonymous/local sessions have no persisted ownership authority. Resolve
+    // their deterministic fallback only after the generation request settles,
+    // so Read still mounts exactly one canonical chapter rather than a demo
+    // placeholder that may later be swapped.
+    if (!persistedRequest && !chapter) {
+      const fallback = chapterForDay(profile.interests[0], profile.childName, effectiveDay);
+      chapter = { ...fallback, provenance: { source: 'fallback', failureReason: generationFailures.get(id) ?? latestGenerationFailure ?? 'story-generation-unavailable',
+        sessionDay: effectiveDay, qaDayRequested: qaDay, qaDayAuthorized: qaDay } };
+    }
+    if (chapter) chapter = { ...chapter, provenance: { ...chapter.provenance!, sessionDay: chapter.provenance?.sessionDay ?? effectiveDay,
+      qaDayRequested: qaDay, qaDayAuthorized: chapter.provenance?.qaDayAuthorized ?? (!persistedRequest ? qaDay : null) } };
     recordChapterDiag({
       chapterId: chapter?.id ?? id,
       stage,
-      source: chapter ? 'generated' : 'fallback',
+      source: chapter && chapter.provenance?.source !== 'fallback' && chapter.provenance?.source !== 'demo/static' ? 'generated' : 'fallback',
       cacheHit: 'fresh',
-      persisted: Boolean(uid && authToken),
+      persisted: persistedRequest,
+      sessionDay: chapter?.provenance?.sessionDay ?? effectiveDay,
+      qaDayRequested: qaDay,
+      qaDayAuthorized: chapter?.provenance?.qaDayAuthorized ?? null,
     });
     return chapter;
   })();
@@ -597,7 +618,8 @@ async function generateTutorChapterPersisted(
   qaDay: string | null,
 ): Promise<Chapter | null> {
   const context = resolveGenerationContext(profile, uid);
-  const day = todayLocal();
+  const ordinaryDay = todayLocal();
+  const day = qaDay ?? ordinaryDay;
   try {
     const response = await fetch('/api/chapters/today', {
       method: 'POST',
@@ -623,7 +645,7 @@ async function generateTutorChapterPersisted(
     const data = (await response.json()) as {
       chapter?: Chapter | null;
       created?: boolean;
-      record?: { source: 'generated' | 'fallback'; stage: number; failureReason?: string; generationDiagnostic?: unknown; draft?: StoryDraft; blueprint?: StoryBlueprint; skeletonId?: string; slots?: Record<string, string> };
+      record?: { day: string; source: 'generated' | 'fallback'; stage: number; failureReason?: string; generationDiagnostic?: unknown; draft?: StoryDraft; blueprint?: StoryBlueprint; skeletonId?: string; slots?: Record<string, string> };
     };
     if (data.chapter?.pages?.length) {
       if (data.chapter.provenance?.source === 'fallback') {
@@ -633,9 +655,11 @@ async function generateTutorChapterPersisted(
         generationFailures.delete(id); latestGenerationFailure = undefined;
       }
       if (data.chapter.provenance?.source !== 'fallback') {
-        try { localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(data.chapter)); } catch { /* accelerator only */ }
+        try { localStorage.setItem(TUTOR_CACHE_PREFIX + `${data.chapter.id}:s${stage}`, JSON.stringify(data.chapter)); } catch { /* accelerator only */ }
       }
-      return data.chapter;
+      const sessionDay = data.record?.day ?? day;
+      return { ...data.chapter, provenance: { ...data.chapter.provenance!, sessionDay,
+        qaDayRequested: qaDay, qaDayAuthorized: qaDay && sessionDay === qaDay ? qaDay : null } };
     }
     const rec = data.record;
     if (!rec || rec.source !== 'generated' || !rec.draft) {
@@ -643,10 +667,11 @@ async function generateTutorChapterPersisted(
     }
     const skeleton = SKELETONS.find((s) => s.id === rec.skeletonId) ?? context.skeleton;
     const adapted = adaptTutorDraft(profile, rec.draft, skeleton, rec.slots, rec.stage, rec.blueprint);
-    const chapter = adapted ? { ...adapted, provenance: { ...adapted.provenance, source: data.created === false ? 'cached-generated' as const : 'generated' as const } } : null;
+    const chapter = adapted ? { ...adapted, provenance: { ...adapted.provenance, source: data.created === false ? 'cached-generated' as const : 'generated' as const,
+      sessionDay: rec.day ?? day, qaDayRequested: qaDay, qaDayAuthorized: qaDay && (rec.day ?? day) === qaDay ? qaDay : null } } : null;
     if (!chapter) return null;
     try {
-      localStorage.setItem(TUTOR_CACHE_PREFIX + id, JSON.stringify(chapter));
+      localStorage.setItem(TUTOR_CACHE_PREFIX + `${chapter.id}:s${stage}`, JSON.stringify(chapter));
     } catch {
       /* best-effort cache */
     }

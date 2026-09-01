@@ -23,7 +23,7 @@ import { SpeakerIcon } from '@/components/icons/SpeakerIcon';
 import { MicIcon } from '@/components/icons/MicIcon';
 import { QuietCheckIcon } from '@/components/icons/QuietCheckIcon';
 import { SuccessStar } from '@/components/SuccessStar';
-import { chapterFor, latestChapterGenerationFailure, recentStorySignatures, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
+import { recentStorySignatures, requestTutorChapter, stageForAge, type Chapter } from '@/lib/chapters';
 import { selectSceneForPage, selectStaticSceneSequence, type SceneSelectionResult } from '@/lib/scene-selector';
 import { appendChapterHistoryEntry } from '@/lib/chapter-history';
 import { useEntitlement } from '@/lib/use-entitlement';
@@ -58,6 +58,8 @@ import { confidentTrackerWords } from '@/lib/reading-tracker';
 import { TutorPhraseSession } from '@/lib/tutor-intents';
 import { materializeStoryPages } from '@/lib/story-blueprint';
 import { RuntimeDebugBadge } from '@/components/RuntimeDebugBadge';
+import { isValidDay } from '@/lib/chapter-id';
+import { canonicalReadingStartEnabled } from '@/lib/canonical-session';
 
 type Phase = 'ready' | 'listening' | 'scoring' | 'correction' | 'celebrate' | 'chapter-end';
 
@@ -205,6 +207,17 @@ export default function ReadPage() {
   const [progress, setProgress] = useState<ChildProgress | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [scenePackage, setScenePackage] = useState<ChapterScenePackage | null>(null);
+  const [storyRequestStatus, setStoryRequestStatus] = useState<'idle' | 'loading' | 'resolved' | 'failed'>('idle');
+  const [storyRequestChapterId, setStoryRequestChapterId] = useState<string | null>(null);
+  const [visualRequestChapterId, setVisualRequestChapterId] = useState<string | null>(null);
+  const [canonicalOwnershipReady, setCanonicalOwnershipReady] = useState(false);
+  const [storyLoadAttempt, setStoryLoadAttempt] = useState(0);
+  const qaDayRequested = useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    const query = new URLSearchParams(window.location.search);
+    const value = query.get('debug') === '1' ? query.get('qaDay') : null;
+    return isValidDay(value) ? value : null;
+  }, []);
   const [introOpen, setIntroOpen] = useState(() => typeof window === 'undefined' || new URLSearchParams(window.location.search).get('skipWelcome') !== '1');
   const [activeInteraction, setActiveInteraction] = useState<Extract<SessionBeat, { kind: 'sound-hunt' | 'find-in-scene' | 'prediction' | 'word-builder' | 'story-order' }> | null>(null);
   const [interactionChoice, setInteractionChoice] = useState<string | null>(null);
@@ -278,6 +291,7 @@ export default function ReadPage() {
   const lastCountedInteractionRef = useRef<string | null>(null);
   const lastTelemetryPhaseRef = useRef<Phase | null>(null);
   const tutorPhrasesRef = useRef(new TutorPhraseSession());
+  const profileBootedRef = useRef(false);
 
   /* Paywall. /home already routes a locked tap to /unlock, so this only
    * catches a deep link, a back-button return, or a refresh mid-flow. It
@@ -329,8 +343,11 @@ export default function ReadPage() {
       }
       if (cancelled) return;
       if (!p) { router.replace('/'); return; }
+      if (profileBootedRef.current) return;
+      profileBootedRef.current = true;
       setProfile(p);
-      setChapter(chapterFor(p.interests[0], p.childName));
+      // Do not mount an interactive local/demo chapter. The story request
+      // effect below is the sole owner of the session's canonical chapter.
       sessionIdRef.current = `${p.childName}-${Date.now()}`;
       startedAtRef.current = new Date().toISOString();
       sentenceResultsRef.current = [];
@@ -413,40 +430,48 @@ export default function ReadPage() {
     simulateFixture(words);
   }, [chapter]);
 
-  /* Upgrade the demo arc to a stage-matched reading-tutor chapter (cached from
-   * earlier today, or generated when OPENAI_API_KEY is set server-side).
-   *
-   * This MUST wait for auth to settle rather than ride the mount effect: the
-   * story route requires an ID token in production, and on a direct load of
-   * /read the anonymous sign-in is still in flight at mount — a request sent
-   * then gets a 401 that the client swallows, so generation would silently
-   * never happen and the demo arc would stay forever. Never swaps once the
-   * child has started reading; without a key the request 503s and the demo
-   * arc simply stays. */
+  /* Resolve exactly one canonical chapter before the child can enter Read.
+   * The server response is generated OR its canonical owned fallback; there
+   * is no interactive placeholder and therefore no late chapter swap. */
   useEffect(() => {
-    if (!profile || authLoading || startedReadingRef.current) return;
+    if (!profile || authLoading) return;
+    // Token refreshes may republish the same Firebase user. Once this session
+    // owns a canonical chapter, never clear or regenerate it mid-reading.
+    if (storyRequestStatus === 'resolved' && chapter && canonicalOwnershipReady) return;
     let cancelled = false;
+    setStoryRequestStatus('loading');
+    setStoryRequestChapterId(null);
+    setCanonicalOwnershipReady(false);
+    setChapter(null);
+    setScenePackage(null);
+    setVisualRequestChapterId(null);
     void (async () => {
       const authToken = user ? await user.getIdToken().catch(() => null) : null;
       const tutorChapter = await requestTutorChapter(profile, user?.uid ?? null, authToken);
-      if (tutorChapter && !cancelled && !disposedRef.current && !startedReadingRef.current) {
+      if (tutorChapter && !cancelled && !disposedRef.current) {
         setChapter(tutorChapter);
-      } else if (!cancelled && !disposedRef.current && !startedReadingRef.current) {
-        setChapter((current) => current ? { ...current, provenance: { source: 'fallback', failureReason: latestChapterGenerationFailure() } } : current);
-        // Story generation fell back to the demo arc. Fire the quality
+        setStoryRequestChapterId(tutorChapter.id);
+        // Bind the forthcoming visual request to the same canonical identity
+        // in the same state commit that enables reading.
+        setVisualRequestChapterId(tutorChapter.id);
+        setCanonicalOwnershipReady(true);
+        setStoryRequestStatus('resolved');
+      } else if (!cancelled && !disposedRef.current) {
+        setStoryRequestStatus('failed');
+        // No canonical server/local response could be resolved. Fire quality
         // event so the operator dashboard shows this rate rather than
         // guessing at it later. Never sends the profile, story text, or
         // failure body — only a short category string.
         track('story_generation_failed', {
           route: '/read',
-          errorCategory: (latestChapterGenerationFailure() || 'fallback').slice(0, 40),
+          errorCategory: 'canonical-story-unavailable',
         });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [profile, user, authLoading]);
+  }, [profile, user, authLoading, storyLoadAttempt]);
 
   useEffect(() => audioSession.subscribe((event) => { if (event.type === 'speech-request') adventureTelemetryRef.current.count('utterance'); }), []);
   useEffect(() => {
@@ -679,6 +704,11 @@ export default function ReadPage() {
   const requestedSceneId = activeInteraction?.activity.visualSceneId ?? pageAuthoredSceneId;
   const resolvedSceneUrl = requestedSceneId ? sceneAssetUrls[requestedSceneId] ?? null : null;
   const lookaheadScene = lookaheadBeat ? sceneAssetUrls[lookaheadBeat.visualSceneId] ?? null : null;
+  const canonicalChapterId = storyRequestStatus === 'resolved' ? chapter?.id ?? null : null;
+  const readingStartEnabled = canonicalReadingStartEnabled({
+    storyRequestStatus, canonicalChapterId, activeChapterId: chapter?.id ?? null,
+    storyRequestChapterId, visualRequestChapterId, canonicalOwnershipReady,
+  });
 
   useEffect(() => {
     if (process.env.NODE_ENV !== 'development' || !interactionManifest || new URLSearchParams(window.location.search).get('sceneProgressionTest') !== '1') return;
@@ -710,10 +740,24 @@ export default function ReadPage() {
       activeInteractionVisualSceneId: activeInteraction?.activity.visualSceneId ?? null,
       pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources, loadedSceneUrl,
     },
-  })), [chapter, scenePackage, subscribed, profile, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources, loadedSceneUrl]);
+    canonicalSession: {
+      sessionDay: chapter?.provenance?.sessionDay ?? null,
+      qaDayRequested,
+      qaDayAuthorized: chapter?.provenance?.qaDayAuthorized ?? null,
+      placeholderChapterId: null,
+      canonicalChapterId,
+      activeChapterId: chapter?.id ?? null,
+      storyRequestStatus,
+      storyRequestChapterId,
+      visualRequestChapterId,
+      canonicalOwnershipReady,
+      readingStartEnabled,
+    },
+  })), [chapter, scenePackage, subscribed, profile, pageIdx, phase, activeInteraction, pageAuthoredSceneId, requestedSceneId, resolvedSceneUrl, sceneAssetUrls, sceneAssetSources, loadedSceneUrl, qaDayRequested, storyRequestStatus, storyRequestChapterId, visualRequestChapterId, canonicalOwnershipReady, canonicalChapterId, readingStartEnabled]);
 
   useEffect(() => {
-    if (!chapter || !interactionManifest || authLoading) return;
+    if (!chapter || !interactionManifest || authLoading || storyRequestStatus !== 'resolved' || !canonicalOwnershipReady) return;
+    setVisualRequestChapterId(chapter.id);
     setScenePackage(null);
     const cached = loadChapterScenePackage(chapter.id, chapterStoryFingerprint(chapter));
     if (cached) setScenePackage(cached);
@@ -732,7 +776,7 @@ export default function ReadPage() {
       });
     });
     return () => { cancelled = true; };
-  }, [chapter, interactionManifest, user, authLoading]);
+  }, [chapter, interactionManifest, user, authLoading, storyRequestStatus, canonicalOwnershipReady]);
 
   useEffect(() => {
     if (!chapter || !lookaheadBeat || !lookaheadScene) return;
@@ -808,7 +852,7 @@ export default function ReadPage() {
     return () => { if (watchdog !== null) window.clearTimeout(watchdog); };
   }, [activeInteraction]);
 
-  if (!profile || !chapter) return <main className="lc-home-v11 lc-home-loading" data-read-state="loading"><div className="lc-loading-sky" /><div className="lc-loading-book"><span /><span /><span /></div><p>Opening today&rsquo;s story…</p></main>;
+  if (!profile || !chapter || !readingStartEnabled) return <main className="lc-home-v11 lc-home-loading" data-read-state={storyRequestStatus === 'failed' ? 'error' : 'loading'}><div className="lc-loading-sky" /><div className="lc-loading-book"><span /><span /><span /></div><p>{storyRequestStatus === 'failed' ? 'Your story needs one more try.' : 'Getting your story ready…'}</p>{storyRequestStatus === 'failed' && <button className="btn-primary" onClick={() => setStoryLoadAttempt((attempt) => attempt + 1)}>Try again</button>}</main>;
   const page = chapter.pages[pageIdx];
   // An interaction is an authored story beat, so its scene owns the visible
   // background while active. Outside an interaction, the page-authored scene
