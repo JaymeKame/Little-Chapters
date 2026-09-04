@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "watchtower:capture": "node --experimental-strip-types watchtower/cli/capture-hook.ts",
     "watchtower:process": "node --experimental-strip-types watchtower/cli/process-session.ts",
+    "watchtower:reason": "node --experimental-strip-types watchtower/cli/reason-attempts.ts",
     "test:watchtower": "node --experimental-strip-types --test watchtower/tests/*.test.ts",
     "test:voice": "node --experimental-strip-types scripts/test-voice-provider.ts"
   },
