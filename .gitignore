@@ -11,6 +11,9 @@ tsconfig.tsbuildinfo
 .env.local
 .env*.local
 
+# Per-user local Claude Code settings (hooks, permissions) — never committed
+.claude/settings.local.json
+
 # MDD decoding service
 mdd/.venv/
 __pycache__/
