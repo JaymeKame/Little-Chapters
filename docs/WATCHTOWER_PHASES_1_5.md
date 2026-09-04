@@ -59,7 +59,36 @@ unusual tool schemas, absent exit statuses, and domain-specific failure language
 ## Acceptance status in this environment
 
 The pipeline is covered with a Claude-transcript-shaped incremental-capture test, including a test
-failure in a successful (`is_error: false`) tool result. This is not claimed as the required live proof.
-The build environment had no `claude` executable or existing Claude transcript, so a real Claude Code
-session could not be run here. Live Phase 1 acceptance, and therefore real end-to-end Phase 5 acceptance,
-remain blocked until the hook is exercised in an authenticated Claude Code installation.
+failure in a successful (`is_error: false`) tool result. Live acceptance was subsequently exercised
+against a real Claude Code session by installing the hooks in `.claude/settings.local.json` and
+processing the captured `raw.jsonl`; the normalization layer was then patched to match the observed
+wire format (see the commit-log entries for details on the H1/C1/C2 defects and the two segmentation
+refinements: execution-command-scoped `successful_validation` and pointer-corrected
+`user_follow_up_or_correction`). Phase-1-5 acceptance is closed.
+
+## Known architectural limitations (deferred, Phase-6-adjacent)
+
+- **Segmenter operates on individual transcript events, not conversational turns.** A single
+  assistant reply is emitted as multiple `assistant_message` events across tool-call cycles.
+  A same-turn self-acknowledgement of failure ("X doesn't exist") followed by a same-turn
+  intent word ("Let me try Y") therefore triggers a `strategy_change_after_failure_evidence`
+  close inside what is really one coherent reply, over-fragmenting attempts. Proper fix
+  requires surfacing `parentUuid` / turn-grouping information in the normalized schema and
+  treating same-turn events as one composite for boundary evaluation. Deferred: this changes
+  the schema and is Phase-6-adjacent architecture, not a Phase-1-5 blocker. Over-fragmentation
+  (a real strategy split into extra pieces) is a safer failure mode for downstream reasoning
+  to inherit than the alternative (distinct strategies merged into one attempt), so the
+  current output is acceptable for Phase 6 to consume.
+
+- **Hook-side failure signal is unreliable.** `PostToolUseFailure` does not fire in the
+  observed Claude Code version, and `tool_response` exposes no `is_error` or `exit_code`.
+  Reliable failure detection uses the transcript-side `tool_result.is_error` flag plus the
+  targeted patterns in `structuralFailureInToolResult`. Hook envelopes retain the raw
+  response (`stderr`, `interrupted`) for downstream extractors, but no first-class failure
+  field is derived from them.
+
+- **`thinking`, `interrupted`, and `queue-operation` are not first-class.** Assistant
+  `thinking` blocks are silently dropped by normalization (`~10%` of assistant events in a
+  live sample). `interrupted: true` in `PostToolUse.tool_response` is preserved raw but not
+  extracted. `queue-operation` transcript records inflate the `unknown` category. Deferred
+  as MEDIUM per Option 1 scope.

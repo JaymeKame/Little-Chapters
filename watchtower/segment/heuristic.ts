@@ -29,6 +29,20 @@ const pointerCorrection = (text: string): boolean => {
 const isExecutionCommand = (cmd: string): boolean =>
   /\b(?:npm (?:test|run|start)|pnpm (?:test|run)|yarn (?:test|run)|jest|vitest|mocha|pytest|python\s+-m\s+(?:pytest|unittest)|cargo (?:test|build|run)|go (?:test|build|run)|make|bazel|gradle|mvn|dotnet (?:test|build|run)|rspec|rake\s+test|node\s+--test)\b/i.test(cmd);
 
+/** Structural evidence of failure inside a tool_result — targeted test/build/
+ * assertion/validation-runner output patterns, NOT the loose `bad` word regex
+ * that matches "fail"/"error" wherever they appear (including in user prompts
+ * describing what they want fixed). */
+const structuralFailureInToolResult = /(?:tests? failed|\d+ failing|\bFAIL(?:ED)?\s|failed tests?:|build failed|compilation failed|failed to compile|error TS\d+|AssertionError|assertion failed|validation (?:error|failed)|invalid (?:request|payload|value)|\b422\b|timed? out|ETIMEDOUT|non-zero exit|command not found|permission denied)/i;
+
+/** Assistant self-acknowledgement of failure. In real agent debugging, most
+ * "failure evidence" is conversational: the assistant realizing something
+ * doesn't exist, isn't findable, or can't be done — not a test-runner exit
+ * code. Targeted phrasing patterns so this doesn't degrade back into loose
+ * word matching on prose. Verified against a live self-transcript's two
+ * failed-then-retry sequences. */
+const assistantFailureAck = /(?:doesn't exist|does not exist|isn't (?:in |available|possible|recoverable|there|anywhere)|is not (?:in |available|possible|recoverable)|not in (?:the |your |this )?(?:repo|tree|codebase|context|session|conversation)|couldn't (?:find|do|complete|reach|locate|resolve)|(?:i (?:can't|cannot|could not)) (?:find|do|complete|reach|locate|resolve)|unable to (?:find|do|complete|reach|locate|resolve)|no such|not recognized|not found|nowhere I('ve|\s+have) looked|failed to (?:find|open|read|complete|resolve))/i;
+
 function make(events: NormalizedEvent[], problem: string, boundaryReason: string): Attempt {
   const text = events.map(eventText).filter(Boolean);
   const approach = events.find((event) => event.assistantMessage && intent.test(event.assistantMessage))?.assistantMessage ?? "No explicit approach statement observed";
@@ -69,7 +83,29 @@ export function segmentAttempts(events: NormalizedEvent[]): Attempt[] {
       if (naturalCorrection || pointerRedirect) close("user_follow_up_or_correction");
       problem = um;
     }
-    const priorFailure = active.some((e) => e.explicitError || bad.test(eventText(e)) || (e.command?.exitStatus ?? 0) !== 0);
+    // Prior failure evidence: structural signals first (is_error, non-zero
+    // exit, targeted tool_result failure patterns), then a targeted
+    // assistant self-acknowledgement pattern for the conversational case
+    // where the assistant realizes something can't be done. Never a loose
+    // word match on user_message text or arbitrary prose — that let the
+    // user's own prompt vocabulary ("outstanding failure", "if that fails")
+    // fire priorFailure and produced bonus false closes.
+    //
+    // KNOWN LIMITATION (see WATCHTOWER_PHASES_1_5.md): the segmenter
+    // operates on individual transcript events, not conversational turns.
+    // A single assistant turn is emitted as multiple assistant_message
+    // events across tool-call cycles, so a same-turn self-ack ("X doesn't
+    // exist") followed by same-turn intent ("Let me try Y") triggers a
+    // strategy_change close inside what is really one coherent reply,
+    // over-fragmenting attempts. Fixing this needs parentUuid/turn-grouping
+    // surfaced in the schema; deferred as Phase-6-adjacent architecture,
+    // not a Phase-1-5 blocker. Over-fragmentation is a safer failure mode
+    // for downstream reasoning to inherit than under-fragmentation.
+    const priorFailure = active.some((e) =>
+      e.explicitError ||
+      (e.command?.exitStatus ?? 0) !== 0 ||
+      (e.category === "tool_result" && structuralFailureInToolResult.test(eventText(e))) ||
+      (e.category === "assistant_message" && assistantFailureAck.test(eventText(e))));
     if (event.assistantMessage && intent.test(event.assistantMessage) && priorFailure && active.some((e) => e.toolUse || e.command)) close("strategy_change_after_failure_evidence");
     active.push(event);
     if (event.category === "tool_result" && !event.explicitError && good.test(eventText(event))) {
