@@ -5,7 +5,7 @@ import { shouldSurface } from "./sensitivity.ts";
 import type { ContextGroup, ReasoningProvider, ReasoningResult, ReasoningTrace, RepeatJudgment, Sensitivity } from "./types.ts";
 import type { ReasoningCache } from "./cache.ts";
 
-type EngineOptions = { provider: ReasoningProvider; cache: ReasoningCache; timeoutMs?: number; maxPriorAttempts?: number };
+type EngineOptions = { provider: ReasoningProvider; cache: ReasoningCache; timeoutMs?: number; maxPriorAttempts?: number; failureCacheTtlMs?: number };
 type CompareOptions = { sensitivity?: Sensitivity };
 
 const normalizeProblem = (value: unknown) => typeof value === "string"
@@ -34,15 +34,23 @@ function parseJudgment(text: string, validPriorIds: Set<string>): RepeatJudgment
   if (!(["repeat", "different", "partial"] as unknown[]).includes(value.classification)) throw new Error("Invalid classification");
   if (typeof value.confidence !== "number" || value.confidence < 0 || value.confidence > 1) throw new Error("Invalid confidence");
   if (typeof value.plainEnglishExplanation !== "string" || !value.plainEnglishExplanation.trim()) throw new Error("Missing explanation");
-  const nullable = (key: string) => value[key] === null || typeof value[key] === "string" ? value[key] as string | null : null;
-  const priorAttemptIds = Array.isArray(value.priorAttemptIds)
-    ? value.priorAttemptIds.filter((id): id is string => typeof id === "string" && validPriorIds.has(id)) : [];
-  const evidence = Array.isArray(value.evidence) ? value.evidence.flatMap((item) => {
-    if (typeof item !== "object" || !item) return [];
+  const nullable = (key: string) => {
+    if (!(key in value) || (value[key] !== null && typeof value[key] !== "string")) throw new Error(`Invalid ${key}`);
+    return value[key] as string | null;
+  };
+  if (!Array.isArray(value.priorAttemptIds) || value.priorAttemptIds.some((id) => typeof id !== "string" || !validPriorIds.has(id)))
+    throw new Error("Invalid priorAttemptIds");
+  const priorAttemptIds = value.priorAttemptIds as string[];
+  if (!Array.isArray(value.evidence)) throw new Error("Invalid evidence");
+  const evidence = value.evidence.flatMap((item) => {
+    if (typeof item !== "object" || !item) throw new Error("Invalid evidence item");
     const record = item as Record<string, unknown>;
-    return typeof record.attemptId === "string" && validPriorIds.has(record.attemptId) && typeof record.reason === "string"
-      ? [{ attemptId: record.attemptId, reason: record.reason }] : [];
-  }) : [];
+    if (typeof record.attemptId !== "string" || !validPriorIds.has(record.attemptId) || typeof record.reason !== "string" || !record.reason.trim())
+      throw new Error("Invalid evidence item");
+    return [{ attemptId: record.attemptId, reason: record.reason.trim() }];
+  });
+  if (value.confidence >= .5 && value.classification !== "different" && (!priorAttemptIds.length || !evidence.length))
+    throw new Error("Repeat or partial judgment lacks supporting prior evidence");
   return { classification: value.classification as RepeatJudgment["classification"], confidence: value.confidence,
     plainEnglishExplanation: value.plainEnglishExplanation.trim(), repeatedStrategy: nullable("repeatedStrategy"),
     genuinelyNewStrategy: nullable("genuinelyNewStrategy"), priorAttemptIds, evidence,
@@ -53,10 +61,12 @@ export class RepeatReasoningEngine {
   private readonly options: EngineOptions;
   private readonly timeoutMs: number;
   private readonly maxPriorAttempts: number;
+  private readonly failureCacheTtlMs: number;
   constructor(options: EngineOptions) {
     this.options = options;
     this.timeoutMs = options.timeoutMs ?? 12_000;
     this.maxPriorAttempts = options.maxPriorAttempts ?? 6;
+    this.failureCacheTtlMs = options.failureCacheTtlMs ?? 60_000;
   }
 
   async compare(history: Array<Partial<AttemptSummary>>, current: Partial<AttemptSummary>, options: CompareOptions = {}): Promise<ReasoningResult> {
@@ -66,13 +76,17 @@ export class RepeatReasoningEngine {
     const input = buildReasoningInput(prior, current, groups);
     const comparisonId = createHash("sha256").update(`${REPEAT_REASONING_PROMPT_VERSION}\0${this.options.provider.model}\0${input}`).digest("hex");
     const base = { comparisonId, createdAt: new Date().toISOString(), promptVersion: REPEAT_REASONING_PROMPT_VERSION,
-      model: this.options.provider.model, sensitivity, suppliedSummaries: [...prior, current],
+      model: this.options.provider.model, sensitivity, suppliedSummaries: [...history, current], transmittedInput: input,
       consideredPriorAttemptIds: prior.flatMap((item) => item.attemptId ? [item.attemptId] : []), contextGroups: groups };
-    const cached = await this.options.cache.get(comparisonId);
+    const cached = await this.options.cache.get(comparisonId).catch(() => null);
     if (cached?.parsedJudgment) {
-      const surface = shouldSurface(cached.parsedJudgment, sensitivity);
-      const trace = { ...cached, sensitivity, shouldSurface: surface, cacheHit: true };
-      return { status: "evaluated", judgment: trace.parsedJudgment, shouldSurface: surface, duplicate: true, trace };
+      // A cached judgment is returned for consumers, but never surfaced twice.
+      const trace = { ...cached, sensitivity, shouldSurface: false, cacheHit: true };
+      return { status: "evaluated", judgment: trace.parsedJudgment, shouldSurface: false, duplicate: true, trace };
+    }
+    if (cached && Date.now() - Date.parse(cached.createdAt) < this.failureCacheTtlMs) {
+      const trace = { ...cached, sensitivity, shouldSurface: false, cacheHit: true };
+      return { status: "failed", judgment: null, shouldSurface: false, duplicate: true, trace };
     }
     if (!prior.length) {
       const trace: ReasoningTrace = { ...base, structuredModelResponse: null, parsedJudgment: null, shouldSurface: false,
@@ -90,7 +104,7 @@ export class RepeatReasoningEngine {
         const trace: ReasoningTrace = { ...base, model: response.model, structuredModelResponse: response.structuredResponse ?? response.text,
           parsedJudgment: judgment, shouldSurface: surface, cacheHit: false, latencyMs: Date.now() - started,
           usage: response.usage ?? null, errors };
-        await this.options.cache.put(trace);
+        await this.options.cache.put(trace).catch((error) => errors.push(`cache: ${String(error)}`));
         return { status: "evaluated", judgment, shouldSurface: surface, duplicate: false, trace };
       } catch (error) { errors.push(`${attempt === 0 ? "initial" : "retry"}: ${String(error)}`); }
       finally { clearTimeout(timeout); }

@@ -43,41 +43,18 @@ class FakeModel implements ReasoningProvider {
   }
 }
 
-type Case = { name: string; prior: AttemptSummary[]; current: AttemptSummary; expected: RepeatClassification; confidence?: number };
-const cases: Case[] = [
-  { name: "A clear repeat", prior: [summary("a1", { intendedApproach: "Change validator formatting", actionsTaken: ["Relaxed validator format"], failureReason: "Validation still fails" })],
-    current: summary("a2", { intendedApproach: "Change another validator formatting rule" }), expected: "repeat" },
-  { name: "B genuinely different", prior: [summary("b1", { intendedApproach: "Change validator formatting", failureReason: "Malformed generated payload remains" })],
-    current: summary("b2", { intendedApproach: "Trace payload upstream and repair generation", importantFilesOrComponents: ["payload-generator.ts"] }), expected: "different" },
-  { name: "C partial overlap", prior: [summary("c1", { intendedApproach: "Increase retries", problemBeingAddressed: "Provider requests fail" })],
-    current: summary("c2", { intendedApproach: "Increase retries and inspect the provider failure", problemBeingAddressed: "Provider requests fail" }), expected: "partial" },
-  { name: "D superficial wording difference", prior: [summary("d1", { intendedApproach: "Loosen the email pattern" })],
-    current: summary("d2", { intendedApproach: "Permit a broader set of characters in addresses" }), expected: "repeat" },
-  { name: "E same file different strategy", prior: [summary("e1", { intendedApproach: "Adjust validation rules", importantFilesOrComponents: ["payload.ts"] })],
-    current: summary("e2", { intendedApproach: "Correct serialization order", importantFilesOrComponents: ["payload.ts"] }), expected: "different" },
-  { name: "F fragmented attempts", prior: [
-    summary("f1", { problemBeingAddressed: "Provider timeout", intendedApproach: "Begin retry change" }),
-    summary("f2", { problemBeingAddressed: "Provider timeout", intendedApproach: "Complete and test retry change" }),
-  ], current: summary("f3", { problemBeingAddressed: "Provider timeout", intendedApproach: "Raise retries again" }), expected: "repeat" },
-  { name: "G insufficient evidence", prior: [summary("g1", { problemBeingAddressed: "Unknown", intendedApproach: "Unknown", actionsTaken: [], observedEvidence: [] })],
-    current: summary("g2", { problemBeingAddressed: "Unknown", intendedApproach: "Try something", actionsTaken: [] }), expected: "partial", confidence: .2 },
-];
-
-for (const scenario of cases) {
-  test(scenario.name, async () => {
-    const ids = scenario.prior.map((item) => item.attemptId);
-    const provider = new FakeModel(response(scenario.expected, scenario.confidence ?? .88, ids));
-    const engine = new RepeatReasoningEngine({ provider, cache: new MemoryReasoningCache() });
-    const result = await engine.compare(scenario.prior, scenario.current);
-    assert.equal(result.judgment?.classification, scenario.expected);
-    assert.equal(result.trace.promptVersion, REPEAT_REASONING_PROMPT_VERSION);
-    assert.deepEqual(result.trace.consideredPriorAttemptIds, ids);
-    assert.equal(provider.calls.length, 1);
-    assert.ok(provider.calls[0].input.includes(scenario.current.attemptId));
-    if (scenario.name.startsWith("F")) assert.deepEqual(result.trace.contextGroups[0].attemptIds, ["f1", "f2"]);
-    if (scenario.name.startsWith("G")) assert.equal(result.shouldSurface, false);
-  });
-}
+test("uses the model judgment and exposes compact fragment context", async () => {
+  const prior = [summary("f1", { problemBeingAddressed: "Provider timeout", intendedApproach: "Begin retry change" }),
+    summary("f2", { problemBeingAddressed: "Provider timeout", intendedApproach: "Complete retry change" })];
+  const current = summary("f3", { problemBeingAddressed: "Provider timeout", intendedApproach: "Raise retries again" });
+  const provider = new FakeModel(response("repeat", .88, ["f1", "f2"]));
+  const result = await new RepeatReasoningEngine({ provider, cache: new MemoryReasoningCache() }).compare(prior, current);
+  assert.equal(result.judgment?.classification, "repeat");
+  assert.equal(result.trace.promptVersion, REPEAT_REASONING_PROMPT_VERSION);
+  assert.deepEqual(result.trace.contextGroups[0].attemptIds, ["f1", "f2"]);
+  assert.ok(result.trace.transmittedInput.includes(current.attemptId));
+  assert.equal(provider.calls.length, 1);
+});
 
 test("cache identity deduplicates provider calls and downstream surfaces", async () => {
   const provider = new FakeModel(response("repeat", .95, ["prior"]));
@@ -87,7 +64,7 @@ test("cache identity deduplicates provider calls and downstream surfaces", async
   assert.equal((await engine.compare(history, current)).duplicate, false);
   const duplicate = await engine.compare(history, current);
   assert.equal(duplicate.duplicate, true);
-  assert.equal(duplicate.shouldSurface, true);
+  assert.equal(duplicate.shouldSurface, false);
   assert.equal(provider.calls.length, 1);
 });
 
@@ -102,6 +79,18 @@ test("malformed responses retry once and provider failure remains advisory", asy
   assert.equal(failed.status, "failed");
   assert.equal(failed.shouldSurface, false);
   assert.equal(failed.trace.errors.length, 2);
+});
+
+test("temporarily caches provider failures to avoid hammering an unavailable API", async () => {
+  const provider = new FakeModel(new Error("rate limited"));
+  const engine = new RepeatReasoningEngine({ provider, cache: new MemoryReasoningCache() });
+  const history = [summary("prior", {})]; const current = summary("current", {});
+  assert.equal((await engine.compare(history, current)).duplicate, false);
+  const duplicate = await engine.compare(history, current);
+  assert.equal(duplicate.status, "failed");
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.shouldSurface, false);
+  assert.equal(provider.calls.length, 2); // initial request plus its single parse/provider retry
 });
 
 test("sensitivity thresholds are centralized and balanced is default", () => {

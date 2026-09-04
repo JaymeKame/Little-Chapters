@@ -33,6 +33,11 @@ export type ReasoningProvider = {
   complete(systemPrompt: string, input: string, signal: AbortSignal): Promise<ProviderResponse>;
 };
 
+export type CompactAttemptSummary = Partial<Pick<AttemptSummary,
+  "attemptId" | "problemBeingAddressed" | "intendedApproach" | "actionsTaken" |
+  "importantFilesOrComponents" | "observedEvidence" | "inferredOutcome" | "failureReason" |
+  "appearsToHaveAddressed" | "mayRemainUnresolved" | "uncertaintyAndCaveats">>;
+
 export type ContextGroup = {
   groupId: string;
   reason: string;
@@ -46,6 +51,7 @@ export type ReasoningTrace = {
   model: string;
   sensitivity: Sensitivity;
   suppliedSummaries: Array<Partial<AttemptSummary>>;
+  transmittedInput: string;
   consideredPriorAttemptIds: string[];
   contextGroups: ContextGroup[];
   structuredModelResponse: unknown | null;

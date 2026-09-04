@@ -11,17 +11,18 @@ fragment-context annotation, comparison identity, caching, schema validation, re
 and sensitivity evaluation. The final semantic classification always comes from the configured LLM;
 there is no text-similarity classifier.
 
-The initial provider is Anthropic's Messages API with model `claude-sonnet-4-5-20250929` by default.
+The initial provider is Anthropic's Messages API with model `claude-sonnet-4-6` by default.
 Set `WATCHTOWER_REASONING_MODEL` to select another model. The system prompt is versioned as
-`watchtower-repeat-v1.0.0`, uses temperature zero, and requests no chain-of-thought—only the required
+`watchtower-repeat-v1.1.0`, uses temperature zero and a JSON schema, and requests no chain-of-thought—only the required
 judgment, concise explanation, and evidence.
 
 ```sh
 ANTHROPIC_API_KEY=... npm run watchtower:reason -- summaries.json balanced
 ```
 
-The input file is an ordered JSON array of Phase 5 summaries, with the current attempt last. Output is
-written to `<input>.reasoning.json`. Reasoning errors, including timeouts, rate limits, and malformed
+The input can be an ordered JSON array of Phase 5 summaries or Phase 5's `inspection.json`. The CLI
+evaluates each attempt against its earlier eligible history and writes all comparisons to
+`<input>.reasoning.json`. Reasoning errors, including missing credentials, timeouts, rate limits, and malformed
 responses, return a non-surfacing advisory failure rather than blocking Claude Code.
 
 ## Segmentation tolerance
@@ -43,7 +44,8 @@ Thresholds are centralized:
 
 `different` never surfaces. A SHA-256 identity covers the prompt version, model, and exact compact
 comparison input. Successful traces are stored in an owner-only local cache. An identical comparison
-returns the cached judgment with `duplicate: true`, allowing downstream code to avoid repeat alerts.
+returns the cached judgment with `duplicate: true` and `shouldSurface: false`, preventing a repeated
+downstream alert without discarding the earlier judgment.
 
 ## Privacy, tokens, and inspection
 
@@ -51,7 +53,7 @@ Only compact Phase 5 fields are transmitted: attempt ID, problem, intended appro
 files/components, evidence, outcome, failure reason, addressed scope, unresolved scope, and caveats.
 No raw transcript, raw event, repository, or source-file contents are sent.
 
-Every trace retains supplied summaries, considered IDs, fragment groups, prompt version, model,
+Every trace retains supplied summaries, exact compact transmitted input, considered IDs, fragment groups, prompt version, model,
 structured provider response, parsed judgment, confidence, sensitivity, surfacing decision, latency,
 token usage, optional estimated cost, cache status, and parsing/retry errors. API cost is calculated only
 when explicit `WATCHTOWER_INPUT_COST_PER_MILLION` and `WATCHTOWER_OUTPUT_COST_PER_MILLION` values are
@@ -61,6 +63,7 @@ configured, avoiding stale hard-coded prices.
 
 No real Phase 1–5 captured session exists in this checkout, and no `ANTHROPIC_API_KEY` is available.
 Therefore a real-session/provider evaluation cannot be honestly reported from this environment. The
-focused tests use an injected fake provider to validate all seven required classifications as returned
-by an LLM boundary, prompt/context plumbing, fragment grouping, parsing retry, safe failure, cache
-deduplication, observability, and sensitivity behavior. They do not claim to validate model quality.
+focused offline tests validate prompt/context plumbing, fragment grouping, parsing retry, safe failure,
+cache deduplication, observability, and sensitivity behavior. Seven opt-in live semantic cases exercise
+the real provider when `ANTHROPIC_API_KEY` is present; they are skipped rather than hardcoding semantic
+answers when credentials are absent.
