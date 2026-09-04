@@ -1,0 +1,20 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import type { AttemptSummary } from "../schema.ts";
+import { AnthropicReasoningProvider } from "../reasoning/anthropic-provider.ts";
+import { RepeatReasoningEngine } from "../reasoning/engine.ts";
+import { JsonFileReasoningStore } from "../reasoning/store.ts";
+import type { Sensitivity } from "../reasoning/types.ts";
+
+const path = process.argv[2];
+if (!path) throw new Error("Usage: npm run watchtower:reason -- <summaries.json> [cautious|balanced|aggressive]");
+const parsed = JSON.parse(await readFile(path, "utf8")) as AttemptSummary[] | { attempts?: Array<{ summary?: AttemptSummary }> };
+const summaries = Array.isArray(parsed) ? parsed : (parsed.attempts ?? []).map((attempt) => attempt.summary).filter((value): value is AttemptSummary => Boolean(value));
+if (summaries.length < 2) throw new Error("At least two attempt summaries are required");
+const sensitivity = (process.argv[3] ?? "balanced") as Sensitivity;
+const provider = new AnthropicReasoningProvider(process.env.ANTHROPIC_API_KEY ?? "", process.env.WATCHTOWER_REASONING_MODEL);
+const root = process.env.WATCHTOWER_DATA_DIR ?? join(homedir(), ".watchtower");
+const engine = new RepeatReasoningEngine(provider, new JsonFileReasoningStore(join(root, "reasoning-cache.json")));
+const decision = await engine.judge(summaries.slice(0, -1), summaries.at(-1)!, sensitivity);
+process.stdout.write(`${JSON.stringify(decision, null, 2)}\n`);
